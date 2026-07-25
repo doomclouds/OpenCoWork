@@ -24,9 +24,9 @@ Milestone standard: [README.md](README.md)
   - Completion signal: 品牌、命名、程序集、配置、OpenCoWork Wire、存储与状态契约已冻结；78 项能力均有确定去向，M0-M10 共 104 个验收编号已建立。
 - [ ] 2. M1 - Runtime Foundation
   - Status: In Progress
-  - Related spec: docs/superpowers/specs/2026-07-25-open-cowork-m1-01-solution-build-baseline-design.md
-  - Related plan: docs/superpowers/plans/2026-07-25-open-cowork-m1-01-solution-build-baseline-implementation-plan.md
-  - Related archive: docs/superpowers/archives/2026-07/2026-07-25-open-cowork-m1-01-solution-build-baseline-archives.md
+  - Related spec: docs/superpowers/specs/2026-07-25-open-cowork-m1-runtime-foundation-design.md
+  - Related plan: docs/superpowers/plans/2026-07-25-open-cowork-m1-runtime-foundation-implementation-plan.md
+  - Related archive: None yet.
   - Completion signal: 运行时骨架、初始化、诊断、宿主选择和生命周期验收通过。
 - [ ] 3. M2 - Durable Session Core
   - Status: Not Started
