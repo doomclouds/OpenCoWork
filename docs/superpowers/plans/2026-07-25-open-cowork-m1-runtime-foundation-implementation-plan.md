@@ -1,17 +1,18 @@
 # OpenCoWork M1 Runtime Foundation 实施计划
 
-**Status:** In progress；Outcome 1-6 已完成。
+**Status:** Completed；Outcome 1-7 已完成。
 
 **Goal:** 建立可构建、可初始化、可诊断并可安全启停的 .NET 10 OpenCoWork
 运行时基础。
 
 **Why planning is required:** M1 同时覆盖 Generator、配置、路径安全、SQLite、
-日志、模块、宿主、WorkspaceRuntime、CLI 和双平台验收，需要跨会话按依赖闭包推进，
-但保持一个统一交付边界。
+日志、模块、宿主、WorkspaceRuntime、CLI 和正式平台验收，需要跨会话按依赖闭包
+推进，但保持一个统一交付边界。
 
 **Acceptance:** `M1-ACC-001` 至 `M1-ACC-008` 全部通过；`opencowork --version`、
 `init` 和 `doctor` 可用；主宿主选择、配置优先级、SQLite 基础、路径安全和生命周期
-验证通过；Windows PC 与 M4 Mac mini 形成正式证据；只生成一份 M1 交付归档。
+验证通过；Windows PC 形成正式收口证据，M4 Mac mini 真机项登记到 `AGENTS.md`
+并在 M10 / 1.0 发布前统一验证；只生成一份 M1 交付归档。
 
 ## Source Documents
 
@@ -127,19 +128,36 @@
   - CLI 集成测试覆盖两种选项风格、带空格路径、重复 `--set`、JSON 值、严格配置、
     未初始化 Workspace、损坏 Trust 和无效选项。
 
-### Outcome 7: Windows 与 macOS M4 完成同一套 M1 收口
+### Outcome 7: Windows 完成 M1 收口，macOS 真机项进入滚动台账
 
 - Work:
-  - 在 Windows PC 与 M4 Mac mini 分别完成 restore、Release build、完整 test 和
-    对应 RID publish。
-  - 两平台真实运行 `--version`、`init`、`doctor`，验证路径、行尾、权限、链接、
-    SQLite、日志脱敏、启动回滚和有界停止。
+  - 在 Windows PC 完成 restore、Release build、完整 test、`win-x64` publish
+    和发布可执行文件实跑。
+  - 在 Windows 交叉发布 `osx-arm64`，只证明产物可生成，不冒充 macOS 真机证据。
+  - 将 M4 的构建、CLI、路径、权限、SQLite、日志脱敏、启动回滚和有界停止项登记
+    到 `AGENTS.md`，后续换 Mac 时统一验证。
   - 更新 `M1-ACC-001` 至 `M1-ACC-008` 的状态与证据，随后同步里程碑
     `CHECKLIST.md` 和 `docs/milestones/INDEX.md`。
-  - 只有全部验收通过后生成一份 M1 交付归档；任何单平台通过都不能将 M1 标记为
-    Done。
+  - Windows 收口通过且 macOS 真机项已登记后生成唯一一份 M1 交付归档。
+- Windows validation on 2026-07-25:
+  - 基线提交为 `d721836`；Windows 11 `win-x64` 使用 .NET SDK `10.0.302`、
+    Runtime `10.0.10`。
+  - restore 与 Release build 通过，`0` warning / `0` error；完整测试为
+    Architecture `3`、Core `41`、Generators `14`、Integration `12`，合计
+    `70` passed / `0` failed / `0` skipped。
+  - `win-x64` publish 通过；发布目录中的真实可执行文件完成 `--version`、
+    `init` 和 `doctor --json`，七项 Doctor 检查均为 `Passed`，初始化文件使用
+    LF 且 SQLite 状态库存在。
+  - `osx-arm64` framework-dependent 产物可在 Windows 交叉发布，但不计入
+    macOS 真机证据。
+  - Windows Junction、大小写不敏感包含、Trust ACL 拒绝和只读 Warning 已由
+    测试覆盖。当前账号创建 Symlink 返回 `ERROR_PRIVILEGE_NOT_HELD`，因此
+    Symlink 由通用 Reparse Point 代码路径和 Junction 测试提供当前收口证据。
+  - 2026-07-25 用户确认 M1 先按 Windows 证据关闭；全部 M4 项已进入
+    `AGENTS.md` 的 macOS 真机验证台账，必须在 M10 / 1.0 发布前清零。
 - Risks/open questions:
-  - 缺少 M4 实机证据、存在未解释平台差异或任一 Secret Canary 命中时停止收口。
+  - macOS 真机验证尚未执行，不得将 Windows 交叉发布描述为 `osx-arm64` 真机
+    通过；任一 Secret Canary 命中仍阻止对应平台验收。
 - Verify:
   - `dotnet restore OpenCoWork.slnx`
   - `dotnet build OpenCoWork.slnx -c Release --no-restore`

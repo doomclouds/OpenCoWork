@@ -98,6 +98,27 @@ public sealed class WorkspacePathTests
                 root,
                 config,
                 "../outside-link/file.txt"));
+
+        if (OperatingSystem.IsMacOS())
+        {
+            var outsideFile = files.Write("outside", "outside.txt", "outside");
+            var outsideFileLink = Path.Combine(root, "outside-file.txt");
+            File.CreateSymbolicLink(outsideFileLink, outsideFile);
+            Assert.Throws<WorkspacePathEscapeException>(
+                () => WorkspacePathGuard.ResolveContained(
+                    root,
+                    config,
+                    "../outside-file.txt"));
+        }
+
+        if (OperatingSystem.IsWindows())
+        {
+            var caseVariant = WorkspacePathGuard.ResolveContained(
+                root.ToUpperInvariant(),
+                config,
+                "../inside-link/new/file.txt");
+            Assert.Equal(internalResult.PhysicalPath, caseVariant.PhysicalPath, ignoreCase: true);
+        }
     }
 
     [Fact]

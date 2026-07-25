@@ -1,4 +1,6 @@
+using System.Security.AccessControl;
 using System.Security.Cryptography;
+using System.Security.Principal;
 using System.Text;
 using System.Text.Json;
 using OpenCoWork.App;
@@ -281,6 +283,86 @@ public sealed class CliIntegrationTests
     }
 
     [Fact]
+    public async Task Doctor_enforces_platform_trust_permissions()
+    {
+        var root = CreateTemporaryDirectory();
+        var trustDirectory = Path.Combine(
+            root,
+            "user-profile",
+            ".opencowork",
+            "trust");
+        var trustPath = Path.Combine(trustDirectory, "decisions.json");
+        Directory.CreateDirectory(trustDirectory);
+        await File.WriteAllTextAsync(
+            trustPath,
+            """{"schemaVersion": 1, "decisions": []}""",
+            TestContext.Current.CancellationToken);
+
+        try
+        {
+            Assert.Equal(
+                0,
+                (await InvokeAsync(["init", "--workspace", root], root)).ExitCode);
+
+            if (OperatingSystem.IsWindows())
+            {
+                var writable = FileSystemAclExtensions.GetAccessControl(new FileInfo(trustPath));
+                writable.AddAccessRule(new FileSystemAccessRule(
+                    new SecurityIdentifier(WellKnownSidType.BuiltinUsersSid, null),
+                    FileSystemRights.Write,
+                    AccessControlType.Allow));
+                FileSystemAclExtensions.SetAccessControl(new FileInfo(trustPath), writable);
+
+                var failed = await InvokeAsync(
+                    ["doctor", "--workspace", root, "--json"],
+                    root);
+                Assert.Equal(1, failed.ExitCode);
+                Assert.Equal("Failed", ReadTrustStatus(failed.StandardOutput));
+
+                File.Delete(trustPath);
+                await File.WriteAllTextAsync(
+                    trustPath,
+                    """{"schemaVersion": 1, "decisions": []}""",
+                    TestContext.Current.CancellationToken);
+                File.SetAttributes(trustPath, File.GetAttributes(trustPath) | FileAttributes.ReadOnly);
+                var warning = await InvokeAsync(
+                    ["doctor", "--workspace", root, "--json"],
+                    root);
+                Assert.Equal(0, warning.ExitCode);
+                Assert.Equal("Warning", ReadTrustStatus(warning.StandardOutput));
+                return;
+            }
+
+            if (OperatingSystem.IsMacOS())
+            {
+                File.SetUnixFileMode(
+                    trustPath,
+                    UnixFileMode.UserRead |
+                    UnixFileMode.UserWrite |
+                    UnixFileMode.GroupWrite);
+                var failed = await InvokeAsync(
+                    ["doctor", "--workspace", root, "--json"],
+                    root);
+                Assert.Equal(1, failed.ExitCode);
+                Assert.Equal("Failed", ReadTrustStatus(failed.StandardOutput));
+
+                File.SetUnixFileMode(trustPath, UnixFileMode.UserRead);
+                var warning = await InvokeAsync(
+                    ["doctor", "--workspace", root, "--json"],
+                    root);
+                Assert.Equal(0, warning.ExitCode);
+                Assert.Equal("Warning", ReadTrustStatus(warning.StandardOutput));
+            }
+        }
+        finally
+        {
+            File.SetAttributes(trustPath, FileAttributes.Normal);
+            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task Doctor_rejects_an_active_sqlite_journal_without_touching_it()
     {
         var root = CreateTemporaryDirectory();
@@ -329,6 +411,17 @@ public sealed class CliIntegrationTests
             Path.Combine(workingDirectory, "user-profile"),
             TestContext.Current.CancellationToken);
         return new CliResult(exitCode, output.ToString(), error.ToString());
+    }
+
+    private static string ReadTrustStatus(string json)
+    {
+        using var document = JsonDocument.Parse(json);
+        return document.RootElement
+            .GetProperty("checks")
+            .EnumerateArray()
+            .Single(check => check.GetProperty("id").GetString() == "trust")
+            .GetProperty("status")
+            .GetString()!;
     }
 
     private static string CreateTemporaryDirectory(string? suffix = null)

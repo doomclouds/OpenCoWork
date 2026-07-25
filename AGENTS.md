@@ -20,6 +20,37 @@
   保持已确认的 OpenCoWork 品牌、命名和架构决策。如果该规范缺失，先确认
   材料来源，不得凭空补造原实现事实。
 
+## macOS 真机验证台账
+
+- 当前没有可用 Mac；各里程碑允许先依据 Windows 实机、自动测试和
+  `osx-arm64` 交叉发布结果收口。交叉发布不记作 macOS 真机证据。
+- 后续任何需要 M4 Mac mini 的构建、运行、权限、Symlink、进程、服务、安装或
+  性能验证，都必须追加到本章节，不得散落在聊天记录里。
+- 每条记录至少写明来源里程碑、状态、目标提交、RID、命令、预期结果和最终证据
+  路径。拿到 Mac 后按里程碑顺序批量执行并回填结果。
+- 所有 `Pending` 项必须在 M10 / OpenCoWork 1.0 正式发布前清零；未清零时不得
+  声称 `osx-arm64` 已通过真实平台发布验收。
+
+### M1 - Runtime Foundation
+
+- Status: `Pending`
+- Target: 与最终验证时选定的发布候选提交一致，RID 为 `osx-arm64`。
+- Build: `dotnet --info`、restore、Release build、完整 test、framework-dependent
+  publish；确认零警告、零错误、零失败和零跳过。
+- CLI: 真实运行发布目录中的 `opencowork --version`、`init` 和
+  `doctor --json`，验证 SDK/Runtime/RID、带空格路径、用户目录、LF、退出码及
+  Doctor 七项检查。
+- Filesystem: 验证目录与文件 Symlink 的根内通过、根外拒绝和写前复检。
+- Trust: 验证 group/other 可写为 `Failed`、仅可读为 `Warning`。
+- Runtime: 验证 SQLite 只读诊断不改写、Secret Canary 不出现在 stdout、
+  stderr 或日志中、启动失败逆序回滚、停止超时有界且没有残留进程。
+- Evidence: `Pending`；完成后写回对应验收目录或交付归档。
+
+### 后续里程碑
+
+- 新增 macOS 真机验证需求时，在这里按 `### M<N> - <Name>` 新建小节并沿用
+  `Status / Target / Checks / Evidence` 结构。
+
 <!-- asset-compounding-guidance:start -->
 <!-- asset-compounding-guidance:version=0.3.1 -->
 ## Asset Compounding Retrieval Guide

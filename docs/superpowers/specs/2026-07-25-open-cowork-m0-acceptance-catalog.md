@@ -44,6 +44,10 @@ Platform 标签：
 
 Status 使用 `Passed`、`Planned`、`Failed`、`Superseded`。
 
+2026-07-25 用户确认 M1 先以 `win-x64` 正式证据关闭；M1 的 macOS 真机项不作
+伪通过，统一滚动登记到仓库 `AGENTS.md`，并在 M10 / OpenCoWork 1.0 发布前清零。
+该调整只改变 M1 的收口时点，不改变 1.0 对 `osx-arm64` 真实平台验收的承诺。
+
 ## 2. M0 - Contract Freeze（8）
 
 | AcceptanceId | Requirement | CapabilityIds | EvidenceType | Platforms | ExpectedEvidence | Status | SupersededBy |
@@ -61,14 +65,14 @@ Status 使用 `Passed`、`Planned`、`Failed`、`Superseded`。
 
 | AcceptanceId | Requirement | CapabilityIds | EvidenceType | Platforms | ExpectedEvidence | Status | SupersededBy |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| M1-ACC-001 | Solution、七个生产项目和六个测试项目在 .NET 10 下干净构建。 | CAP-001, CAP-002 | AutomatedTest | DualPlatform | `dotnet build` 两平台日志和项目清单快照。 | Planned | — |
-| M1-ACC-002 | ModuleRegistry 拒绝重复模块和依赖环，并按拓扑启动、逆序停止。 | CAP-003 | AutomatedTest | All | 模块图、重复、环和顺序测试结果。 | Planned | — |
-| M1-ACC-003 | Composition Root 只选择一个主宿主，启动失败可回滚且停止有界。 | CAP-004, CAP-014, CAP-016 | FaultInjection | DualPlatform | CLI/AppServer 宿主切换、失败注入和残留进程检查。 | Planned | — |
-| M1-ACC-004 | Generators 生成模块、配置 Schema 和 Wire Catalog，重复贡献产生稳定诊断。 | CAP-005 | ContractSnapshot | All | Generator Snapshot 与 Roslyn Diagnostic 测试。 | Planned | — |
-| M1-ACC-005 | 配置优先级、对象/集合/数组/null 合并和严格未知字段行为符合契约。 | CAP-008, CAP-015 | AutomatedTest | All | 表驱动配置合并测试与 `doctor --strict-config` 结果。 | Planned | — |
-| M1-ACC-006 | `opencowork init` 创建安全双平面目录，Workspace 发现和路径逃逸保护正确。 | CAP-009, CAP-010, CAP-013 | SecurityTest | DualPlatform | 两平台路径、Symlink/Reparse Point、Git Ignore 测试。 | Planned | — |
-| M1-ACC-007 | WorkspaceRuntime 状态、结构化日志和 Secret 脱敏在成功/失败路径一致。 | CAP-014, CAP-073, CAP-074 | FaultInjection | All | 生命周期状态测试、日志快照和 Secret Canary 扫描。 | Planned | — |
-| M1-ACC-008 | `--version`、`init`、`doctor` 验证 SDK、配置、SQLite、信任和正式平台边界。 | CAP-011, CAP-018, CAP-078 | RealPlatformValidation | DualPlatform | Windows PC 与 M4 Mac mini 的 CLI 实跑记录。 | Planned | — |
+| M1-ACC-001 | Solution、七个生产项目和六个测试项目在 .NET 10 下干净构建。 | CAP-001, CAP-002 | AutomatedTest | win-x64 | [M1 实施计划 Outcome 7](../plans/2026-07-25-open-cowork-m1-runtime-foundation-implementation-plan.md)：Windows Release build 零警告零错误。 | Passed | — |
+| M1-ACC-002 | ModuleRegistry 拒绝重复模块和依赖环，并按拓扑启动、逆序停止。 | CAP-003 | AutomatedTest | All | `ModuleRegistryTests` 与 `WorkspaceRuntimeTests`，见 M1 实施计划 Windows 完整测试记录。 | Passed | — |
+| M1-ACC-003 | Composition Root 只选择一个主宿主，启动失败可回滚且停止有界。 | CAP-004, CAP-014, CAP-016 | FaultInjection | win-x64 | `RuntimeCompositionIntegrationTests` 与 `WorkspaceRuntimeTests`，Windows 完整回归通过。 | Passed | — |
+| M1-ACC-004 | Generators 生成模块、配置 Schema 和 Wire Catalog，重复贡献产生稳定诊断。 | CAP-005 | ContractSnapshot | All | `RuntimeCatalogGeneratorTests`：14 passed，覆盖稳定源码与 `OCWGEN001`-`OCWGEN008`。 | Passed | — |
+| M1-ACC-005 | 配置优先级、对象/集合/数组/null 合并和严格未知字段行为符合契约。 | CAP-008, CAP-015 | AutomatedTest | All | `ConfigurationPipelineTests` 与 `CliIntegrationTests.Strict_config_and_parser_failures_use_stable_exit_codes`。 | Passed | — |
+| M1-ACC-006 | `opencowork init` 创建安全双平面目录，Workspace 发现和路径逃逸保护正确。 | CAP-009, CAP-010, CAP-013 | SecurityTest | win-x64 | Windows init、Junction/Reparse Point、大小写、写前复检和 Git Ignore 测试通过。 | Passed | — |
+| M1-ACC-007 | WorkspaceRuntime 状态、结构化日志和 Secret 脱敏在成功/失败路径一致。 | CAP-014, CAP-073, CAP-074 | FaultInjection | All | `WorkspaceRuntimeTests`、`StructuredLoggingTests` 和 `DataFoundationIntegrationTests`。 | Passed | — |
+| M1-ACC-008 | `--version`、`init`、`doctor` 验证 SDK、配置、SQLite、信任和正式平台边界。 | CAP-011, CAP-018, CAP-078 | RealPlatformValidation | win-x64 | M1 实施计划记录 Windows 发布可执行文件实跑，Doctor 七项检查全部通过。 | Passed | — |
 
 ## 4. M2 - Durable Session Core（10）
 

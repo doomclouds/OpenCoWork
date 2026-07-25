@@ -2,13 +2,14 @@
 
 ## 文档状态
 
-- 状态：已确认，待按统一实施计划完成
+- 状态：已完成
 - 日期：2026-07-25
 - 所属里程碑：OpenCoWork Runtime 1.0 / M1
-- 当前已完成阶段：Solution & Build Baseline
+- 当前已完成阶段：M1 Runtime Foundation
 - 目标框架：.NET 10
 - 当前实现平台：`win-x64`
-- M1 正式验收平台：`win-x64`、`osx-arm64`
+- M1 正式验收平台：`win-x64`
+- macOS 真机验证：滚动登记于仓库 `AGENTS.md`，统一在 M10 / 1.0 发布前清零
 - 原始能力参考：
   [DotCraft 核心运行时复刻规范](../../../DotCraft_Core_核心代码详细设计与一比一复刻规范_v1.0.md)
 - M0 冻结契约：
@@ -48,7 +49,7 @@ M1 作为一个完整交付单元推进，不再创建按序号拆分的独立�
 - 结构化日志与敏感字段脱敏；
 - `opencowork --version`、`init` 和 `doctor`；
 - Windows/macOS 一致的文本、路径和生命周期行为；
-- Windows 当前实现验证与 M1 收口时的 macOS M4 正式证据。
+- Windows 正式收口证据；macOS M4 真机证据滚动登记并延后统一验证。
 
 ### 2.2 明确不包含
 
@@ -224,9 +225,9 @@ git status --short
 | CAP-005 | 只建立 Generator Analyzer-only 项目边界，生成行为留给后续任务。 |
 | M0-ACC-002 | 用项目清单和 ArchitectureTests 防止程序集边界回归。 |
 | M0-ACC-008 | 用工程文件品牌检查防止 DotCraft/.craft 兼容承诺混入实现。 |
-| M1-ACC-001 | 产生 Windows 构建证据；macOS M4 证据未完成前保持 Planned。 |
+| M1-ACC-001 | 产生 Windows 构建证据并作为 M1 正式收口依据。 |
 
-工程基线完成不代表 M1 完成，也不得提前将 `M1-ACC-001` 标记为 Passed。
+工程基线单独完成不代表 M1 完成；最终证据已随 M1 统一验收。
 
 ## 12. 工程基线阶段完成证据
 
@@ -245,7 +246,8 @@ git status --short
 - Generator Analyzer 引用在工程基线阶段接通，但不实现生成逻辑；
 - 全局启用 `TreatWarningsAsErrors`；
 - 架构守卫优先使用 BCL，不新增架构测试依赖；
-- Windows 先完成实现验证，M4 Mac mini 在 M1 收口时补正式平台证据。
+- M1 依据 Windows 实机验证收口；M4 Mac mini 真机项滚动进入 `AGENTS.md`，
+  在 M10 / 1.0 发布前统一完成。
 
 当前没有影响工程基线结构的开放决策。
 
@@ -261,7 +263,7 @@ git status --short
 - 结构化日志、Secret Canary 和跨平台敏感信息脱敏；
 - 主宿主选择、WorkspaceRuntime 状态机、失败回滚与有界停止；
 - `--version`、`init`、`doctor` 的 CLI 契约；
-- Windows 与 macOS M4 的完整 M1 验收。
+- Windows 完整 M1 验收与 macOS M4 后续真机验证入口。
 
 当前没有影响 M1 实施的开放设计决策。实施过程中若发现必须改变公共契约、安全
 顺序或验收边界的新事实，应先回到本规格确认，不以代码先行代替设计决策。
@@ -892,11 +894,13 @@ M1 子任务、独立规格或阶段归档：
    Coordinator 和 `WorkspaceRuntime` 状态机及失败回滚；
 6. **CLI 闭环**：接入 `System.CommandLine`，完成 `--version`、`init` 和只读
    `doctor` 的文本/JSON 输出与稳定退出码；
-7. **双平台收口**：在 Windows PC 与 M4 Mac mini 上完成构建、测试、真实 CLI、
-   路径链接和故障注入验证。
+7. **Windows 收口**：在 Windows PC 完成构建、测试、真实 CLI、路径链接和
+   故障注入验证；`osx-arm64` 交叉发布通过后，将 M4 真机项登记到
+   `AGENTS.md` 等待统一验证。
 
 每个阶段必须留下能够阻止该阶段回归的最小可运行验证，后续阶段只在其依赖验证通过
 后开始。实现可以使用小提交作为恢复检查点，但提交边界不改变 M1 的统一交付边界。
 
-只有 `M1-ACC-001` 至 `M1-ACC-008` 全部通过、Windows 与 macOS M4 正式证据齐全，
-且里程碑台账同步后，M1 才能标记为 Done。届时只生成一份 M1 交付归档。
+只有 `M1-ACC-001` 至 `M1-ACC-008` 的 Windows 收口证据全部通过、macOS 真机项
+已登记，且里程碑台账同步后，M1 才能标记为 Done。届时只生成一份 M1 交付归档；
+macOS 真机台账必须在 M10 / 1.0 正式发布前清零。

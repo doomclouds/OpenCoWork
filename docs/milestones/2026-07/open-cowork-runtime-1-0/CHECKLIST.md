@@ -7,9 +7,9 @@ Milestone standard: [README.md](README.md)
 ## Progress Summary
 
 - Status: In Progress
-- Progress: 1/11
-- Done: 1
-- In progress: 1
+- Progress: 2/11
+- Done: 2
+- In progress: 0
 - Not started: 9
 - Deferred: 0
 - Split: 0
@@ -22,12 +22,12 @@ Milestone standard: [README.md](README.md)
   - Related plan: Not applicable: M0 is a contract-only slice with no implementation work.
   - Related archive: Not applicable: the three frozen M0 specs are the authoritative delivery evidence.
   - Completion signal: 品牌、命名、程序集、配置、OpenCoWork Wire、存储与状态契约已冻结；78 项能力均有确定去向，M0-M10 共 104 个验收编号已建立。
-- [ ] 2. M1 - Runtime Foundation
-  - Status: In Progress
+- [x] 2. M1 - Runtime Foundation
+  - Status: Done
   - Related spec: docs/superpowers/specs/2026-07-25-open-cowork-m1-runtime-foundation-design.md
   - Related plan: docs/superpowers/plans/2026-07-25-open-cowork-m1-runtime-foundation-implementation-plan.md
-  - Related archive: None yet.
-  - Completion signal: 运行时骨架、初始化、诊断、宿主选择和生命周期验收通过。
+  - Related archive: docs/superpowers/archives/2026-07/2026-07-25-open-cowork-m1-runtime-foundation-archives.md
+  - Completion signal: 运行时骨架、初始化、诊断、宿主选择和生命周期在 Windows 正式证据下通过；macOS 真机项已进入 AGENTS.md 滚动台账。
 - [ ] 3. M2 - Durable Session Core
   - Status: Not Started
   - Related spec: docs/superpowers/specs/2026-07-25-open-cowork-runtime-1-0-roadmap.md
