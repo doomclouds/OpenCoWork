@@ -1,6 +1,10 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.Hosting" />
+  </ItemGroup>
+
+  <ItemGroup>
     <CompilerVisibleProperty Include="OpenCoWorkGenerateCatalog" />
     <ProjectReference Include="..\OpenCoWork.Core\OpenCoWork.Core.csproj" />
     <ProjectReference Include="..\OpenCoWork.Generators\OpenCoWork.Generators.csproj"

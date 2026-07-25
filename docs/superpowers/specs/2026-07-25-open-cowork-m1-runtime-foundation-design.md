@@ -318,6 +318,8 @@ Generator 负责发现和生成，不负责启动服务或持有运行时状态�
 ### 15.5 Generic Host 与模块生命周期
 
 .NET Generic Host 负责进程生命周期、依赖注入、配置、日志和取消信号；
+M1 固定使用 `Microsoft.Extensions.Hosting 10.0.10`，Abstractions 与 Core
+分别只引用所需的 Dependency Injection / Hosting Abstractions 契约包；
 `ModuleRegistry` 与单一 `ModuleLifecycleCoordinator` 负责模块依赖图的运行时
 生命周期：
 

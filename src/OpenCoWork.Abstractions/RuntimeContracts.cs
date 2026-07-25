@@ -1,3 +1,5 @@
+using Microsoft.Extensions.DependencyInjection;
+
 namespace OpenCoWork.Abstractions;
 
 [AttributeUsage(AttributeTargets.Class, AllowMultiple = false, Inherited = false)]
@@ -46,6 +48,19 @@ public sealed class ModuleDescriptor
     public int Priority { get; }
 
     public bool CanBePrimaryHost { get; }
+}
+
+public interface IOpenCoWorkModule
+{
+    void ConfigureServices(IServiceCollection services);
+
+    ValueTask StartAsync(
+        IServiceProvider services,
+        CancellationToken cancellationToken);
+
+    ValueTask StopAsync(
+        IServiceProvider services,
+        CancellationToken cancellationToken);
 }
 
 [AttributeUsage(AttributeTargets.Class, AllowMultiple = false, Inherited = false)]
