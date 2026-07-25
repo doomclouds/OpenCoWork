@@ -1,0 +1,9 @@
+# Local tooling
+.codegraph/
+
+# Local implementation reference (intentionally not versioned)
+DotCraft_Core_核心代码详细设计与一比一复刻规范_v1.0.md
+
+# .NET build outputs
+**/bin/
+**/obj/
