@@ -77,7 +77,8 @@ Workspace 生命周期实现的共同编译边界。
 - 不增加全局 warning suppression；
 - 测试项目统一 `IsPackable=false`。
 
-Generator 在自身项目中覆盖为 `netstandard2.0`。
+Generator 在自身项目中覆盖为 `netstandard2.0`，并固定稳定的
+`LangVersion=10.0`，避免该 TFM 默认 C# 7.3 与全局 Nullable 冲突。
 
 ## 4. 生产项目
 

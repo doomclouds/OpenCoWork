@@ -1,0 +1,19 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/OpenCoWork.Abstractions/OpenCoWork.Abstractions.csproj" />
+    <Project Path="src/OpenCoWork.App/OpenCoWork.App.csproj" />
+    <Project Path="src/OpenCoWork.Automations/OpenCoWork.Automations.csproj" />
+    <Project Path="src/OpenCoWork.Core/OpenCoWork.Core.csproj" />
+    <Project Path="src/OpenCoWork.Generators/OpenCoWork.Generators.csproj" />
+    <Project Path="src/OpenCoWork.Protocol/OpenCoWork.Protocol.csproj" />
+    <Project Path="src/OpenCoWork.Teams/OpenCoWork.Teams.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/OpenCoWork.ArchitectureTests/OpenCoWork.ArchitectureTests.csproj" />
+    <Project Path="tests/OpenCoWork.Core.Tests/OpenCoWork.Core.Tests.csproj" />
+    <Project Path="tests/OpenCoWork.Generators.Tests/OpenCoWork.Generators.Tests.csproj" />
+    <Project Path="tests/OpenCoWork.IntegrationTests/OpenCoWork.IntegrationTests.csproj" />
+    <Project Path="tests/OpenCoWork.Protocol.TestClient/OpenCoWork.Protocol.TestClient.csproj" />
+    <Project Path="tests/OpenCoWork.Protocol.Tests/OpenCoWork.Protocol.Tests.csproj" />
+  </Folder>
+</Solution>

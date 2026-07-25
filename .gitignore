@@ -7,3 +7,10 @@ DotCraft_Core_核心代码详细设计与一比一复刻规范_v1.0.md
 # .NET build outputs
 **/bin/
 **/obj/
+**/TestResults/
+
+# IDE and user-specific files
+.vs/
+.idea/
+*.suo
+*.user

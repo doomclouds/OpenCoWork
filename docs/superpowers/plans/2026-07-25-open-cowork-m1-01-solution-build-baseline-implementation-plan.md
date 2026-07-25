@@ -46,7 +46,8 @@
     和 Generators 七个项目。
   - 在 `tests/` 创建 Core.Tests、Protocol.Tests、Generators.Tests、
     ArchitectureTests、IntegrationTests 和 Protocol.TestClient 六个项目。
-  - 除 Generators 为 `netstandard2.0` 外，其余项目使用 `net10.0`。
+  - 除 Generators 为 `netstandard2.0` 且固定 `LangVersion=10.0` 外，其余
+    项目使用 `net10.0`。
   - App 和 Protocol.TestClient 为最小控制台入口；App 的 AssemblyName 为
     `opencowork`；其他生产项目不添加占位类型。
   - 按设计规格建立普通 ProjectReference；不增加冗余的传递引用。

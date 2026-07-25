@@ -1,0 +1,18 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="..\OpenCoWork.Core\OpenCoWork.Core.csproj" />
+    <ProjectReference Include="..\OpenCoWork.Generators\OpenCoWork.Generators.csproj"
+                      OutputItemType="Analyzer"
+                      ReferenceOutputAssembly="false" />
+    <ProjectReference Include="..\OpenCoWork.Protocol\OpenCoWork.Protocol.csproj" />
+    <ProjectReference Include="..\OpenCoWork.Automations\OpenCoWork.Automations.csproj" />
+    <ProjectReference Include="..\OpenCoWork.Teams\OpenCoWork.Teams.csproj" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>opencowork</AssemblyName>
+  </PropertyGroup>
+
+</Project>
