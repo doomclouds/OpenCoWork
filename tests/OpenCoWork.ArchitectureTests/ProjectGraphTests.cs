@@ -93,6 +93,40 @@ public sealed class ProjectGraphTests
                 StringComparison.Ordinal));
     }
 
+    [Fact]
+    public void Only_app_enables_runtime_catalog_generation()
+    {
+        var repositoryRoot = FindRepositoryRoot();
+        var projectFiles = Directory.EnumerateFiles(
+            Path.Combine(repositoryRoot, "src"),
+            "*.csproj",
+            SearchOption.AllDirectories);
+        var aggregators = projectFiles
+            .Where(path => string.Equals(
+                ReadProperty(XDocument.Load(path), "OpenCoWorkGenerateCatalog"),
+                "true",
+                StringComparison.OrdinalIgnoreCase))
+            .Select(path => Path.GetFileNameWithoutExtension(path)!)
+            .Order()
+            .ToArray();
+
+        Assert.Equal(["OpenCoWork.App"], aggregators);
+
+        var appProject = XDocument.Load(Path.Combine(
+            repositoryRoot,
+            "src",
+            "OpenCoWork.App",
+            "OpenCoWork.App.csproj"));
+        Assert.Contains(
+            appProject.Descendants(),
+            element =>
+                element.Name.LocalName == "CompilerVisibleProperty" &&
+                string.Equals(
+                    element.Attribute("Include")?.Value,
+                    "OpenCoWorkGenerateCatalog",
+                    StringComparison.Ordinal));
+    }
+
     private static Dictionary<string, ProjectModel> LoadProjects(string repositoryRoot)
     {
         return new[] { "src", "tests" }

@@ -382,6 +382,20 @@ App 生成唯一的 `internal` 入口 `OpenCoWork.Generated.RuntimeCatalog`，�
 - Snapshot 测试覆盖 Modules、Config Schema 和 Wire Methods 三类输出；
 - App 集成测试证明只有一个聚合 Catalog，其他项目不会各自产生聚合入口。
 
+M1 将稳定诊断具体冻结为：
+
+- `OCWGEN001`：无效模块 ID 或依赖 ID；
+- `OCWGEN002`：重复模块 ID；
+- `OCWGEN003`：缺失模块依赖；
+- `OCWGEN004`：模块依赖环；
+- `OCWGEN005`：无效配置节名称；
+- `OCWGEN006`：重复配置节；
+- `OCWGEN007`：重复 Wire 方法；
+- `OCWGEN008`：无法解析、不可访问或不满足不可变/默认构造要求的目录声明。
+
+Generator 使用与固定 SDK 编译器一致的 `Microsoft.CodeAnalysis.CSharp 5.6.0`。
+三份生成源码统一输出 LF，确保 Windows 与 macOS 对相同输入产生字节一致的结果。
+
 ## 17. 配置加载与有效快照
 
 ### 17.1 配置管线
@@ -434,13 +448,13 @@ M1 不做隐式配置热重载。WorkspaceRuntime 启动时固定一个有效配
 环境变量使用双下划线分隔配置路径：
 
 ```text
-OPENCOWORK__runtime__busyTimeout=30s
+OPENCOWORK__runtime__state__busyTimeout=30s
 ```
 
 `--set` 使用点路径：
 
 ```text
-opencowork ... --set runtime.busyTimeout=30s
+opencowork ... --set runtime.state.busyTimeout=30s
 ```
 
 覆盖规则如下：
@@ -608,7 +622,9 @@ Windows 使用大小写不敏感比较；macOS 使用实际解析后的路径判
 
 ### 19.1 Provider 与职责
 
-M1 使用 `Microsoft.Data.Sqlite`，不引入 EF Core 或其他 ORM。
+M1 使用 `Microsoft.Data.Sqlite 10.0.10`，不引入 EF Core 或其他 ORM。SQLite
+原生依赖显式锁定 `SQLitePCLRaw.bundle_e_sqlite3 3.0.4`，避免退回存在已知高危
+漏洞的旧传递版本。
 `StateRuntime` 只负责：
 
 - 解析并验证 `OpenCoWorkPaths.StateDatabasePath`；
@@ -661,7 +677,7 @@ M1 只创建 `state_info`，不提前加入 Session、Teams、Automations 或其
 
 ### 20.1 日志边界
 
-M1 统一使用 `Microsoft.Extensions.Logging` 抽象，由 Core 提供最小
+M1 统一使用 `Microsoft.Extensions.Logging 10.0.10` 抽象，由 Core 提供最小
 `JsonLinesFileLoggerProvider`。每个进程写入独立文件：
 
 ```text

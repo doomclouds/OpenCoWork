@@ -1,6 +1,7 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <ItemGroup>
+    <CompilerVisibleProperty Include="OpenCoWorkGenerateCatalog" />
     <ProjectReference Include="..\OpenCoWork.Core\OpenCoWork.Core.csproj" />
     <ProjectReference Include="..\OpenCoWork.Generators\OpenCoWork.Generators.csproj"
                       OutputItemType="Analyzer"
@@ -13,6 +14,7 @@
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <AssemblyName>opencowork</AssemblyName>
+    <OpenCoWorkGenerateCatalog>true</OpenCoWorkGenerateCatalog>
   </PropertyGroup>
 
 </Project>

@@ -1,6 +1,6 @@
 # OpenCoWork M1 Runtime Foundation 实施计划
 
-**Status:** Ready for implementation；工程基线已完成。
+**Status:** In progress；Outcome 1-4 已完成。
 
 **Goal:** 建立可构建、可初始化、可诊断并可安全启停的 .NET 10 OpenCoWork
 运行时基础。

@@ -1,5 +1,11 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
   <ItemGroup>
+    <PackageReference Include="Microsoft.Data.Sqlite" />
+    <PackageReference Include="Microsoft.Extensions.Logging" />
+    <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\OpenCoWork.Abstractions\OpenCoWork.Abstractions.csproj" />
     <ProjectReference Include="..\OpenCoWork.Generators\OpenCoWork.Generators.csproj"
                       OutputItemType="Analyzer"
