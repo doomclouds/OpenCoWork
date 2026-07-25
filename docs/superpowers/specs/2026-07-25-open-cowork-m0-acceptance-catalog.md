@@ -1,0 +1,230 @@
+# OpenCoWork M0-M10 验收目录
+
+## 文档状态
+
+- 状态：已冻结
+- 日期：2026-07-25
+- 所属里程碑：OpenCoWork Runtime 1.0
+- 契约规格：
+  [OpenCoWork M0 Contract Freeze](2026-07-25-open-cowork-m0-contract-freeze-design.md)
+- 能力台账：
+  [OpenCoWork M0 能力台账](2026-07-25-open-cowork-m0-capability-ledger.md)
+
+## 1. 证据规则
+
+Acceptance ID 是稳定标识，创建后永不重排。废弃验收只能将 Status 改为
+`Superseded` 并填写 `SupersededBy`，不能复用原 ID。
+
+允许的 EvidenceType：
+
+- `AutomatedTest`
+- `ContractSnapshot`
+- `FaultInjection`
+- `MigrationTest`
+- `SecurityTest`
+- `PerformanceTest`
+- `ManualValidation`
+- `RealPlatformValidation`
+
+Platform 标签：
+
+- `All`：平台无关契约；
+- `win-x64`：Windows x64 真实环境；
+- `osx-arm64`：Apple Silicon macOS 真实环境；
+- `DualPlatform`：同一验收必须同时具备 win-x64 与 osx-arm64 独立证据。
+
+执行规则：
+
+- 后续 Slice 必须把 ExpectedEvidence 替换或补充为实际文件、命令、测试报告、
+  日志、快照或发布产物链接；
+- “存在一个测试文件”不等于通过，必须有可复现的执行结果；
+- `DualPlatform` 不接受在同一平台模拟另一平台；
+- 每个 Slice 的证据必须包含此前已完成 Slice 的累计回归；
+- 任一 P0/P1 缺陷、失败验收或缺失硬证据都会阻止 Slice 标记 Done。
+
+Status 使用 `Passed`、`Planned`、`Failed`、`Superseded`。
+
+## 2. M0 - Contract Freeze（8）
+
+| AcceptanceId | Requirement | CapabilityIds | EvidenceType | Platforms | ExpectedEvidence | Status | SupersededBy |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| M0-ACC-001 | OpenCoWork 品牌、CLI、目录、插件清单和关键领域命名已冻结，明确不兼容 `.craft`。 | CAP-002, CAP-007, CAP-025, CAP-033 | ContractSnapshot | All | Contract Freeze §2 与命名检索结果。 | Passed | — |
+| M0-ACC-002 | 七个生产程序集、六个测试项目及禁止依赖方向已冻结。 | CAP-001, CAP-003, CAP-005 | ContractSnapshot | All | Contract Freeze §3 与路线规格程序集基线。 | Passed | — |
+| M0-ACC-003 | JSONC 覆盖、合并、双平面目录、路径发现和信任模型已冻结。 | CAP-008, CAP-009, CAP-010, CAP-013, CAP-018 | ContractSnapshot | All | Contract Freeze §4。 | Passed | — |
+| M0-ACC-004 | OpenCoWork Wire 的握手、命名、核心方法、事件、订阅、幂等和 Transport 已冻结。 | CAP-043, CAP-044, CAP-045, CAP-046 | ContractSnapshot | All | Contract Freeze §5。 | Passed | — |
+| M0-ACC-005 | 权威源、Journal 提交点、SQLite、故障恢复和核心状态机已冻结。 | CAP-017, CAP-020, CAP-021, CAP-033, CAP-035 | ContractSnapshot | All | Contract Freeze §6-§8。 | Passed | — |
+| M0-ACC-006 | 能力台账包含 60-90 个可观察能力，所有 Decision 均非 TBD。 | CAP-001-CAP-078 | ContractSnapshot | All | 能力台账 78 项统计与自动校验。 | Passed | — |
+| M0-ACC-007 | M1-M10 均具有稳定 Acceptance ID、证据类型、平台和预期证据。 | CAP-001-CAP-078 | ContractSnapshot | All | 本目录编号连续性与字段完整性校验。 | Passed | — |
+| M0-ACC-008 | 文档不存在未解释的 DotCraft、`.craft`、旧程序集或数字一比一兼容承诺。 | CAP-002, CAP-006, CAP-007, CAP-012 | ContractSnapshot | All | 规格定向检索与例外清单。 | Passed | — |
+
+## 3. M1 - Runtime Foundation（8）
+
+| AcceptanceId | Requirement | CapabilityIds | EvidenceType | Platforms | ExpectedEvidence | Status | SupersededBy |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| M1-ACC-001 | Solution、七个生产项目和六个测试项目在 .NET 10 下干净构建。 | CAP-001, CAP-002 | AutomatedTest | DualPlatform | `dotnet build` 两平台日志和项目清单快照。 | Planned | — |
+| M1-ACC-002 | ModuleRegistry 拒绝重复模块和依赖环，并按拓扑启动、逆序停止。 | CAP-003 | AutomatedTest | All | 模块图、重复、环和顺序测试结果。 | Planned | — |
+| M1-ACC-003 | Composition Root 只选择一个主宿主，启动失败可回滚且停止有界。 | CAP-004, CAP-014, CAP-016 | FaultInjection | DualPlatform | CLI/AppServer 宿主切换、失败注入和残留进程检查。 | Planned | — |
+| M1-ACC-004 | Generators 生成模块、配置 Schema 和 Wire Catalog，重复贡献产生稳定诊断。 | CAP-005 | ContractSnapshot | All | Generator Snapshot 与 Roslyn Diagnostic 测试。 | Planned | — |
+| M1-ACC-005 | 配置优先级、对象/集合/数组/null 合并和严格未知字段行为符合契约。 | CAP-008, CAP-015 | AutomatedTest | All | 表驱动配置合并测试与 `doctor --strict-config` 结果。 | Planned | — |
+| M1-ACC-006 | `opencowork init` 创建安全双平面目录，Workspace 发现和路径逃逸保护正确。 | CAP-009, CAP-010, CAP-013 | SecurityTest | DualPlatform | 两平台路径、Symlink/Reparse Point、Git Ignore 测试。 | Planned | — |
+| M1-ACC-007 | WorkspaceRuntime 状态、结构化日志和 Secret 脱敏在成功/失败路径一致。 | CAP-014, CAP-073, CAP-074 | FaultInjection | All | 生命周期状态测试、日志快照和 Secret Canary 扫描。 | Planned | — |
+| M1-ACC-008 | `--version`、`init`、`doctor` 验证 SDK、配置、SQLite、信任和正式平台边界。 | CAP-011, CAP-018, CAP-078 | RealPlatformValidation | DualPlatform | Windows PC 与 M4 Mac mini 的 CLI 实跑记录。 | Planned | — |
+
+## 4. M2 - Durable Session Core（10）
+
+| AcceptanceId | Requirement | CapabilityIds | EvidenceType | Platforms | ExpectedEvidence | Status | SupersededBy |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| M2-ACC-001 | Thread、Turn、Item 的创建、状态转换和终态不变量由唯一 Session Core 执行。 | CAP-019 | AutomatedTest | All | 聚合状态机与非法转换表驱动测试。 | Planned | — |
+| M2-ACC-002 | ThreadJournal Entry 严格递增、校验完整，Flush 前不产生可见提交。 | CAP-020 | FaultInjection | DualPlatform | 写入点断电/终止注入、Checksum 与 Sequence 断言。 | Planned | — |
+| M2-ACC-003 | 删除 SQLite Session 投影后可由 Journal 完整重建列表、历史和统计。 | CAP-021 | AutomatedTest | All | 重建前后规范化快照一致性。 | Planned | — |
+| M2-ACC-004 | 同 Thread 写入串行、不同 Thread 并行；投影失败进入并恢复 ProjectionDegraded。 | CAP-017, CAP-022 | FaultInjection | All | 并发压力、expectedSequence 冲突和投影恢复测试。 | Planned | — |
+| M2-ACC-005 | Queue 的追加、删除、重排和 Steer 在重启后保持确定顺序。 | CAP-023 | AutomatedTest | All | Queue 操作序列与重放测试。 | Planned | — |
+| M2-ACC-006 | Approval、UserInput、Cancel 的等待和首次 Resolution 语义可恢复且幂等。 | CAP-023 | FaultInjection | All | 等待中崩溃、重复 Resolution、Cancel 竞态测试。 | Planned | — |
+| M2-ACC-007 | Archive/Unarchive 的 Journal、文件移动、投影与事件顺序可在崩溃后协调。 | CAP-024 | FaultInjection | DualPlatform | 每个提交阶段的故障矩阵和 Reconciler 结果。 | Planned | — |
+| M2-ACC-008 | 永久删除需要 prepare token，失败可续跑，且不删除外部文件或 Dirty Worktree。 | CAP-024 | SecurityTest | DualPlatform | Token、路径边界、Dirty Worktree 和删除恢复测试。 | Planned | — |
+| M2-ACC-009 | Fork 自包含，Rollback 只追加历史并报告外部副作用未撤销。 | CAP-024 | AutomatedTest | All | 删除源 Thread 后 Fork 回放、Rollback Wire DTO 断言。 | Planned | — |
+| M2-ACC-010 | 尾部损坏可安全截断，中段损坏进入 RecoveryRequired 且不阻塞其他 Thread。 | CAP-020, CAP-021 | FaultInjection | DualPlatform | Journal Corruption Corpus 与备份证据。 | Planned | — |
+
+## 5. M3 - Agent Runtime Alpha（8）
+
+| AcceptanceId | Requirement | CapabilityIds | EvidenceType | Platforms | ExpectedEvidence | Status | SupersededBy |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| M3-ACC-001 | AgentFactory 确定性组装 AgentSession、系统提示、Context 和空 Tool Snapshot。 | CAP-025, CAP-037 | ContractSnapshot | All | 组装顺序与 Prompt Snapshot。 | Planned | — |
+| M3-ACC-002 | Fake Provider 和首个真实 Provider 共享中立契约，认证 Secret 不落盘。 | CAP-026, CAP-027 | SecurityTest | DualPlatform | Provider Contract Tests、真实模型冒烟和 Secret Canary。 | Planned | — |
+| M3-ACC-003 | 流式响应、Reasoning 和 Item 终态按 Journal 顺序持久化并可恢复。 | CAP-028 | AutomatedTest | All | Chunk/Reasoning/Terminal 重放快照。 | Planned | — |
+| M3-ACC-004 | 首 Token 前瞬态错误可重试，首 Token 后中断不重复已显示内容。 | CAP-029 | FaultInjection | All | 两阶段流中断测试与 Invocation 计数。 | Planned | — |
+| M3-ACC-005 | Token 预算、Micro/Partial Compaction 和 Checkpoint 在重启后保持一致。 | CAP-038, CAP-039 | AutomatedTest | All | 边界窗口、压缩和重放测试。 | Planned | — |
+| M3-ACC-006 | Prompt-too-long 触发有界响应式压缩，当前 Turn 不重复。 | CAP-040 | FaultInjection | All | Provider Overflow 脚本和规范化历史断言。 | Planned | — |
+| M3-ACC-007 | Usage 在流式、重试、压缩和恢复后无重复累计。 | CAP-028, CAP-075 | AutomatedTest | All | Usage Ledger 对账测试。 | Planned | — |
+| M3-ACC-008 | Agent/Plan 模式持久化，并为 M4 提供不同的工具曝光策略输入。 | CAP-030 | ContractSnapshot | All | 模式切换、重启恢复和策略快照。 | Planned | — |
+
+## 6. M4 - Tool Runtime Alpha（10）
+
+| AcceptanceId | Requirement | CapabilityIds | EvidenceType | Platforms | ExpectedEvidence | Status | SupersededBy |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| M4-ACC-001 | Tool Definition、Binding、Registration 与来源标识彼此独立。 | CAP-031 | ContractSnapshot | All | 工具契约快照和重复来源测试。 | Planned | — |
+| M4-ACC-002 | 每个 Turn 冻结 EffectiveToolSnapshot 和 Provider 名称双向映射。 | CAP-032 | AutomatedTest | All | 热更新竞态与名称冲突测试。 | Planned | — |
+| M4-ACC-003 | ToolInvocationPipeline 的阶段顺序不可旁路，所有阶段可观测。 | CAP-033 | AutomatedTest | All | 逐阶段 Trace Snapshot 和顺序断言。 | Planned | — |
+| M4-ACC-004 | Audience、Exposure、Lease、Authority、Schema、Policy 拒绝均有稳定错误码。 | CAP-033, CAP-034 | SecurityTest | All | 拒绝矩阵与错误契约快照。 | Planned | — |
+| M4-ACC-005 | Hook 和 Approval 不能扩大权限，拒绝调用同样产生 Started/Terminal 审计。 | CAP-034 | SecurityTest | All | 权限交集、恶意 Hook 和重复审批测试。 | Planned | — |
+| M4-ACC-006 | Timeout 与 Cancellation 贯穿 Provider、Tool 和子进程并进入单一终态。 | CAP-035 | FaultInjection | DualPlatform | 超时/取消阶段矩阵与进程树残留检查。 | Planned | — |
+| M4-ACC-007 | 非幂等副作用在结果不明时不自动重试，并产生 `tool.outcomeUnknown`。 | CAP-035 | FaultInjection | All | 提交前后断连测试与副作用计数。 | Planned | — |
+| M4-ACC-008 | Plan 模式不能调用写入、执行或网络副作用工具。 | CAP-030 | SecurityTest | All | Mode/Authority 组合矩阵。 | Planned | — |
+| M4-ACC-009 | 最小 File、Shell、Web 工具在双平台遵守路径、进程、权限和输出限制。 | CAP-036 | RealPlatformValidation | DualPlatform | Windows PowerShell 与 macOS Shell 实跑证据。 | Planned | — |
+| M4-ACC-010 | 模型重试、恢复和重复 Tool Call ID 不会重复已提交副作用。 | CAP-032, CAP-033, CAP-035 | FaultInjection | All | Idempotency 与 Journal 重放测试。 | Planned | — |
+
+## 7. M5 - OpenCoWork Wire Alpha（9）
+
+| AcceptanceId | Requirement | CapabilityIds | EvidenceType | Platforms | ExpectedEvidence | Status | SupersededBy |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| M5-ACC-001 | 未 initialize 的业务请求被拒绝，协商结果固定版本、能力、限制和 Workspace。 | CAP-043 | ContractSnapshot | All | initialize 正反例与协议快照。 | Planned | — |
+| M5-ACC-002 | stdio JSONL 与 WebSocket 均满足 UTF-8、日志隔离、Token 和慢客户端规则。 | CAP-044 | SecurityTest | DualPlatform | Protocol TestClient Transport 矩阵。 | Planned | — |
+| M5-ACC-003 | M5 核心 method/event 全部存在且 Generated Wire Catalog 无重复。 | CAP-045 | ContractSnapshot | All | Catalog Snapshot 与重复贡献诊断。 | Planned | — |
+| M5-ACC-004 | 从 thread/create 到 Turn 终态、Approval、Input、Queue、Steer 的端到端流一致。 | CAP-019, CAP-045 | AutomatedTest | All | Protocol TestClient 场景报告。 | Planned | — |
+| M5-ACC-005 | subscribe 原子返回快照+Sequence，afterSequence 重连不丢失且可去重。 | CAP-046 | FaultInjection | All | 断连窗口、慢消费和重复事件测试。 | Planned | — |
+| M5-ACC-006 | Request ID、idempotencyKey、expectedSequence 和业务 Cancel 各自语义独立。 | CAP-023, CAP-046 | ContractSnapshot | All | 并发/重复/取消协议矩阵。 | Planned | — |
+| M5-ACC-007 | ACP new/load/prompt/cancel/mode 正确映射且历史不重复。 | CAP-047 | AutomatedTest | All | ACP Compatibility Harness 记录。 | Planned | — |
+| M5-ACC-008 | 稳定错误响应不包含堆栈、Secret、内部绝对路径或不透明异常文本。 | CAP-044, CAP-046 | SecurityTest | All | Error Snapshot 与敏感信息扫描。 | Planned | — |
+| M5-ACC-009 | Protocol/ACP 不直接写 Store，不建立第二套 Thread/Turn 状态机。 | CAP-019, CAP-047 | AutomatedTest | All | ArchitectureTests 与状态源调用图。 | Planned | — |
+
+## 8. M6 - Capability Ecosystem（10）
+
+| AcceptanceId | Requirement | CapabilityIds | EvidenceType | Platforms | ExpectedEvidence | Status | SupersededBy |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| M6-ACC-001 | Provider、Model 与 Auth 扩展域使用稳定 ID 和中立认证契约。 | CAP-026, CAP-027 | ContractSnapshot | All | Wire Catalog 与 Provider Contract Snapshot。 | Planned | — |
+| M6-ACC-002 | 未授信工作区或插件不能加载原生工具、可信 Hook 或外部命令。 | CAP-018, CAP-050 | SecurityTest | DualPlatform | Trust Digest 变化、拒绝与重新授信测试。 | Planned | — |
+| M6-ACC-003 | Skill 来源、优先级、变体和提示注入确定，冲突不靠扫描顺序覆盖。 | CAP-049 | AutomatedTest | All | Skill Resolution Snapshot。 | Planned | — |
+| M6-ACC-004 | Plugin Manifest/Lock 固定来源、版本、摘要和贡献，安装失败可回滚。 | CAP-050, CAP-051 | SecurityTest | DualPlatform | 供应链篡改、离线恢复和 Lock 测试。 | Planned | — |
+| M6-ACC-005 | MCP Tool/Resource/OAuth/Status 生命周期、取消和故障隔离符合契约。 | CAP-052, CAP-054 | FaultInjection | DualPlatform | MCP Test Server 场景矩阵。 | Planned | — |
+| M6-ACC-006 | LSP 启动、请求路由、断连和进程树终止在双平台无残留。 | CAP-052 | RealPlatformValidation | DualPlatform | 两平台 LSP Harness 与进程检查。 | Planned | — |
+| M6-ACC-007 | Dynamic Binding Lease 过期或来源断连后旧 Binding 立即失效。 | CAP-032, CAP-053 | FaultInjection | All | Lease/断连竞态和旧 Snapshot 测试。 | Planned | — |
+| M6-ACC-008 | 工具、Hook、协议扩展冲突隔离单个贡献，不能覆盖内置能力。 | CAP-005, CAP-050 | SecurityTest | All | 冲突插件组合测试和隔离诊断。 | Planned | — |
+| M6-ACC-009 | Workspace Memory、SourceControl 与 Terminal 均经过统一路径、权限和工具管线。 | CAP-041, CAP-033 | SecurityTest | DualPlatform | 越界路径、Dirty Repo 和 Shell 信任测试。 | Planned | — |
+| M6-ACC-010 | 插件卸载或能力热更新只影响下一 Turn，故障插件不阻止运行时清理。 | CAP-032, CAP-050, CAP-052 | FaultInjection | All | 热更新、卸载、启动失败和停止测试。 | Planned | — |
+
+## 9. M7 - Multi-Agent CoWork（10）
+
+| AcceptanceId | Requirement | CapabilityIds | EvidenceType | Platforms | ExpectedEvidence | Status | SupersededBy |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| M7-ACC-001 | SubAgent 父子关系、深度、并发、预算和取消传播持久且可恢复。 | CAP-055 | AutomatedTest | All | 树深/并发/预算边界与重启测试。 | Planned | — |
+| M7-ACC-002 | Team、Member、Mission 使用 SQLite 权威状态，成员会话使用独立 Journal。 | CAP-056 | AutomatedTest | All | 权威源和跨 ID 关联测试。 | Planned | — |
+| M7-ACC-003 | MissionTask DAG 拒绝环，依赖满足后才进入 Ready，并持久化 Blocked 原因。 | CAP-057 | AutomatedTest | All | DAG 性质测试与 Reconciler 结果。 | Planned | — |
+| M7-ACC-004 | Mailbox 支持交接、阻塞、审查、返工和 Artifact 引用，投递/确认幂等。 | CAP-058 | FaultInjection | All | 丢通知、重复投递和 Dead Letter 测试。 | Planned | — |
+| M7-ACC-005 | 同一 Member 互斥、全局并发和 Mission 预算在竞态下不超限。 | CAP-055 | PerformanceTest | All | 高并发调度和计数不变量报告。 | Planned | — |
+| M7-ACC-006 | Artifact/Scratchpad 的路径、摘要、权限和孤儿清理不会越出运行时根。 | CAP-059 | SecurityTest | DualPlatform | Symlink/Reparse Point、篡改与孤儿清理测试。 | Planned | — |
+| M7-ACC-007 | Project/Worktree 隔离正确，Dirty Worktree 不被自动删除或复用。 | CAP-060 | RealPlatformValidation | DualPlatform | Windows/macOS Git Worktree 场景。 | Planned | — |
+| M7-ACC-008 | Leader 仅在必需任务完成后综合，Review/返工不会提前结束 Mission。 | CAP-057, CAP-060 | AutomatedTest | All | DAG、Review 和综合时序测试。 | Planned | — |
+| M7-ACC-009 | Mission 运行中崩溃后可由 Lease/Reconciler 恢复且无重复任务。 | CAP-056, CAP-057, CAP-058 | FaultInjection | All | 各状态崩溃矩阵与恢复报告。 | Planned | — |
+| M7-ACC-010 | 完成通知丢失或重复时，Origin 只接收一次最终结果。 | CAP-060 | FaultInjection | All | Outbound Idempotency 与通知丢失测试。 | Planned | — |
+
+## 10. M8 - Automations and Scheduler（9）
+
+| AcceptanceId | Requirement | CapabilityIds | EvidenceType | Platforms | ExpectedEvidence | Status | SupersededBy |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| M8-ACC-001 | YAML Automation 定义通过 Schema 验证并生成稳定定义版本。 | CAP-061 | ContractSnapshot | All | Valid/Invalid Corpus 与版本摘要快照。 | Planned | — |
+| M8-ACC-002 | Fluid 模板在受限上下文执行，失败不创建半成品 Run 或泄漏 Secret。 | CAP-062 | SecurityTest | All | 模板沙箱与 Secret Canary。 | Planned | — |
+| M8-ACC-003 | Manual/Cron、时区、DST 和 next-run 计算确定，重启不重复派发。 | CAP-063 | AutomatedTest | DualPlatform | 时区/DST Corpus 与双平台时钟测试。 | Planned | — |
+| M8-ACC-004 | Run 冻结定义、权限、Plugin、Skill 和 Tool Snapshot，热更新只影响后续 Run。 | CAP-064 | AutomatedTest | All | 运行中修改定义/插件的对照测试。 | Planned | — |
+| M8-ACC-005 | 最大并发、单任务互斥、Lease 和 Worktree 分配在竞态下正确。 | CAP-065 | PerformanceTest | All | 并发压力与唯一 Lease 报告。 | Planned | — |
+| M8-ACC-006 | 结果不明的非幂等工具使 Run 进入 NeedsAttention，不自动重试。 | CAP-035, CAP-066 | FaultInjection | All | 外部副作用提交窗口故障测试。 | Planned | — |
+| M8-ACC-007 | 无人值守权限不扩大，Approval 不能通过 Console 自动放行。 | CAP-066 | SecurityTest | All | 权限交集与无人终端测试。 | Planned | — |
+| M8-ACC-008 | Running/Pending/Lease 各状态崩溃后恢复且不重复创建 Turn 或 Worktree。 | CAP-065 | FaultInjection | DualPlatform | 进程终止矩阵和 Reconciler 证据。 | Planned | — |
+| M8-ACC-009 | NeedsAttention 可由协议恢复，也能按策略取消或超时并重排下一周期。 | CAP-066 | AutomatedTest | All | Wire 恢复、过期与重排场景。 | Planned | — |
+
+## 11. M9 - Gateway and Operations（10）
+
+| AcceptanceId | Requirement | CapabilityIds | EvidenceType | Platforms | ExpectedEvidence | Status | SupersededBy |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| M9-ACC-001 | 多 Channel 并发运行且凭据、故障、重连和速率限制互相隔离。 | CAP-067 | FaultInjection | All | Test/Webhook Channel 隔离矩阵。 | Planned | — |
+| M9-ACC-002 | 重复入站消息只创建一个 Turn，持久化前不交给 Session Core。 | CAP-068 | FaultInjection | All | 重放/并发重复 Message ID 测试。 | Planned | — |
+| M9-ACC-003 | 出站消息发送前进入 Outbox，发送前后崩溃均不静默丢失。 | CAP-069 | FaultInjection | All | Outbox 状态窗口和重试报告。 | Planned | — |
+| M9-ACC-004 | 单外部会话消息有序，跨会话可并行，Dead Letter 不阻塞其他分区。 | CAP-069, CAP-070 | PerformanceTest | All | 分区并发与毒消息测试。 | Planned | — |
+| M9-ACC-005 | 附件/媒体校验类型、大小、摘要和路径，不信任远端文件名。 | CAP-071 | SecurityTest | DualPlatform | 恶意文件名、Symlink、超限与篡改 Corpus。 | Planned | — |
+| M9-ACC-006 | Hub 从用户级注册发现 Workspace，不依赖当前工作目录。 | CAP-013, CAP-072 | RealPlatformValidation | DualPlatform | 两平台不同 CWD 启动与 Workspace 映射。 | Planned | — |
+| M9-ACC-007 | Channel Adapter 的启动、停止、断连和重连不遗留后台任务或进程。 | CAP-067 | FaultInjection | DualPlatform | 生命周期与资源泄漏检查。 | Planned | — |
+| M9-ACC-008 | Usage/Trace/Insight/Dashboard 查询可用，但不依赖桌面或 Web UI。 | CAP-042, CAP-048, CAP-072 | ContractSnapshot | All | Wire Catalog、CLI 查询和 ImprovementProposal 快照。 | Planned | — |
+| M9-ACC-009 | Heartbeat 和所有后台服务随 WorkspaceRuntime 完整注册与清理。 | CAP-016, CAP-077 | FaultInjection | DualPlatform | Stop Timeout、崩溃与残留资源报告。 | Planned | — |
+| M9-ACC-010 | 日志、Usage、Tracing 跨 Gateway 到 Session/Tool 可关联且不泄漏 Secret。 | CAP-073, CAP-074, CAP-075, CAP-076 | SecurityTest | All | 端到端 Correlation 与敏感信息扫描。 | Planned | — |
+
+## 12. M10 - OpenCoWork 1.0 Closure（12）
+
+| AcceptanceId | Requirement | CapabilityIds | EvidenceType | Platforms | ExpectedEvidence | Status | SupersededBy |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| M10-ACC-001 | CAP-001 至 CAP-078 均有通过证据或明确 Deferred/Removed 结论，无开放缺口。 | CAP-001-CAP-078 | ContractSnapshot | All | 能力台账关闭报告与证据反向链接。 | Planned | — |
+| M10-ACC-002 | 公共 Wire 方法、DTO、错误码、配置 Schema 和默认值完成冻结审查。 | CAP-005, CAP-008, CAP-043, CAP-045 | ContractSnapshot | All | 1.0 Golden Snapshot 与 Breaking Change 审查。 | Planned | — |
+| M10-ACC-003 | SQLite 至少两个旧 Schema 可迁移，失败会恢复备份且状态可诊断。 | CAP-017, CAP-021 | MigrationTest | DualPlatform | 旧数据库 Corpus、Backup/Restore 与两平台日志。 | Planned | — |
+| M10-ACC-004 | ThreadJournal 至少两个旧 Schema 可 Upcast/回放，投影重建与升级原子切换正确。 | CAP-017, CAP-020, CAP-021, CAP-039 | MigrationTest | DualPlatform | 旧 Journal Corpus、Checksum 与重建快照。 | Planned | — |
+| M10-ACC-005 | Archive/Delete/Fork/Rollback 在崩溃、升级和恢复组合下保持契约。 | CAP-024 | FaultInjection | DualPlatform | 组合故障矩阵与 Reconciler 结果。 | Planned | — |
+| M10-ACC-006 | Secret、路径、插件、Hook、MCP、工具、媒体和 Worktree 通过完整安全审计。 | CAP-010, CAP-018, CAP-027, CAP-034, CAP-041, CAP-059, CAP-071, CAP-074 | SecurityTest | DualPlatform | Threat Matrix、Canary、越界 Corpus 和修复证据。 | Planned | — |
+| M10-ACC-007 | CLI、AppServer、ACP、Gateway 从初始化到恢复完成端到端真实模型验收。 | CAP-019, CAP-025, CAP-043, CAP-047, CAP-067 | RealPlatformValidation | DualPlatform | Windows PC 与 M4 Mac mini 的 E2E 记录。 | Planned | — |
+| M10-ACC-008 | Provider、Plugin、MCP 和 LSP 兼容矩阵覆盖支持版本、失败隔离和升级。 | CAP-026, CAP-050, CAP-052 | RealPlatformValidation | DualPlatform | 兼容矩阵报告与供应链摘要。 | Planned | — |
+| M10-ACC-009 | 性能、并发、长时间运行和资源清理满足发布预算且无 P0/P1。 | CAP-022, CAP-055, CAP-065, CAP-070, CAP-077 | PerformanceTest | DualPlatform | Soak、并发、内存/句柄/进程报告。 | Planned | — |
+| M10-ACC-010 | `win-x64` 在干净 Windows 机器完成安装、升级、卸载和真实模型冒烟。 | CAP-011 | RealPlatformValidation | win-x64 | 签名产物、安装日志、卸载残留与冒烟报告。 | Planned | — |
+| M10-ACC-011 | `osx-arm64` 在 M4 Mac mini 完成安装、升级、卸载和真实模型冒烟。 | CAP-011 | RealPlatformValidation | osx-arm64 | 签名/Notarization 产物、安装日志和冒烟报告。 | Planned | — |
+| M10-ACC-012 | 用户、协议、插件文档、Release Notes、SBOM、校验和与诊断说明齐全。 | CAP-051, CAP-072, CAP-078 | ManualValidation | All | 发布包清单、文档链接、SBOM 与校验和验证。 | Planned | — |
+
+## 13. 数量与关闭规则
+
+| Slice | Acceptance 数量 | M0 状态 |
+| --- | ---: | --- |
+| M0 | 8 | Passed |
+| M1 | 8 | Planned |
+| M2 | 10 | Planned |
+| M3 | 8 | Planned |
+| M4 | 10 | Planned |
+| M5 | 9 | Planned |
+| M6 | 10 | Planned |
+| M7 | 10 | Planned |
+| M8 | 9 | Planned |
+| M9 | 10 | Planned |
+| M10 | 12 | Planned |
+| **Total** | **104** | **8 Passed / 96 Planned** |
+
+每个 Slice 标记 Done 前必须：
+
+1. 将该 Slice 的全部 Planned 改为 Passed，或以 Superseded 明确替代；
+2. 链接实际证据；
+3. 执行此前 Slice 的累计回归；
+4. 确认没有 P0/P1 缺陷；
+5. 对 `DualPlatform` 项提供两台真实平台的独立证据；
+6. 更新能力台账、里程碑 Checklist 和交付归档。

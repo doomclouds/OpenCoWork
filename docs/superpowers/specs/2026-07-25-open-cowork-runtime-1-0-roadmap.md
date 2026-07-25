@@ -8,9 +8,11 @@
 - 目标框架：.NET 10
 - 正式平台：`win-x64`、`osx-arm64`
 - 原始能力参考：
-  [DotCraft 核心运行时复刻规范](../../../../../DotCraft_Core_核心代码详细设计与一比一复刻规范_v1.0.md)
+  [DotCraft 核心运行时复刻规范](../../../DotCraft_Core_核心代码详细设计与一比一复刻规范_v1.0.md)
 - 进度台账：
-  [OpenCoWork Runtime 1.0 Milestone](../README.md)
+  [OpenCoWork Runtime 1.0 Milestone](../../milestones/2026-07/open-cowork-runtime-1-0/README.md)
+- M0 冻结契约：
+  [OpenCoWork M0 Contract Freeze](2026-07-25-open-cowork-m0-contract-freeze-design.md)
 
 ## 1. 产品目标
 
@@ -95,8 +97,14 @@ OpenCoWork 1.0 的完成标准不是“模型能够回复消息”，而是：
 - `ThreadJournalEntry`
 - `ThreadJournalReplayer`
 
-仍需在 M0 按语义单独确认的候选包括 `CraftPath` 和原规范中的
-`DreamsService`，不得在未说明职责改善的情况下直接改名。
+补充冻结命名：
+
+- `CraftPath` 概念使用 `Workspace Data Root`；
+- 路径服务使用 `OpenCoWorkPaths`；
+- `Dreams` 使用 `Workspace Insights`；
+- `DreamsService` 使用 `WorkspaceInsightService`；
+- 一次洞察运行使用 `InsightRun`；
+- 可审阅改进建议使用 `ImprovementProposal`。
 
 ## 4. 程序集与依赖方向
 
@@ -104,6 +112,7 @@ OpenCoWork 1.0 的完成标准不是“模型能够回复消息”，而是：
 
 ```text
 src/
+├── OpenCoWork.Abstractions
 ├── OpenCoWork.App
 ├── OpenCoWork.Core
 ├── OpenCoWork.Protocol
@@ -118,17 +127,21 @@ src/
 tests/
 ├── OpenCoWork.Core.Tests
 ├── OpenCoWork.Protocol.Tests
+├── OpenCoWork.Generators.Tests
+├── OpenCoWork.ArchitectureTests
 ├── OpenCoWork.IntegrationTests
 └── OpenCoWork.Protocol.TestClient
 ```
 
 约束：
 
-- `OpenCoWork.App` 是入口与宿主组合层；
-- `OpenCoWork.Core` 拥有 Workspace、Session、Agent、Tool、State 等核心抽象；
-- `OpenCoWork.Protocol` 独立承载 JSON-RPC、AppServer、ACP 和协议 DTO；
-- `OpenCoWork.Automations` 与 `OpenCoWork.Teams` 复用 Core 与 Protocol 扩展点；
-- `OpenCoWork.Generators` 提供编译期模块、配置和工具注册能力；
+- `OpenCoWork.Abstractions` 承载稳定跨程序集与插件契约，不包含存储和宿主实现；
+- `OpenCoWork.App` 是入口、宿主组合层与 `opencowork` 可执行项目；
+- `OpenCoWork.Core` 依赖 Abstractions，实现 Workspace、Session、Agent、Tool、State；
+- `OpenCoWork.Protocol` 只依赖 Abstractions，独立承载 JSON-RPC、AppServer、ACP 和协议 DTO；
+- `OpenCoWork.Automations` 与 `OpenCoWork.Teams` 依赖 Abstractions 和 Protocol 扩展点，
+  彼此不得互相引用；
+- `OpenCoWork.Generators` 是 `netstandard2.0` Analyzer-only 编译期程序集；
 - Protocol Handler 不得直接修改 ThreadStore 或建立第二套状态机。
 
 ## 5. 稳定架构中心
@@ -161,9 +174,12 @@ SQLite 为这些内容提供可重建查询投影。每个 Thread Journal Entry 
 - `schemaVersion`
 - `threadId`
 - `sequence`
+- `entryId`
 - `timestamp`
 - `entryType`
+- `idempotencyKey`
 - `payload`
+- `checksum`
 
 SQLite 保存最后应用的 Journal Sequence。启动发现投影落后时，必须从
 Journal 补齐；删除 Session 查询投影后，应能够完整重建。
@@ -288,6 +304,12 @@ Running → NeedsAttention → Running
 - 原规范能力映射；
 - 每项能力的保持语义、OpenCoWork 重设计或延期结论；
 - M1-M10 的验收编号。
+
+交付规格：
+
+- [OpenCoWork M0 Contract Freeze](2026-07-25-open-cowork-m0-contract-freeze-design.md)
+- [OpenCoWork M0 能力台账](2026-07-25-open-cowork-m0-capability-ledger.md)
+- [OpenCoWork M0-M10 验收目录](2026-07-25-open-cowork-m0-acceptance-catalog.md)
 
 不包含：
 

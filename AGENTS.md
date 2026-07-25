@@ -4,9 +4,9 @@
 
 - 当前活动里程碑：
   `docs/milestones/2026-07/open-cowork-runtime-1-0/`
-- 里程碑总路线规格与里程碑放在一起：
-  `docs/milestones/2026-07/open-cowork-runtime-1-0/specs/`
-- 各 Slice 的独立实现规格、计划和交付归档仍分别进入
+- 里程碑路线规格与 M0 冻结规格统一放在：
+  `docs/superpowers/specs/`
+- 各 Slice 的独立实现规格、计划和交付归档分别进入
   `docs/superpowers/specs/`、`docs/superpowers/plans/` 和
   `docs/superpowers/archives/`。
 - 继续开发前先读取当前里程碑的 `README.md`、`CHECKLIST.md` 和路线规格，

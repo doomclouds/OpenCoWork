@@ -29,12 +29,19 @@ OpenCoWork .NET 10 核心运行时、CLI、AppServer、ACP、扩展生态、多�
   DotCraft 私有实现、程序集或持久化目录的兼容承诺。
 - OpenCoWork 1.0 的正式发布目标为 `win-x64` 和 `osx-arm64`。
 - 详细路线与已确认决策见
-  [OpenCoWork Runtime 1.0 路线规格](specs/2026-07-25-open-cowork-runtime-1-0-roadmap.md)。
+  [OpenCoWork Runtime 1.0 路线规格](../../../superpowers/specs/2026-07-25-open-cowork-runtime-1-0-roadmap.md)。
+- M0 冻结结果见
+  [Contract Freeze](../../../superpowers/specs/2026-07-25-open-cowork-m0-contract-freeze-design.md)、
+  [能力台账](../../../superpowers/specs/2026-07-25-open-cowork-m0-capability-ledger.md)
+  和
+  [验收目录](../../../superpowers/specs/2026-07-25-open-cowork-m0-acceptance-catalog.md)。
 
 ## Architecture Constraints
 
 - 产品、程序集、命名空间、CLI 和持久化目录统一使用 OpenCoWork 品牌。
 - 内部类型按职责和语义逐项判断，不进行机械式全量重命名。
+- `OpenCoWork.Abstractions` 承载稳定跨程序集契约；Protocol 只通过该层调用
+  Session Core，不直接依赖 Core 实现。
 - `ToolDispatcher` 重命名为 `ToolInvocationPipeline`。
 - `Rollout` 重命名为 `ThreadJournal`。
 - `ThreadJournal` 是 Thread、Turn、Item 和模型可见历史的权威事实源；
@@ -57,7 +64,10 @@ DotCraft .craft 兼容、DotCraft 二进制或私有实现兼容、Linux 与 Int
 ## Reference Signals
 
 - [DotCraft 核心运行时复刻规范](../../../../DotCraft_Core_核心代码详细设计与一比一复刻规范_v1.0.md)
-- [OpenCoWork Runtime 1.0 路线规格](specs/2026-07-25-open-cowork-runtime-1-0-roadmap.md)
+- [OpenCoWork Runtime 1.0 路线规格](../../../superpowers/specs/2026-07-25-open-cowork-runtime-1-0-roadmap.md)
+- [OpenCoWork M0 Contract Freeze](../../../superpowers/specs/2026-07-25-open-cowork-m0-contract-freeze-design.md)
+- [OpenCoWork M0 能力台账](../../../superpowers/specs/2026-07-25-open-cowork-m0-capability-ledger.md)
+- [OpenCoWork M0-M10 验收目录](../../../superpowers/specs/2026-07-25-open-cowork-m0-acceptance-catalog.md)
 - 2026-07-25 用户逐项确认的 M0-M10 头脑风暴决策
 
 ## Slice Boundaries
