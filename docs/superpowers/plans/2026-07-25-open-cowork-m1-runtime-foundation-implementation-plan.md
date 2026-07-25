@@ -139,6 +139,9 @@
   - 更新 `M1-ACC-001` 至 `M1-ACC-008` 的状态与证据，随后同步里程碑
     `CHECKLIST.md` 和 `docs/milestones/INDEX.md`。
   - Windows 收口通过且 macOS 真机项已登记后生成唯一一份 M1 交付归档。
+  - Windows 原生 Symlink 补充验收复用现有路径安全测试：仅显式设置验收环境
+    变量时改用文件及目录 Symlink，并只对该专项测试发起一次 UAC 提权；完整回归
+    继续以普通权限运行。
 - Windows validation on 2026-07-25:
   - 基线提交为 `d721836`；Windows 11 `win-x64` 使用 .NET SDK `10.0.302`、
     Runtime `10.0.10`。
@@ -151,8 +154,11 @@
   - `osx-arm64` framework-dependent 产物可在 Windows 交叉发布，但不计入
     macOS 真机证据。
   - Windows Junction、大小写不敏感包含、Trust ACL 拒绝和只读 Warning 已由
-    测试覆盖。当前账号创建 Symlink 返回 `ERROR_PRIVILEGE_NOT_HELD`，因此
-    Symlink 由通用 Reparse Point 代码路径和 Junction 测试提供当前收口证据。
+    测试覆盖。
+  - 2026-07-26 使用显式验收开关复现普通权限
+    `ERROR_PRIVILEGE_NOT_HELD`，随后仅提权运行 `WorkspacePathTests`；
+    原生文件及目录 Symlink 专项 `5` passed / `0` failed，普通权限完整回归仍为
+    `70` passed / `0` failed / `0` skipped。
   - 2026-07-25 用户确认 M1 先按 Windows 证据关闭；全部 M4 项已进入
     `AGENTS.md` 的 macOS 真机验证台账，必须在 M10 / 1.0 发布前清零。
 - Risks/open questions:
@@ -162,6 +168,8 @@
   - `dotnet restore OpenCoWork.slnx`
   - `dotnet build OpenCoWork.slnx -c Release --no-restore`
   - `dotnet test OpenCoWork.slnx -c Release --no-build`
+  - 提权运行 `WorkspacePathTests`，并设置
+    `OPENCOWORK_VALIDATE_WINDOWS_SYMLINKS=1`
   - `dotnet publish src/OpenCoWork.App/OpenCoWork.App.csproj -c Release -r win-x64 --self-contained false`
   - `dotnet publish src/OpenCoWork.App/OpenCoWork.App.csproj -c Release -r osx-arm64 --self-contained false`
   - `git diff --check`

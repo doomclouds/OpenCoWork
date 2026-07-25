@@ -33,6 +33,11 @@ M1 将 OpenCoWork 从契约与工程骨架推进为可构建、可初始化、�
   发布证据。
 - Windows 发布可执行文件实跑 `--version`、`init`、`doctor --json`，Doctor
   七项检查全部通过，初始化文件使用 LF，SQLite 状态库存在且诊断只读。
+- Windows 原生文件及目录 Symlink 使用显式验收开关和临时 UAC 提权专项验证，
+  `WorkspacePathTests` 为 `5` passed / `0` failed；同一开关在普通权限下稳定
+  返回 `ERROR_PRIVILEGE_NOT_HELD`，证明专项没有退回 Junction。
+- Symlink 专项后以普通权限复跑 Release build 与完整测试，结果仍为
+  `0` warning / `0` error、`70` passed / `0` failed / `0` skipped。
 - `dotnet format --verify-no-changes` 通过，NuGet 全项目传递依赖扫描未发现已知漏洞。
 
 ## Source Documents

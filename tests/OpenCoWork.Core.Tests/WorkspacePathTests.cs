@@ -6,6 +6,10 @@ namespace OpenCoWork.Core.Tests;
 
 public sealed class WorkspacePathTests
 {
+    private static bool UseNativeSymbolicLinks =>
+        !OperatingSystem.IsWindows()
+        || Environment.GetEnvironmentVariable("OPENCOWORK_VALIDATE_WINDOWS_SYMLINKS") == "1";
+
     [Fact]
     public void Discovery_uses_explicit_then_nearest_opencowork_then_git_then_startup_directory()
     {
@@ -99,7 +103,7 @@ public sealed class WorkspacePathTests
                 config,
                 "../outside-link/file.txt"));
 
-        if (OperatingSystem.IsMacOS())
+        if (UseNativeSymbolicLinks)
         {
             var outsideFile = files.Write("outside", "outside.txt", "outside");
             var outsideFileLink = Path.Combine(root, "outside-file.txt");
@@ -178,7 +182,7 @@ public sealed class WorkspacePathTests
         public void CreateDirectoryLink(string path, string target)
         {
             _links.Add(path);
-            if (!OperatingSystem.IsWindows())
+            if (UseNativeSymbolicLinks)
             {
                 Directory.CreateSymbolicLink(path, target);
                 return;
