@@ -1,6 +1,6 @@
 # OpenCoWork M1 Runtime Foundation 实施计划
 
-**Status:** In progress；Outcome 1-5 已完成。
+**Status:** In progress；Outcome 1-6 已完成。
 
 **Goal:** 建立可构建、可初始化、可诊断并可安全启停的 .NET 10 OpenCoWork
 运行时基础。
@@ -117,6 +117,15 @@
   - `dotnet test tests/OpenCoWork.IntegrationTests/OpenCoWork.IntegrationTests.csproj -c Release`
   - `dotnet run --project src/OpenCoWork.App/OpenCoWork.App.csproj -- --version`
   - `dotnet run --project src/OpenCoWork.App/OpenCoWork.App.csproj -- doctor --json`
+- Implementation result:
+  - App 已接入 `System.CommandLine 2.0.10`；产品版本由集中构建属性提供，入口在构建
+    Generic Host 前分流 `--version`、`init`、`doctor` 和无命令帮助。
+  - `DiagnosticRunner` 以单一结果模型按固定顺序检查 Runtime、平台、Workspace、
+    路径、配置、SQLite 与 Trust，并映射稳定退出码。
+  - SQLite 诊断使用无连接池的 immutable 只读连接，并拒绝未 checkpoint 的活动
+    Journal；集成测试通过文件 SHA-256 证明诊断前后无新增或改写。
+  - CLI 集成测试覆盖两种选项风格、带空格路径、重复 `--set`、JSON 值、严格配置、
+    未初始化 Workspace、损坏 Trust 和无效选项。
 
 ### Outcome 7: Windows 与 macOS M4 完成同一套 M1 收口
 

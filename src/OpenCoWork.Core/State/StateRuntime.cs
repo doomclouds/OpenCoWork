@@ -67,6 +67,19 @@ public sealed class StateMigrationException : InvalidOperationException
     }
 }
 
+public sealed record StateInspection(
+    int SchemaVersion,
+    string MigrationStatus,
+    int TargetVersion,
+    string? Error,
+    string JournalMode,
+    int Synchronous,
+    bool ForeignKeys,
+    bool SecureDelete,
+    int BusyTimeoutMilliseconds,
+    bool QueryOnly,
+    string Tables);
+
 public sealed class StateWriteCoordinator
 {
     private readonly Func<CancellationToken, Task<SqliteConnection>> _openConnection;
@@ -195,6 +208,138 @@ public sealed class StateRuntime
     {
         GuardPath(_paths.StateDatabasePath);
         var connection = CreateConnection(SqliteOpenMode.ReadOnly);
+        try
+        {
+            await connection.OpenAsync(cancellationToken);
+            await ApplyConnectionPolicyAsync(
+                connection,
+                enableWal: false,
+                readOnly: true,
+                cancellationToken);
+            return connection;
+        }
+        catch
+        {
+            await connection.DisposeAsync();
+            throw;
+        }
+    }
+
+    public async Task<StateInspection> InspectAsync(
+        CancellationToken cancellationToken = default)
+    {
+        RejectUncheckpointedJournal(_paths.StateDatabasePath + "-wal");
+        RejectUncheckpointedJournal(_paths.StateDatabasePath + "-journal");
+        var journalMode = ReadJournalMode(_paths.StateDatabasePath);
+        await using var connection = await OpenImmutableConnectionAsync(cancellationToken);
+        var synchronous = await ReadPragmaIntAsync(
+            connection,
+            "synchronous",
+            cancellationToken);
+        var foreignKeys = await ReadPragmaIntAsync(
+            connection,
+            "foreign_keys",
+            cancellationToken);
+        var secureDelete = await ReadPragmaIntAsync(
+            connection,
+            "secure_delete",
+            cancellationToken);
+        var busyTimeout = await ReadPragmaIntAsync(
+            connection,
+            "busy_timeout",
+            cancellationToken);
+        var queryOnly = await ReadPragmaIntAsync(
+            connection,
+            "query_only",
+            cancellationToken);
+
+        string tables;
+        await using (var command = connection.CreateCommand())
+        {
+            command.CommandText =
+                """
+                SELECT group_concat(name, ',')
+                FROM (
+                    SELECT name
+                    FROM sqlite_schema
+                    WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
+                    ORDER BY name
+                );
+                """;
+            tables = Convert.ToString(
+                await command.ExecuteScalarAsync(cancellationToken))
+                ?? string.Empty;
+        }
+
+        await using (var command = connection.CreateCommand())
+        {
+            command.CommandText =
+                """
+                SELECT schema_version, migration_status, target_version, error
+                FROM state_info
+                WHERE id = 1;
+                """;
+            await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+            if (!await reader.ReadAsync(cancellationToken))
+            {
+                throw new StateMigrationException(
+                    "state_info does not contain the singleton row.");
+            }
+
+            return new StateInspection(
+                reader.GetInt32(0),
+                reader.GetString(1),
+                reader.GetInt32(2),
+                reader.IsDBNull(3) ? null : reader.GetString(3),
+                journalMode,
+                synchronous,
+                foreignKeys != 0,
+                secureDelete != 0,
+                busyTimeout,
+                queryOnly != 0,
+                tables);
+        }
+    }
+
+    private static void RejectUncheckpointedJournal(string path)
+    {
+        if (File.Exists(path) && new FileInfo(path).Length > 0)
+        {
+            throw new StateMigrationException(
+                $"Read-only inspection cannot validate an active SQLite journal: {path}");
+        }
+    }
+
+    private static string ReadJournalMode(string databasePath)
+    {
+        using var stream = new FileStream(
+            databasePath,
+            FileMode.Open,
+            FileAccess.Read,
+            FileShare.ReadWrite | FileShare.Delete);
+        stream.Position = 18;
+        Span<byte> versions = stackalloc byte[2];
+        stream.ReadExactly(versions);
+        return versions[0] == 2 && versions[1] == 2
+            ? "wal"
+            : "delete";
+    }
+
+    private async Task<SqliteConnection> OpenImmutableConnectionAsync(
+        CancellationToken cancellationToken)
+    {
+        GuardPath(_paths.StateDatabasePath);
+        var connection = new SqliteConnection(
+            new SqliteConnectionStringBuilder
+            {
+                DataSource =
+                    new Uri(_paths.StateDatabasePath).AbsoluteUri + "?immutable=1",
+                Mode = SqliteOpenMode.ReadOnly,
+                Cache = SqliteCacheMode.Private,
+                Pooling = false,
+                DefaultTimeout = Math.Max(1, (int)Math.Ceiling(
+                    _busyTimeoutMilliseconds / 1_000d)),
+            }.ToString());
         try
         {
             await connection.OpenAsync(cancellationToken);
@@ -474,7 +619,7 @@ public sealed class StateRuntime
                 DataSource = _paths.StateDatabasePath,
                 Mode = mode,
                 Cache = SqliteCacheMode.Private,
-                Pooling = true,
+                Pooling = mode != SqliteOpenMode.ReadOnly,
                 DefaultTimeout = Math.Max(1, (int)Math.Ceiling(
                     _busyTimeoutMilliseconds / 1_000d)),
             }.ToString());
@@ -542,6 +687,18 @@ public sealed class StateRuntime
         }
 
         return (reader.GetInt32(0), reader.GetString(1));
+    }
+
+    private static async Task<int> ReadPragmaIntAsync(
+        SqliteConnection connection,
+        string name,
+        CancellationToken cancellationToken)
+    {
+        await using var command = connection.CreateCommand();
+        command.CommandText = $"PRAGMA {name};";
+        return Convert.ToInt32(
+            await command.ExecuteScalarAsync(cancellationToken),
+            System.Globalization.CultureInfo.InvariantCulture);
     }
 
     private static async Task ValidateSchemaAsync(
