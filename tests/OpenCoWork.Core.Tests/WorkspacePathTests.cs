@@ -60,9 +60,17 @@ public sealed class WorkspacePathTests
         var root = files.CreateDirectory("workspace");
         var paths = new OpenCoWorkPaths(root);
         var expected = Path.Combine(Path.GetFullPath(root), ".opencowork", "runtime", "state.db");
+        var threads = Path.Combine(Path.GetFullPath(root), ".opencowork", "runtime", "threads");
 
         Assert.Equal(expected, paths.StateDatabasePath);
         Assert.Equal(expected, paths.StateDatabasePath);
+        Assert.Equal(threads, paths.ThreadsDirectory);
+        Assert.Equal(Path.Combine(threads, "active"), paths.ActiveThreadsDirectory);
+        Assert.Equal(Path.Combine(threads, "archived"), paths.ArchivedThreadsDirectory);
+        Assert.Equal(Path.Combine(threads, "deleting"), paths.DeletingThreadsDirectory);
+        Assert.Equal(
+            Path.Combine(Path.GetFullPath(root), ".opencowork", "runtime", "recovery", "threads"),
+            paths.ThreadRecoveryDirectory);
         Assert.True(Path.IsPathFullyQualified(paths.StateDatabasePath));
     }
 

@@ -314,14 +314,17 @@ public static class DiagnosticRunner
                     paths,
                     runtime.State.BusyTimeout)
                 .InspectAsync(cancellationToken);
-            var valid = state.SchemaVersion == 1 &&
-                        state.TargetVersion == 1 &&
+            var valid = state.SchemaVersion == StateMigrations.CurrentVersion &&
+                        state.TargetVersion == StateMigrations.CurrentVersion &&
                         string.Equals(
                             state.MigrationStatus,
                             "Completed",
                             StringComparison.Ordinal) &&
                         state.Error is null &&
-                        string.Equals(state.Tables, "state_info", StringComparison.Ordinal) &&
+                        string.Equals(
+                            state.Tables,
+                            StateMigrations.CurrentTables,
+                            StringComparison.Ordinal) &&
                         string.Equals(state.JournalMode, "wal", StringComparison.OrdinalIgnoreCase) &&
                         state.Synchronous == 2 &&
                         state.ForeignKeys &&
@@ -330,7 +333,10 @@ public static class DiagnosticRunner
                         (int)runtime.State.BusyTimeout.TotalMilliseconds &&
                         state.QueryOnly;
             return valid
-                ? Passed("sqlite", "Schema 1, state_info and read-only PRAGMA policy are valid.")
+                ? Passed(
+                    "sqlite",
+                    $"Schema {StateMigrations.CurrentVersion}, Session tables and " +
+                    "read-only PRAGMA policy are valid.")
                 : Failed(
                     "sqlite",
                     $"SQLite state is inconsistent: schema={state.SchemaVersion}, " +

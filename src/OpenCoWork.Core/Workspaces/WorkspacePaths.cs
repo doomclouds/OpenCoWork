@@ -27,6 +27,11 @@ public sealed class OpenCoWorkPaths
         RuntimeDirectory = Path.Combine(OpenCoWorkDirectory, "runtime");
         StateDatabasePath = Path.Combine(RuntimeDirectory, "state.db");
         LogsDirectory = Path.Combine(RuntimeDirectory, "logs");
+        ThreadsDirectory = Path.Combine(RuntimeDirectory, "threads");
+        ActiveThreadsDirectory = Path.Combine(ThreadsDirectory, "active");
+        ArchivedThreadsDirectory = Path.Combine(ThreadsDirectory, "archived");
+        DeletingThreadsDirectory = Path.Combine(ThreadsDirectory, "deleting");
+        ThreadRecoveryDirectory = Path.Combine(RuntimeDirectory, "recovery", "threads");
     }
 
     public string WorkspaceRoot { get; }
@@ -42,6 +47,16 @@ public sealed class OpenCoWorkPaths
     public string StateDatabasePath { get; }
 
     public string LogsDirectory { get; }
+
+    public string ThreadsDirectory { get; }
+
+    public string ActiveThreadsDirectory { get; }
+
+    public string ArchivedThreadsDirectory { get; }
+
+    public string DeletingThreadsDirectory { get; }
+
+    public string ThreadRecoveryDirectory { get; }
 }
 
 public static class WorkspaceDiscovery

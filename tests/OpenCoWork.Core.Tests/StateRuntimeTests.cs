@@ -8,6 +8,30 @@ namespace OpenCoWork.Core.Tests;
 
 public sealed class StateRuntimeTests
 {
+    private static readonly string[] SessionSchemaTables =
+    [
+        "items",
+        "pending_interactions",
+        "session_idempotency",
+        "session_operation_receipts",
+        "state_info",
+        "threads",
+        "turn_queue",
+        "turns",
+    ];
+
+    private static readonly string[] SessionSchemaIndexes =
+    [
+        "ix_items_thread_sequence",
+        "ix_items_turn_sequence",
+        "ix_pending_interactions_thread",
+        "ix_session_idempotency_thread",
+        "ix_session_operation_receipts_expiry",
+        "ix_threads_status",
+        "ix_threads_updated",
+        "ix_turns_thread",
+    ];
+
     [Fact]
     public async Task Initial_database_uses_the_frozen_schema_pragmas_and_read_only_policy()
     {
@@ -27,7 +51,7 @@ public sealed class StateRuntimeTests
         Assert.Equal(1L, await ScalarAsync<long>(write, "PRAGMA secure_delete;", cancellationToken));
         Assert.Equal(750L, await ScalarAsync<long>(write, "PRAGMA busy_timeout;", cancellationToken));
         Assert.Equal(
-            ["state_info"],
+            SessionSchemaTables,
             await ReadStringsAsync(
                 write,
                 """
@@ -37,6 +61,12 @@ public sealed class StateRuntimeTests
                 ORDER BY name;
                 """,
                 cancellationToken));
+        Assert.Equal(
+            2L,
+            await ScalarAsync<long>(
+                write,
+                "SELECT schema_version FROM state_info WHERE id = 1;",
+                cancellationToken));
 
         await using var read = await runtime.OpenReadOnlyConnectionAsync(cancellationToken);
         Assert.Equal(1L, await ScalarAsync<long>(read, "PRAGMA query_only;", cancellationToken));
@@ -45,6 +75,63 @@ public sealed class StateRuntimeTests
                 read,
                 "UPDATE state_info SET migration_status = 'tampered' WHERE id = 1;",
                 cancellationToken));
+    }
+
+    [Fact]
+    public async Task Session_schema_enforces_required_indexes_and_foreign_keys()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        using var files = new TempWorkspace();
+        var runtime = new StateRuntime(files.Paths, TimeSpan.FromSeconds(2));
+
+        await runtime.InitializeAsync(cancellationToken);
+
+        await using var connection =
+            await runtime.OpenReadWriteConnectionAsync(cancellationToken);
+        Assert.Equal(
+            SessionSchemaIndexes,
+            await ReadStringsAsync(
+                connection,
+                """
+                SELECT name
+                FROM sqlite_schema
+                WHERE type = 'index' AND name NOT LIKE 'sqlite_%'
+                ORDER BY name;
+                """,
+                cancellationToken));
+        Assert.Equal(
+            1L,
+            await ScalarAsync<long>(
+                connection,
+                "SELECT count(*) FROM pragma_foreign_key_list('threads');",
+                cancellationToken));
+        Assert.Equal(
+            1L,
+            await ScalarAsync<long>(
+                connection,
+                "SELECT count(*) FROM pragma_foreign_key_list('session_idempotency');",
+                cancellationToken));
+    }
+
+    [Fact]
+    public async Task Current_schema_is_revalidated_before_reuse()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        using var files = new TempWorkspace();
+        var runtime = new StateRuntime(files.Paths, TimeSpan.FromSeconds(2));
+        await runtime.InitializeAsync(cancellationToken);
+
+        await using (var connection =
+                     await runtime.OpenReadWriteConnectionAsync(cancellationToken))
+        {
+            await ExecuteAsync(
+                connection,
+                "DROP INDEX ix_threads_updated;",
+                cancellationToken);
+        }
+
+        await Assert.ThrowsAsync<StateMigrationException>(
+            () => runtime.InitializeAsync(cancellationToken));
     }
 
     [Fact]
@@ -111,7 +198,7 @@ public sealed class StateRuntimeTests
         var faulted = new StateRuntime(
             files.Paths,
             TimeSpan.FromSeconds(2),
-            StateMigrations.WithTestVersionTwo,
+            StateMigrations.Current,
             point =>
             {
                 if (point == StateMigrationFaultPoint.Commit)
@@ -148,16 +235,21 @@ public sealed class StateRuntimeTests
         var retry = new StateRuntime(
             files.Paths,
             TimeSpan.FromSeconds(2),
-            StateMigrations.WithTestVersionTwo,
+            StateMigrations.Current,
             faultInjector: null);
         await retry.InitializeAsync(cancellationToken);
 
         await using var migrated = await retry.OpenReadWriteConnectionAsync(cancellationToken);
-        Assert.Contains(
-            "future_value",
+        Assert.Equal(
+            SessionSchemaTables,
             await ReadStringsAsync(
                 migrated,
-                "SELECT name FROM pragma_table_info('state_info') ORDER BY name;",
+                """
+                SELECT name
+                FROM sqlite_schema
+                WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
+                ORDER BY name;
+                """,
                 cancellationToken));
         Assert.Equal(
             2L,

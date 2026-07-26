@@ -33,10 +33,11 @@ public sealed class RuntimeContractTests
     }
 
     [Fact]
-    public void M1_config_contracts_have_frozen_names_and_defaults()
+    public void Runtime_config_contracts_have_frozen_names_and_defaults()
     {
         var runtime = new RuntimeConfig();
         var operations = new OperationsConfig();
+        var session = new SessionConfig();
         var invalidOperations = operations with { MinimumLogLevel = "verbose" };
 
         Assert.Equal(
@@ -48,6 +49,12 @@ public sealed class RuntimeContractTests
             "operations",
             typeof(OperationsConfig).GetCustomAttribute<ConfigSectionAttribute>()?.Name);
         Assert.Equal("information", operations.MinimumLogLevel);
+        Assert.Equal(
+            "session",
+            typeof(SessionConfig).GetCustomAttribute<ConfigSectionAttribute>()?.Name);
+        Assert.Equal(256, session.EventBufferCapacity);
+        Assert.Equal(TimeSpan.FromMilliseconds(50), session.StreamFlushInterval);
+        Assert.Equal(8192, session.StreamFlushBytes);
         Assert.False(Validator.TryValidateObject(
             invalidOperations,
             new ValidationContext(invalidOperations),

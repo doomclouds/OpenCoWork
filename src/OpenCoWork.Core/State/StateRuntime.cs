@@ -15,6 +15,26 @@ internal enum StateMigrationFaultPoint
 
 internal static class StateMigrations
 {
+    internal const int CurrentVersion = 2;
+    internal const string CurrentTables =
+        "items,pending_interactions,session_idempotency," +
+        "session_operation_receipts,state_info,threads,turn_queue,turns";
+    internal const string CurrentIndexes =
+        "ix_items_thread_sequence,ix_items_turn_sequence," +
+        "ix_pending_interactions_thread,ix_session_idempotency_thread," +
+        "ix_session_operation_receipts_expiry,ix_threads_status," +
+        "ix_threads_updated,ix_turns_thread";
+    internal const string CurrentForeignKeys =
+        "items:thread_id->threads.thread_id:cascade," +
+        "items:turn_id->turns.turn_id:cascade," +
+        "pending_interactions:item_id->items.item_id:cascade," +
+        "pending_interactions:thread_id->threads.thread_id:cascade," +
+        "pending_interactions:turn_id->turns.turn_id:cascade," +
+        "session_idempotency:thread_id->threads.thread_id:cascade," +
+        "threads:active_turn_id->turns.turn_id:set null," +
+        "turn_queue:thread_id->threads.thread_id:cascade," +
+        "turns:thread_id->threads.thread_id:cascade";
+
     private const string VersionOneSql =
         """
         CREATE TABLE state_info (
@@ -42,15 +62,152 @@ internal static class StateMigrations
         );
         """;
 
+    private const string VersionTwoSql =
+        """
+        CREATE TABLE threads (
+            thread_id TEXT NOT NULL PRIMARY KEY,
+            display_name TEXT NOT NULL,
+            display_name_search TEXT NOT NULL,
+            status TEXT NOT NULL CHECK (status IN ('active', 'paused', 'archived')),
+            availability TEXT NOT NULL CHECK (availability IN ('available', 'recoveryRequired')),
+            history_mode TEXT NOT NULL CHECK (history_mode IN ('server', 'client')),
+            current_sequence INTEGER NOT NULL CHECK (current_sequence >= 0),
+            last_applied_sequence INTEGER NOT NULL CHECK (last_applied_sequence >= 0),
+            active_turn_id TEXT NULL,
+            first_user_message TEXT NULL,
+            first_user_message_search TEXT NULL,
+            fork_source_thread_id TEXT NULL,
+            fork_source_sequence INTEGER NULL,
+            diagnostic TEXT NULL,
+            created_utc INTEGER NOT NULL,
+            updated_utc INTEGER NOT NULL,
+            FOREIGN KEY (active_turn_id) REFERENCES turns (turn_id) ON DELETE SET NULL
+        );
+        CREATE INDEX ix_threads_updated
+            ON threads (updated_utc DESC, thread_id DESC);
+        CREATE INDEX ix_threads_status
+            ON threads (status, updated_utc DESC, thread_id DESC);
+
+        CREATE TABLE turns (
+            turn_id TEXT NOT NULL PRIMARY KEY,
+            thread_id TEXT NOT NULL,
+            status TEXT NOT NULL CHECK (
+                status IN (
+                    'running',
+                    'waitingApproval',
+                    'waitingInput',
+                    'completed',
+                    'failed',
+                    'cancelled')),
+            error_code TEXT NULL,
+            error_message TEXT NULL,
+            created_utc INTEGER NOT NULL,
+            updated_utc INTEGER NOT NULL,
+            completed_utc INTEGER NULL,
+            FOREIGN KEY (thread_id) REFERENCES threads (thread_id) ON DELETE CASCADE
+        );
+        CREATE INDEX ix_turns_thread
+            ON turns (thread_id, created_utc, turn_id);
+
+        CREATE TABLE items (
+            item_id TEXT NOT NULL PRIMARY KEY,
+            thread_id TEXT NOT NULL,
+            turn_id TEXT NOT NULL,
+            sequence INTEGER NOT NULL CHECK (sequence > 0),
+            item_type TEXT NOT NULL CHECK (
+                item_type IN (
+                    'userMessage',
+                    'agentMessage',
+                    'reasoning',
+                    'approvalRequest',
+                    'approvalResponse',
+                    'userInputRequest',
+                    'userInputResponse',
+                    'error',
+                    'systemNotice')),
+            status TEXT NOT NULL CHECK (
+                status IN ('started', 'streaming', 'completed', 'failed', 'cancelled')),
+            payload_json TEXT NOT NULL,
+            content_text TEXT NULL,
+            content_length INTEGER NULL,
+            content_sha256 TEXT NULL,
+            created_utc INTEGER NOT NULL,
+            updated_utc INTEGER NOT NULL,
+            FOREIGN KEY (thread_id) REFERENCES threads (thread_id) ON DELETE CASCADE,
+            FOREIGN KEY (turn_id) REFERENCES turns (turn_id) ON DELETE CASCADE
+        );
+        CREATE INDEX ix_items_thread_sequence
+            ON items (thread_id, sequence, item_id);
+        CREATE INDEX ix_items_turn_sequence
+            ON items (turn_id, sequence, item_id);
+
+        CREATE TABLE turn_queue (
+            queue_item_id TEXT NOT NULL PRIMARY KEY,
+            thread_id TEXT NOT NULL,
+            position INTEGER NOT NULL CHECK (position >= 0),
+            payload_json TEXT NOT NULL,
+            created_utc INTEGER NOT NULL,
+            FOREIGN KEY (thread_id) REFERENCES threads (thread_id) ON DELETE CASCADE,
+            UNIQUE (thread_id, position)
+        );
+
+        CREATE TABLE pending_interactions (
+            interaction_id TEXT NOT NULL PRIMARY KEY,
+            thread_id TEXT NOT NULL,
+            turn_id TEXT NOT NULL,
+            item_id TEXT NOT NULL,
+            interaction_type TEXT NOT NULL CHECK (
+                interaction_type IN ('approval', 'userInput')),
+            status TEXT NOT NULL CHECK (status IN ('pending', 'resolved')),
+            request_json TEXT NOT NULL,
+            resolution_json TEXT NULL,
+            checkpoint_json TEXT NOT NULL,
+            timeout_utc INTEGER NULL,
+            created_utc INTEGER NOT NULL,
+            updated_utc INTEGER NOT NULL,
+            FOREIGN KEY (thread_id) REFERENCES threads (thread_id) ON DELETE CASCADE,
+            FOREIGN KEY (turn_id) REFERENCES turns (turn_id) ON DELETE CASCADE,
+            FOREIGN KEY (item_id) REFERENCES items (item_id) ON DELETE CASCADE
+        );
+        CREATE INDEX ix_pending_interactions_thread
+            ON pending_interactions (thread_id, status, created_utc);
+
+        CREATE TABLE session_idempotency (
+            idempotency_key TEXT NOT NULL PRIMARY KEY,
+            operation TEXT NOT NULL,
+            thread_id TEXT NULL,
+            request_sha256 TEXT NOT NULL,
+            status TEXT NOT NULL,
+            result_json TEXT NULL,
+            committed_sequence INTEGER NULL,
+            created_utc INTEGER NOT NULL,
+            updated_utc INTEGER NOT NULL,
+            FOREIGN KEY (thread_id) REFERENCES threads (thread_id) ON DELETE CASCADE
+        );
+        CREATE INDEX ix_session_idempotency_thread
+            ON session_idempotency (thread_id, created_utc);
+
+        CREATE TABLE session_operation_receipts (
+            thread_id_sha256 TEXT NOT NULL,
+            idempotency_key_sha256 TEXT NOT NULL,
+            result_json TEXT NOT NULL,
+            completed_utc INTEGER NOT NULL,
+            expires_utc INTEGER NOT NULL,
+            PRIMARY KEY (thread_id_sha256, idempotency_key_sha256)
+        );
+        CREATE INDEX ix_session_operation_receipts_expiry
+            ON session_operation_receipts (expires_utc);
+        """;
+
     internal static readonly IReadOnlyList<StateMigration> VersionOneOnly =
     [
         new(1, VersionOneSql),
     ];
 
-    internal static readonly IReadOnlyList<StateMigration> WithTestVersionTwo =
+    internal static readonly IReadOnlyList<StateMigration> Current =
     [
         new(1, VersionOneSql),
-        new(2, "ALTER TABLE state_info ADD COLUMN future_value TEXT NULL;"),
+        new(2, VersionTwoSql),
     ];
 }
 
@@ -130,7 +287,7 @@ public sealed class StateRuntime
     private readonly SemaphoreSlim _initializationGate = new(1, 1);
 
     public StateRuntime(OpenCoWorkPaths paths, TimeSpan busyTimeout)
-        : this(paths, busyTimeout, StateMigrations.VersionOneOnly, faultInjector: null)
+        : this(paths, busyTimeout, StateMigrations.Current, faultInjector: null)
     {
     }
 
@@ -469,6 +626,9 @@ public sealed class StateRuntime
                     $"State database schema {currentVersion} is in '{currentStatus}' state.");
             }
 
+            await using var validation =
+                await OpenReadWriteConnectionAsync(cancellationToken);
+            await ValidateSchemaAsync(validation, targetVersion, cancellationToken);
             return;
         }
 
@@ -720,10 +880,17 @@ public sealed class StateRuntime
                 """;
             var actual = Convert.ToString(
                 await tables.ExecuteScalarAsync(cancellationToken));
-            if (!string.Equals(actual, "state_info", StringComparison.Ordinal))
+            var expected = expectedVersion switch
+            {
+                1 => "state_info",
+                StateMigrations.CurrentVersion => StateMigrations.CurrentTables,
+                _ => throw new StateMigrationException(
+                    $"State schema version {expectedVersion} has no validation contract."),
+            };
+            if (!string.Equals(actual, expected, StringComparison.Ordinal))
             {
                 throw new StateMigrationException(
-                    $"Unexpected M1 state schema tables: {actual ?? "<none>"}.");
+                    $"Unexpected state schema tables: {actual ?? "<none>"}.");
             }
         }
 
@@ -732,6 +899,71 @@ public sealed class StateRuntime
         {
             throw new StateMigrationException(
                 $"State schema version is {version}; expected {expectedVersion}.");
+        }
+
+        if (expectedVersion != StateMigrations.CurrentVersion)
+        {
+            return;
+        }
+
+        await using (var indexes = connection.CreateCommand())
+        {
+            indexes.CommandText =
+                """
+                SELECT group_concat(name, ',')
+                FROM (
+                    SELECT name
+                    FROM sqlite_schema
+                    WHERE type = 'index' AND name NOT LIKE 'sqlite_%'
+                    ORDER BY name
+                );
+                """;
+            var actual = Convert.ToString(
+                await indexes.ExecuteScalarAsync(cancellationToken));
+            if (!string.Equals(
+                    actual,
+                    StateMigrations.CurrentIndexes,
+                    StringComparison.Ordinal))
+            {
+                throw new StateMigrationException(
+                    $"Unexpected state schema indexes: {actual ?? "<none>"}.");
+            }
+        }
+
+        await using (var foreignKeys = connection.CreateCommand())
+        {
+            foreignKeys.CommandText =
+                """
+                SELECT group_concat(signature, ',')
+                FROM (
+                    SELECT source || ':' || "from" || '->' || "table" || '.' ||
+                           "to" || ':' || lower(on_delete) AS signature
+                    FROM (
+                        SELECT 'threads' AS source, * FROM pragma_foreign_key_list('threads')
+                        UNION ALL
+                        SELECT 'turns' AS source, * FROM pragma_foreign_key_list('turns')
+                        UNION ALL
+                        SELECT 'items' AS source, * FROM pragma_foreign_key_list('items')
+                        UNION ALL
+                        SELECT 'turn_queue' AS source, * FROM pragma_foreign_key_list('turn_queue')
+                        UNION ALL
+                        SELECT 'pending_interactions' AS source, * FROM pragma_foreign_key_list('pending_interactions')
+                        UNION ALL
+                        SELECT 'session_idempotency' AS source, * FROM pragma_foreign_key_list('session_idempotency')
+                    )
+                    ORDER BY signature
+                );
+                """;
+            var actual = Convert.ToString(
+                await foreignKeys.ExecuteScalarAsync(cancellationToken));
+            if (!string.Equals(
+                    actual,
+                    StateMigrations.CurrentForeignKeys,
+                    StringComparison.Ordinal))
+            {
+                throw new StateMigrationException(
+                    $"Unexpected state schema foreign keys: {actual ?? "<none>"}.");
+            }
         }
     }
 
