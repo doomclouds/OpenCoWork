@@ -7,9 +7,9 @@ Milestone standard: [README.md](README.md)
 ## Progress Summary
 
 - Status: In Progress
-- Progress: 2/11
-- Done: 2
-- In progress: 1
+- Progress: 3/11
+- Done: 3
+- In progress: 0
 - Not started: 8
 - Deferred: 0
 - Split: 0
@@ -28,12 +28,12 @@ Milestone standard: [README.md](README.md)
   - Related plan: docs/superpowers/plans/2026-07-25-open-cowork-m1-runtime-foundation-implementation-plan.md
   - Related archive: docs/superpowers/archives/2026-07/2026-07-25-open-cowork-m1-runtime-foundation-archives.md
   - Completion signal: 运行时骨架、初始化、诊断、宿主选择和生命周期在 Windows 正式证据下通过；macOS 真机项已进入 AGENTS.md 滚动台账。
-- [ ] 3. M2 - Durable Session Core
-  - Status: In Progress
+- [x] 3. M2 - Durable Session Core
+  - Status: Done
   - Related spec: docs/superpowers/specs/2026-07-26-open-cowork-m2-durable-session-core-design.md
   - Related plan: docs/superpowers/plans/2026-07-26-open-cowork-m2-durable-session-core-implementation-plan.md
-  - Related archive: None yet.
-  - Completion signal: Journal 重放、投影重建、并发、等待、取消和恢复验收通过。
+  - Related archive: docs/superpowers/archives/2026-07/2026-07-26-open-cowork-m2-durable-session-core-archives.md
+  - Completion signal: Journal 重放、投影重建、并发、等待、取消、队列、管理恢复和 Windows 发布验收通过；macOS 真机项保留 Pending。
 - [ ] 4. M3 - Agent Runtime Alpha
   - Status: Not Started
   - Related spec: docs/superpowers/specs/2026-07-25-open-cowork-runtime-1-0-roadmap.md

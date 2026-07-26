@@ -78,16 +78,16 @@ Status 使用 `Passed`、`Planned`、`Failed`、`Superseded`。
 
 | AcceptanceId | Requirement | CapabilityIds | EvidenceType | Platforms | ExpectedEvidence | Status | SupersededBy |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| M2-ACC-001 | Thread、Turn、Item 的创建、状态转换和终态不变量由唯一 Session Core 执行。 | CAP-019 | AutomatedTest | All | 聚合状态机与非法转换表驱动测试。 | Planned | — |
-| M2-ACC-002 | ThreadJournal Entry 严格递增、校验完整，Flush 前不产生可见提交。 | CAP-020 | FaultInjection | DualPlatform | 写入点断电/终止注入、Checksum 与 Sequence 断言。 | Planned | — |
-| M2-ACC-003 | 删除 SQLite Session 投影后可由 Journal 完整重建列表、历史和统计。 | CAP-021 | AutomatedTest | All | 重建前后规范化快照一致性。 | Planned | — |
-| M2-ACC-004 | 同 Thread 写入串行、不同 Thread 并行；投影失败进入并恢复 ProjectionDegraded。 | CAP-017, CAP-022 | FaultInjection | All | 并发压力、expectedSequence 冲突和投影恢复测试。 | Planned | — |
-| M2-ACC-005 | Queue 的追加、删除、重排和 Steer 在重启后保持确定顺序。 | CAP-023 | AutomatedTest | All | Queue 操作序列与重放测试。 | Planned | — |
-| M2-ACC-006 | Approval、UserInput、Cancel 的等待和首次 Resolution 语义可恢复且幂等。 | CAP-023 | FaultInjection | All | 等待中崩溃、重复 Resolution、Cancel 竞态测试。 | Planned | — |
-| M2-ACC-007 | Archive/Unarchive 的 Journal、文件移动、投影与事件顺序可在崩溃后协调。 | CAP-024 | FaultInjection | DualPlatform | 每个提交阶段的故障矩阵和 Reconciler 结果。 | Planned | — |
-| M2-ACC-008 | 永久删除需要 prepare token，失败可续跑，且不删除外部文件或 Dirty Worktree。 | CAP-024 | SecurityTest | DualPlatform | Token、路径边界、Dirty Worktree 和删除恢复测试。 | Planned | — |
-| M2-ACC-009 | Fork 自包含，Rollback 只追加历史并报告外部副作用未撤销。 | CAP-024 | AutomatedTest | All | 删除源 Thread 后 Fork 回放、Rollback Wire DTO 断言。 | Planned | — |
-| M2-ACC-010 | 尾部损坏可安全截断，中段损坏进入 RecoveryRequired 且不阻塞其他 Thread。 | CAP-020, CAP-021 | FaultInjection | DualPlatform | Journal Corruption Corpus 与备份证据。 | Planned | — |
+| M2-ACC-001 | Thread、Turn、Item 的创建、状态转换和终态不变量由唯一 Session Core 执行。 | CAP-019 | AutomatedTest | All | `SessionDomainTests`、`SessionContractTests` 与 [M2 交付归档](../archives/2026-07/2026-07-26-open-cowork-m2-durable-session-core-archives.md)。 | Passed | — |
+| M2-ACC-002 | ThreadJournal Entry 严格递增、校验完整，Flush 前不产生可见提交。 | CAP-020 | FaultInjection | DualPlatform | `ThreadJournalTests` 写入故障矩阵与 `SessionCrashRecoveryIntegrationTests` 真实子进程终止。 | Passed | — |
+| M2-ACC-003 | 删除 SQLite Session 投影后可由 Journal 完整重建列表、历史和统计。 | CAP-021 | AutomatedTest | All | `SessionProjectionTests.Full_rebuild_removes_orphans_preserves_delete_receipts_and_matches_snapshot`。 | Passed | — |
+| M2-ACC-004 | 同 Thread 写入串行、不同 Thread 并行；投影失败进入并恢复 ProjectionDegraded。 | CAP-017, CAP-022 | FaultInjection | All | `SessionServiceTests` 的并发、Sequence 冲突、投影降级与追平场景。 | Passed | — |
+| M2-ACC-005 | Queue 的追加、删除、重排和 Steer 在重启后保持确定顺序。 | CAP-023 | AutomatedTest | All | `SessionQueueTests` 的重放、随机序列、Steer、自动标题和 128 项边界。 | Passed | — |
+| M2-ACC-006 | Approval、UserInput、Cancel 的等待和首次 Resolution 语义可恢复且幂等。 | CAP-023 | FaultInjection | All | `SessionExecutionTests` 的等待、Resolution、Cancel 竞态、Checkpoint 与重启恢复。 | Passed | — |
+| M2-ACC-007 | Archive/Unarchive 的 Journal、文件移动、投影与事件顺序可在崩溃后协调。 | CAP-024 | FaultInjection | DualPlatform | `SessionRecoveryTests` 覆盖 Archive/Unarchive 各三个已提交阶段及 Reconciler。 | Passed | — |
+| M2-ACC-008 | 永久删除需要 prepare token，失败可续跑，且不删除外部文件或 Dirty Worktree。 | CAP-024 | SecurityTest | DualPlatform | `SessionRecoveryTests` 覆盖 Token、八个删除故障点、Junction/Reparse 逃逸和外部文件保护；M2 不创建 Worktree 绑定。 | Passed | — |
+| M2-ACC-009 | Fork 自包含，Rollback 只追加历史并报告外部副作用未撤销。 | CAP-024 | AutomatedTest | All | `SessionRecoveryTests.Fork_survives_source_delete_and_rollback_replaces_model_history`。 | Passed | — |
+| M2-ACC-010 | 尾部损坏可安全截断，中段损坏进入 RecoveryRequired 且不阻塞其他 Thread。 | CAP-020, CAP-021 | FaultInjection | DualPlatform | `ThreadJournalTests` 损坏 Corpus 与 `SessionRuntimeTests.Startup_isolates_corrupt_thread_and_recovers_interrupted_turn`。 | Passed | — |
 
 ## 5. M3 - Agent Runtime Alpha（8）
 

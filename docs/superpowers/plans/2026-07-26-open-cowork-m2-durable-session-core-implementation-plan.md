@@ -1,6 +1,6 @@
 # OpenCoWork M2 Durable Session Core 实施计划
 
-**Status:** Planned
+**Status:** Completed；Outcome 1-8 已完成。
 
 **Goal:** 在不接入真实 Provider、AgentFactory 和工具的前提下，交付以
 `ThreadJournal` 为权威事实源、可并发、可恢复的 Thread-Turn-Item Session Core。

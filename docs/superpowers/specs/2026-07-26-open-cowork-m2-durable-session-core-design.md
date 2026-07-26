@@ -2,9 +2,10 @@
 
 ## 文档状态
 
-- 状态：设计已确认，待实施
+- 状态：已完成
 - 日期：2026-07-26
 - 所属里程碑：OpenCoWork Runtime 1.0 / M2
+- 当前已完成阶段：M2 Durable Session Core
 - 目标框架：.NET 10
 - 当前正式验证平台：`win-x64`
 - macOS 真机验证：滚动登记于仓库 `AGENTS.md`，统一在 M10 / 1.0 发布前清零
