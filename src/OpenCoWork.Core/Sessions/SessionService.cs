@@ -42,7 +42,8 @@ internal sealed partial class SessionService : ISessionService
         TimeProvider? timeProvider = null,
         ISessionExecutor? executor = null,
         string? executorKind = null,
-        Action<SessionExecutionFaultPoint>? executionFaultInjector = null)
+        Action<SessionExecutionFaultPoint>? executionFaultInjector = null,
+        Action<SessionRecoveryFaultPoint>? recoveryFaultInjector = null)
     {
         ArgumentNullException.ThrowIfNull(stateRuntime);
         ArgumentNullException.ThrowIfNull(journal);
@@ -57,6 +58,7 @@ internal sealed partial class SessionService : ISessionService
         _executor = executor;
         _executorKind = executorKind;
         _executionFaultInjector = executionFaultInjector;
+        _recoveryFaultInjector = recoveryFaultInjector;
     }
 
     public async Task<SessionCommandResult<ThreadSnapshot>> CreateThreadAsync(
@@ -349,38 +351,6 @@ internal sealed partial class SessionService : ISessionService
 
         return result;
     }
-
-    public Task<SessionCommandResult<ThreadSnapshot>> ArchiveThreadAsync(
-        ThreadMutationRequest request,
-        CancellationToken cancellationToken = default) =>
-        Task.FromResult(NotAvailable<ThreadSnapshot>());
-
-    public Task<SessionCommandResult<ThreadSnapshot>> UnarchiveThreadAsync(
-        ThreadMutationRequest request,
-        CancellationToken cancellationToken = default) =>
-        Task.FromResult(NotAvailable<ThreadSnapshot>());
-
-    public Task<SessionQueryResult<DeletePreparation>> PrepareDeleteAsync(
-        PrepareDeleteRequest request,
-        CancellationToken cancellationToken = default) =>
-        Task.FromResult(QueryError<DeletePreparation>(
-            SessionErrorCodes.InvalidState,
-            "Delete preparation is not available for this thread state."));
-
-    public Task<SessionCommandResult<bool>> DeleteThreadAsync(
-        DeleteThreadRequest request,
-        CancellationToken cancellationToken = default) =>
-        Task.FromResult(NotAvailable<bool>());
-
-    public Task<SessionCommandResult<ThreadSnapshot>> ForkThreadAsync(
-        ForkThreadRequest request,
-        CancellationToken cancellationToken = default) =>
-        Task.FromResult(NotAvailable<ThreadSnapshot>());
-
-    public Task<SessionCommandResult<RollbackResult>> RollbackThreadAsync(
-        RollbackThreadRequest request,
-        CancellationToken cancellationToken = default) =>
-        Task.FromResult(NotAvailable<RollbackResult>());
 
     public async Task<SessionSubscription> SubscribeAsync(
         SessionSubscriptionRequest request,
@@ -735,6 +705,21 @@ internal sealed partial class SessionService : ISessionService
             return Rejected<ThreadSnapshot>(exception.Code, exception.Message);
         }
 
+        return await CompleteCommitAsync(
+            entry,
+            operation,
+            requestSha256,
+            snapshot,
+            eventPayload);
+    }
+
+    private async Task<SessionCommandResult<ThreadSnapshot>> CompleteCommitAsync(
+        ThreadJournalEntry entry,
+        string operation,
+        string requestSha256,
+        ThreadSnapshot snapshot,
+        SessionEventPayload? eventPayload = null)
+    {
         _snapshots[snapshot.ThreadId] = snapshot;
         var projectionResult = await _projection.ApplyCommittedAsync(
             entry,
@@ -780,7 +765,7 @@ internal sealed partial class SessionService : ISessionService
                     "The committed session fact is waiting for projection.",
                     IsRetryable: true)
                 : null);
-        _idempotency[idempotencyKey] = new MemoryIdempotency(
+        _idempotency[entry.IdempotencyKey] = new MemoryIdempotency(
             operation,
             requestSha256,
             result);
@@ -1092,6 +1077,25 @@ internal sealed partial class SessionService : ISessionService
                 diagnostic: null);
         }
 
+        if (entry.EntryType == SessionEventType.ThreadForked)
+        {
+            var fact = entry.Payload.Deserialize<ThreadForkedFact>(JsonOptions)
+                ?? throw new JsonException("Fork fact is missing.");
+            return new ThreadSnapshot(
+                entry.ThreadId,
+                fact.DisplayName,
+                ThreadStatus.Active,
+                ThreadAvailability.Available,
+                fact.HistoryMode,
+                entry.Sequence,
+                activeTurnId: null,
+                queue: [],
+                entry.Timestamp,
+                entry.Timestamp,
+                SessionProjectionState.Ready,
+                diagnostic: null);
+        }
+
         if (snapshot is null)
         {
             throw new InvalidDataException("Thread history does not start with creation.");
@@ -1116,6 +1120,13 @@ internal sealed partial class SessionService : ISessionService
                 break;
             case SessionEventType.ThreadArchived:
                 status = ThreadStatus.Archived;
+                break;
+            case SessionEventType.ThreadDeletionRequested:
+                status = ThreadStatus.Archived;
+                break;
+            case SessionEventType.ThreadRolledBack:
+                activeTurnId = null;
+                queue = [];
                 break;
             case SessionEventType.TurnStarted:
                 var started = entry.Payload

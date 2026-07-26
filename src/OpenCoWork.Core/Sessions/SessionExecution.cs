@@ -384,6 +384,7 @@ internal sealed partial class SessionService
     private readonly ConcurrentDictionary<Guid, SessionExecutionRun> _executionRuns = [];
     private readonly ConcurrentDictionary<Guid, Task> _executionTasks = [];
     private readonly ConcurrentDictionary<Guid, ExecutionIdempotency> _executionIdempotency = [];
+    private readonly ConcurrentDictionary<Guid, byte> _loadedExecutionThreads = [];
 
     internal async Task<SessionCommandResult<TurnSnapshot>> StartTurnAsync(
         Guid threadId,
@@ -417,6 +418,7 @@ internal sealed partial class SessionService
                     "Thread was not found.");
             }
 
+            await EnsureExecutionStateLoadedAsync(threadId, cancellationToken);
             if (thread.CurrentSequence != expectedSequence)
             {
                 return Rejected<TurnSnapshot>(
@@ -1698,18 +1700,25 @@ internal sealed partial class SessionService
         Guid threadId,
         CancellationToken cancellationToken)
     {
+        if (_loadedExecutionThreads.ContainsKey(threadId))
+        {
+            return;
+        }
+
         var thread = await GetSnapshotAsync(threadId, cancellationToken);
-        if (thread?.ActiveTurnId is not { } activeTurnId ||
-            _turns.ContainsKey(activeTurnId))
+        if (thread is null)
         {
             return;
         }
 
         var replay = await _journal.ReplayAsync(
-            ThreadJournalLocation.Active,
+            thread.Status == ThreadStatus.Archived
+                ? ThreadJournalLocation.Archived
+                : ThreadJournalLocation.Active,
             threadId,
             cancellationToken);
         RestoreExecutionState(thread, replay.Entries);
+        _loadedExecutionThreads.TryAdd(threadId, 0);
     }
 
     private void RestoreExecutionState(
@@ -1720,6 +1729,16 @@ internal sealed partial class SessionService
         {
             switch (entry.EntryType)
             {
+                case SessionEventType.ThreadForked:
+                    RestoreHistoryCheckpoint(
+                        entry.ThreadId,
+                        ReadFact<ThreadForkedFact>(entry).History);
+                    break;
+                case SessionEventType.ThreadRolledBack:
+                    RestoreHistoryCheckpoint(
+                        entry.ThreadId,
+                        ReadFact<ThreadRolledBackFact>(entry).History);
+                    break;
                 case SessionEventType.TurnStarted:
                     var started = ReadFact<TurnStartedFact>(entry);
                     _turns[started.TurnId] = new TurnSnapshot(
@@ -1816,6 +1835,22 @@ internal sealed partial class SessionService
             SessionError? error = null;
             switch (entry.EntryType)
             {
+                case SessionEventType.ThreadForked:
+                    ReplaceHistory(
+                        ReadFact<ThreadForkedFact>(entry).History,
+                        turns,
+                        items,
+                        texts,
+                        interactions);
+                    break;
+                case SessionEventType.ThreadRolledBack:
+                    ReplaceHistory(
+                        ReadFact<ThreadRolledBackFact>(entry).History,
+                        turns,
+                        items,
+                        texts,
+                        interactions);
+                    break;
                 case SessionEventType.TurnQueued:
                     var queued = ReadFact<TurnQueuedFact>(entry);
                     var queuedItem = new QueuedTurnInputSnapshot(
@@ -2066,6 +2101,87 @@ internal sealed partial class SessionService
         }
 
         return events.ToArray();
+    }
+
+    private void RestoreHistoryCheckpoint(
+        Guid threadId,
+        HistoryCheckpointFact checkpoint)
+    {
+        var turnIds = _turns.Values
+            .Where(turn => turn.ThreadId == threadId)
+            .Select(turn => turn.TurnId)
+            .ToHashSet();
+        foreach (var interaction in _interactions
+                     .Where(pair => turnIds.Contains(pair.Value.Snapshot.TurnId))
+                     .Select(pair => pair.Key))
+        {
+            _interactions.TryRemove(interaction, out _);
+        }
+
+        foreach (var item in _items
+                     .Where(pair => turnIds.Contains(pair.Value.TurnId))
+                     .Select(pair => pair.Key))
+        {
+            _items.TryRemove(item, out _);
+            _itemText.TryRemove(item, out _);
+        }
+
+        foreach (var turnId in turnIds)
+        {
+            _turns.TryRemove(turnId, out _);
+        }
+
+        foreach (var turn in checkpoint.Turns)
+        {
+            _turns[turn.TurnId] = turn;
+        }
+
+        foreach (var item in checkpoint.Items)
+        {
+            _items[item.ItemId] = new SessionItemSnapshot(
+                item.ItemId,
+                item.TurnId,
+                item.ItemType,
+                item.Status,
+                DeserializeContent(item.ItemType, item.Content),
+                item.Sequence,
+                item.CreatedAt,
+                item.UpdatedAt);
+            _itemText[item.ItemId] = item.ContentText ?? string.Empty;
+        }
+
+        _loadedExecutionThreads[threadId] = 0;
+    }
+
+    private static void ReplaceHistory(
+        HistoryCheckpointFact checkpoint,
+        Dictionary<Guid, TurnSnapshot> turns,
+        Dictionary<Guid, SessionItemSnapshot> items,
+        Dictionary<Guid, string> texts,
+        Dictionary<Guid, PendingInteractionSnapshot> interactions)
+    {
+        turns.Clear();
+        items.Clear();
+        texts.Clear();
+        interactions.Clear();
+        foreach (var turn in checkpoint.Turns)
+        {
+            turns[turn.TurnId] = turn;
+        }
+
+        foreach (var item in checkpoint.Items)
+        {
+            items[item.ItemId] = new SessionItemSnapshot(
+                item.ItemId,
+                item.TurnId,
+                item.ItemType,
+                item.Status,
+                DeserializeContent(item.ItemType, item.Content),
+                item.Sequence,
+                item.CreatedAt,
+                item.UpdatedAt);
+            texts[item.ItemId] = item.ContentText ?? string.Empty;
+        }
     }
 
     private static SessionItemSnapshot UpdateHistoryItem(

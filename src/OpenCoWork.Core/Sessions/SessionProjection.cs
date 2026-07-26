@@ -51,6 +51,12 @@ internal sealed record ProjectedIdempotency(
     long CommittedSequence,
     ThreadSnapshot Thread);
 
+internal sealed record SessionDeletionReceipt(
+    string ThreadIdSha256,
+    string IdempotencyKeySha256,
+    long Sequence,
+    DateTimeOffset ExpiresAt);
+
 internal sealed class SessionProjectionException : InvalidOperationException
 {
     public SessionProjectionException(string code, string message)
@@ -436,6 +442,112 @@ internal sealed class SessionProjection
             receipt.Thread.ToSnapshot());
     }
 
+    public Task MarkDeletingAsync(
+        Guid threadId,
+        CancellationToken cancellationToken = default) =>
+        _stateRuntime.WriteCoordinator.ExecuteAsync(
+            async (connection, transaction, token) =>
+            {
+                await ExecuteAsync(
+                    connection,
+                    transaction,
+                    """
+                    UPDATE threads
+                    SET diagnostic = 'session.deleting'
+                    WHERE thread_id = $threadId
+                      AND status = 'archived'
+                      AND active_turn_id IS NULL;
+                    """,
+                    token,
+                    ("$threadId", Wire(threadId)));
+            },
+            cancellationToken);
+
+    public Task DeleteThreadProjectionAsync(
+        Guid threadId,
+        CancellationToken cancellationToken = default) =>
+        _stateRuntime.WriteCoordinator.ExecuteAsync(
+            async (connection, transaction, token) =>
+            {
+                await ExecuteAsync(
+                    connection,
+                    transaction,
+                    "DELETE FROM threads WHERE thread_id = $threadId;",
+                    token,
+                    ("$threadId", Wire(threadId)));
+            },
+            cancellationToken);
+
+    public Task WriteDeletionReceiptAsync(
+        ThreadDeletionRecoveryIntent intent,
+        CancellationToken cancellationToken = default) =>
+        _stateRuntime.WriteCoordinator.ExecuteAsync(
+            async (connection, transaction, token) =>
+            {
+                await ExecuteAsync(
+                    connection,
+                    transaction,
+                    """
+                    INSERT INTO session_operation_receipts (
+                        thread_id_sha256, idempotency_key_sha256,
+                        result_json, completed_utc, expires_utc)
+                    VALUES (
+                        $thread, $key, $result, $completed, $expires)
+                    ON CONFLICT (thread_id_sha256, idempotency_key_sha256)
+                    DO UPDATE SET
+                        result_json = excluded.result_json,
+                        completed_utc = excluded.completed_utc,
+                        expires_utc = excluded.expires_utc;
+                    """,
+                    token,
+                    ("$thread", intent.ThreadIdSha256),
+                    ("$key", intent.IdempotencyKeySha256),
+                    ("$result", JsonSerializer.Serialize(
+                        new { Deleted = true, intent.Sequence },
+                        JsonOptions)),
+                    ("$completed", UnixMilliseconds(intent.CompletedAt)),
+                    ("$expires", UnixMilliseconds(intent.ExpiresAt)));
+            },
+            cancellationToken);
+
+    public async Task<SessionDeletionReceipt?> ReadDeletionReceiptAsync(
+        string idempotencyKeySha256,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(idempotencyKeySha256);
+        await using var connection =
+            await _stateRuntime.OpenReadOnlyConnectionAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText =
+            """
+            SELECT thread_id_sha256, idempotency_key_sha256,
+                   result_json, expires_utc
+            FROM session_operation_receipts
+            WHERE idempotency_key_sha256 = $key;
+            """;
+        command.Parameters.AddWithValue("$key", idempotencyKeySha256);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        if (!await reader.ReadAsync(cancellationToken))
+        {
+            return null;
+        }
+
+        using var result = JsonDocument.Parse(reader.GetString(2));
+        if (!result.RootElement.TryGetProperty("sequence", out var sequence) ||
+            !sequence.TryGetInt64(out var committedSequence))
+        {
+            throw ProjectionError(
+                SessionErrorCodes.ProjectionUnavailable,
+                "Deletion receipt result is invalid.");
+        }
+
+        return new SessionDeletionReceipt(
+            reader.GetString(0),
+            reader.GetString(1),
+            committedSequence,
+            DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(3)));
+    }
+
     public Task SaveDeleteReceiptAsync(
         Guid threadId,
         Guid idempotencyKey,
@@ -521,7 +633,9 @@ internal sealed class SessionProjection
         if (water is null)
         {
             if (entry.Sequence != 1 ||
-                entry.EntryType != SessionEventType.ThreadCreated)
+                entry.EntryType is not (
+                    SessionEventType.ThreadCreated or
+                    SessionEventType.ThreadForked))
             {
                 throw SequenceConflict(entry.Sequence, 0);
             }
@@ -641,6 +755,17 @@ internal sealed class SessionProjection
             case SessionEventType.ThreadUnarchived:
                 await ApplyThreadStatusAsync(
                     connection, transaction, entry, "archived", "active", cancellationToken);
+                return;
+            case SessionEventType.ThreadDeletionRequested:
+                await ApplyDeletionRequestedAsync(
+                    connection, transaction, entry, cancellationToken);
+                return;
+            case SessionEventType.ThreadForked:
+                await ApplyThreadForkedAsync(connection, transaction, entry, cancellationToken);
+                return;
+            case SessionEventType.ThreadRolledBack:
+                await ApplyThreadRolledBackAsync(
+                    connection, transaction, entry, cancellationToken);
                 return;
             case SessionEventType.TurnQueued:
                 await ApplyTurnQueuedAsync(connection, transaction, entry, cancellationToken);
@@ -783,6 +908,229 @@ internal sealed class SessionProjection
             """,
             cancellationToken,
             ("$threadId", Wire(entry.ThreadId)));
+    }
+
+    private static async Task ApplyDeletionRequestedAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        ThreadJournalEntry entry,
+        CancellationToken cancellationToken)
+    {
+        var fact = ReadFact<ThreadDeletionRequestedFact>(entry);
+        if (!IsLowerSha256(fact.ThreadIdSha256) ||
+            !IsLowerSha256(fact.IdempotencyKeySha256) ||
+            fact.ExpectedSequence != entry.Sequence - 1)
+        {
+            throw ProjectionError(
+                SessionErrorCodes.InvalidState,
+                "Thread deletion fact is invalid.");
+        }
+
+        await ExecuteRequiredAsync(
+            connection,
+            transaction,
+            """
+            UPDATE threads
+            SET diagnostic = 'session.deleting'
+            WHERE thread_id = $threadId
+              AND status = 'archived'
+              AND active_turn_id IS NULL
+              AND availability = 'available'
+              AND NOT EXISTS (
+                  SELECT 1 FROM turn_queue WHERE thread_id = $threadId);
+            """,
+            cancellationToken,
+            ("$threadId", Wire(entry.ThreadId)));
+    }
+
+    private static async Task ApplyThreadForkedAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        ThreadJournalEntry entry,
+        CancellationToken cancellationToken)
+    {
+        var fact = ReadFact<ThreadForkedFact>(entry);
+        SessionIds.RequireVersion7(
+            fact.SourceThreadId,
+            nameof(fact.SourceThreadId),
+            "Source thread ID");
+        ArgumentException.ThrowIfNullOrWhiteSpace(fact.DisplayName);
+        if (fact.SourceSequence < 1 || fact.HistoryMode != HistoryMode.Server)
+        {
+            throw ProjectionError(
+                SessionErrorCodes.InvalidState,
+                "Thread fork fact is invalid.");
+        }
+
+        await ExecuteRequiredAsync(
+            connection,
+            transaction,
+            """
+            INSERT INTO threads (
+                thread_id, display_name, display_name_search,
+                status, availability, history_mode,
+                current_sequence, last_applied_sequence,
+                active_turn_id, first_user_message, first_user_message_search,
+                fork_source_thread_id, fork_source_sequence, diagnostic,
+                created_utc, updated_utc)
+            VALUES (
+                $threadId, $name, $search,
+                'active', 'available', 'server',
+                0, 0,
+                NULL, NULL, NULL,
+                $sourceThreadId, $sourceSequence, NULL,
+                $timestamp, $timestamp);
+            """,
+            cancellationToken,
+            ("$threadId", Wire(entry.ThreadId)),
+            ("$name", fact.DisplayName),
+            ("$search", SearchText(fact.DisplayName)),
+            ("$sourceThreadId", Wire(fact.SourceThreadId)),
+            ("$sourceSequence", fact.SourceSequence),
+            ("$timestamp", UnixMilliseconds(entry.Timestamp)));
+        await InsertHistoryCheckpointAsync(
+            connection,
+            transaction,
+            entry.ThreadId,
+            fact.History,
+            cancellationToken);
+    }
+
+    private static async Task ApplyThreadRolledBackAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        ThreadJournalEntry entry,
+        CancellationToken cancellationToken)
+    {
+        var fact = ReadFact<ThreadRolledBackFact>(entry);
+        if (fact.TargetSequence < 1)
+        {
+            throw ProjectionError(
+                SessionErrorCodes.InvalidState,
+                "Thread rollback fact is invalid.");
+        }
+
+        await ExecuteRequiredAsync(
+            connection,
+            transaction,
+            """
+            UPDATE threads
+            SET active_turn_id = NULL
+            WHERE thread_id = $threadId
+              AND status IN ('active', 'paused')
+              AND active_turn_id IS NULL
+              AND availability = 'available'
+              AND NOT EXISTS (
+                  SELECT 1 FROM turn_queue WHERE thread_id = $threadId);
+            """,
+            cancellationToken,
+            ("$threadId", Wire(entry.ThreadId)));
+        await ExecuteAsync(
+            connection,
+            transaction,
+            "DELETE FROM turns WHERE thread_id = $threadId;",
+            cancellationToken,
+            ("$threadId", Wire(entry.ThreadId)));
+        await InsertHistoryCheckpointAsync(
+            connection,
+            transaction,
+            entry.ThreadId,
+            fact.History,
+            cancellationToken);
+    }
+
+    private static async Task InsertHistoryCheckpointAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        Guid threadId,
+        HistoryCheckpointFact checkpoint,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(checkpoint);
+        var turnIds = new HashSet<Guid>();
+        foreach (var turn in checkpoint.Turns)
+        {
+            SessionIds.RequireVersion7(turn.TurnId, nameof(turn.TurnId), "Turn ID");
+            if (turn.ThreadId != threadId ||
+                turn.Status is not (
+                    TurnStatus.Completed or
+                    TurnStatus.Failed or
+                    TurnStatus.Cancelled) ||
+                !turnIds.Add(turn.TurnId))
+            {
+                throw ProjectionError(
+                    SessionErrorCodes.InvalidState,
+                    "History checkpoint contains an invalid turn.");
+            }
+
+            await ExecuteRequiredAsync(
+                connection,
+                transaction,
+                """
+                INSERT INTO turns (
+                    turn_id, thread_id, status,
+                    error_code, error_message,
+                    created_utc, updated_utc, completed_utc)
+                VALUES (
+                    $turnId, $threadId, $status,
+                    $errorCode, $errorMessage,
+                    $created, $updated, $completed);
+                """,
+                cancellationToken,
+                ("$turnId", Wire(turn.TurnId)),
+                ("$threadId", Wire(threadId)),
+                ("$status", Wire(turn.Status)),
+                ("$errorCode", turn.Error?.Code),
+                ("$errorMessage", turn.Error?.Message),
+                ("$created", UnixMilliseconds(turn.CreatedAt)),
+                ("$updated", UnixMilliseconds(turn.UpdatedAt)),
+                ("$completed", turn.CompletedAt is { } completed
+                    ? UnixMilliseconds(completed)
+                    : (long?)null));
+        }
+
+        var itemIds = new HashSet<Guid>();
+        foreach (var item in checkpoint.Items)
+        {
+            SessionIds.RequireVersion7(item.ItemId, nameof(item.ItemId), "Item ID");
+            SessionIds.RequireVersion7(item.TurnId, nameof(item.TurnId), "Turn ID");
+            if (!turnIds.Contains(item.TurnId) ||
+                !itemIds.Add(item.ItemId) ||
+                item.Sequence < 1)
+            {
+                throw ProjectionError(
+                    SessionErrorCodes.InvalidState,
+                    "History checkpoint contains an invalid item.");
+            }
+
+            var bytes = Encoding.UTF8.GetBytes(item.ContentText ?? string.Empty);
+            await ExecuteRequiredAsync(
+                connection,
+                transaction,
+                """
+                INSERT INTO items (
+                    item_id, thread_id, turn_id, sequence,
+                    item_type, status, payload_json, content_text,
+                    content_length, content_sha256, created_utc, updated_utc)
+                VALUES (
+                    $itemId, $threadId, $turnId, $sequence,
+                    $itemType, $status, $payload, $contentText,
+                    $length, $sha256, $created, $updated);
+                """,
+                cancellationToken,
+                ("$itemId", Wire(item.ItemId)),
+                ("$threadId", Wire(threadId)),
+                ("$turnId", Wire(item.TurnId)),
+                ("$sequence", item.Sequence),
+                ("$itemType", Wire(item.ItemType)),
+                ("$status", Wire(item.Status)),
+                ("$payload", item.Content.GetRawText()),
+                ("$contentText", item.ContentText),
+                ("$length", bytes.Length),
+                ("$sha256", Hash(bytes)),
+                ("$created", UnixMilliseconds(item.CreatedAt)),
+                ("$updated", UnixMilliseconds(item.UpdatedAt)));
+        }
     }
 
     private static async Task ApplyTurnQueuedAsync(

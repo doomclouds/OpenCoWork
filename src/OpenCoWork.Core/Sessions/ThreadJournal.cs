@@ -66,6 +66,15 @@ internal sealed record ThreadJournalMatch(
     ThreadJournalReplayResult Replay,
     ThreadJournalEntry Entry);
 
+internal sealed record ThreadDeletionRecoveryIntent(
+    Guid ThreadId,
+    string ThreadIdSha256,
+    string IdempotencyKeySha256,
+    long Sequence,
+    string RequestSha256,
+    DateTimeOffset CompletedAt,
+    DateTimeOffset ExpiresAt);
+
 internal sealed class ThreadJournalException : IOException
 {
     public ThreadJournalException(string code, string message)
@@ -135,6 +144,243 @@ internal sealed class ThreadJournal
         return Path.Combine(
             GetDirectory(location),
             $"{ToWire(threadId)}.jsonl");
+    }
+
+    public bool Exists(ThreadJournalLocation location, Guid threadId)
+    {
+        var path = GetPath(location, threadId);
+        GuardPath(path);
+        return File.Exists(path);
+    }
+
+    public IReadOnlyList<Guid> ListThreadIds(ThreadJournalLocation location)
+    {
+        var directory = GetDirectory(location);
+        GuardPath(directory);
+        if (!Directory.Exists(directory))
+        {
+            return [];
+        }
+
+        return Array.AsReadOnly(
+            Directory.EnumerateFiles(
+                    directory,
+                    "*.jsonl",
+                    SearchOption.TopDirectoryOnly)
+                .Select(Path.GetFileNameWithoutExtension)
+                .Where(name =>
+                    name is not null &&
+                    string.Equals(
+                        name,
+                        name.ToLowerInvariant(),
+                        StringComparison.Ordinal) &&
+                    Guid.TryParseExact(name, "D", out var parsed) &&
+                    parsed.Version == 7)
+                .Select(name => Guid.Parse(name!))
+                .Order()
+                .ToArray());
+    }
+
+    public async Task MoveAsync(
+        ThreadJournalLocation source,
+        ThreadJournalLocation destination,
+        Guid threadId,
+        CancellationToken cancellationToken = default)
+    {
+        if (source == destination)
+        {
+            return;
+        }
+
+        SessionIds.RequireVersion7(threadId, nameof(threadId), "Thread ID");
+        var gate = GetJournalGate(threadId);
+        await gate.WaitAsync(cancellationToken);
+        try
+        {
+            var sourcePath = GetPath(source, threadId);
+            var destinationPath = GetPath(destination, threadId);
+            GuardPath(sourcePath);
+            GuardPath(destinationPath);
+            if (!File.Exists(sourcePath))
+            {
+                if (File.Exists(destinationPath))
+                {
+                    return;
+                }
+
+                throw new FileNotFoundException(
+                    "Source thread journal does not exist.",
+                    sourcePath);
+            }
+
+            if (File.Exists(destinationPath))
+            {
+                throw new IOException(
+                    "Both source and destination thread journals exist.");
+            }
+
+            EnsureDirectory(destination);
+            GuardPath(sourcePath);
+            GuardPath(destinationPath);
+            File.Move(sourcePath, destinationPath);
+        }
+        finally
+        {
+            gate.Release();
+        }
+    }
+
+    public async Task DeleteAsync(
+        ThreadJournalLocation location,
+        Guid threadId,
+        CancellationToken cancellationToken = default)
+    {
+        SessionIds.RequireVersion7(threadId, nameof(threadId), "Thread ID");
+        var gate = GetJournalGate(threadId);
+        await gate.WaitAsync(cancellationToken);
+        try
+        {
+            var path = GetPath(location, threadId);
+            GuardPath(path);
+            cancellationToken.ThrowIfCancellationRequested();
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
+        }
+        finally
+        {
+            gate.Release();
+        }
+    }
+
+    public async Task WriteDeletionRecoveryIntentAsync(
+        ThreadDeletionRecoveryIntent intent,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(intent);
+        ValidateDeletionRecoveryIntent(intent);
+        var path = GetDeletionRecoveryIntentPath(intent.ThreadId);
+        var temporaryPath = $"{path}.{Guid.NewGuid():N}.tmp";
+        GuardPath(path);
+        GuardPath(temporaryPath);
+        try
+        {
+            var bytes = JsonSerializer.SerializeToUtf8Bytes(intent, JsonOptions);
+            await using (var stream = new FileStream(
+                             temporaryPath,
+                             FileMode.CreateNew,
+                             FileAccess.Write,
+                             FileShare.Read,
+                             bufferSize: 4096,
+                             FileOptions.Asynchronous | FileOptions.WriteThrough))
+            {
+                await stream.WriteAsync(bytes, cancellationToken);
+                stream.Flush(flushToDisk: true);
+            }
+
+            GuardPath(path);
+            File.Move(temporaryPath, path, overwrite: true);
+        }
+        finally
+        {
+            if (File.Exists(temporaryPath))
+            {
+                File.Delete(temporaryPath);
+            }
+        }
+    }
+
+    public async Task<IReadOnlyList<ThreadDeletionRecoveryIntent>>
+        ReadDeletionRecoveryIntentsAsync(
+            CancellationToken cancellationToken = default)
+    {
+        var directory = GetDirectory(ThreadJournalLocation.Deleting);
+        GuardPath(directory);
+        if (!Directory.Exists(directory))
+        {
+            return [];
+        }
+
+        var intents = new List<ThreadDeletionRecoveryIntent>();
+        foreach (var path in Directory.EnumerateFiles(
+                     directory,
+                     "*.delete.json",
+                     SearchOption.TopDirectoryOnly)
+                 .Order(StringComparer.Ordinal))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            GuardPath(path);
+            var bytes = await File.ReadAllBytesAsync(path, cancellationToken);
+            var intent = JsonSerializer.Deserialize<ThreadDeletionRecoveryIntent>(
+                bytes,
+                JsonOptions)
+                ?? throw new InvalidDataException(
+                    "Thread deletion recovery intent is invalid.");
+            var expectedName = $"{ToWire(intent.ThreadId)}.delete.json";
+            if (!string.Equals(
+                    Path.GetFileName(path),
+                    expectedName,
+                    StringComparison.Ordinal) ||
+                !IsValidDeletionRecoveryIntent(intent))
+            {
+                throw new InvalidDataException(
+                    "Thread deletion recovery intent identity is invalid.");
+            }
+
+            intents.Add(intent);
+        }
+
+        return intents.AsReadOnly();
+    }
+
+    private static void ValidateDeletionRecoveryIntent(
+        ThreadDeletionRecoveryIntent intent)
+    {
+        SessionIds.RequireVersion7(intent.ThreadId, nameof(intent.ThreadId), "Thread ID");
+        if (!IsValidDeletionRecoveryIntent(intent))
+        {
+            throw new ArgumentException(
+                "Thread deletion recovery intent is invalid.",
+                nameof(intent));
+        }
+    }
+
+    private static bool IsValidDeletionRecoveryIntent(
+        ThreadDeletionRecoveryIntent intent) =>
+        intent.ThreadId.Version == 7 &&
+        string.Equals(
+            intent.ThreadIdSha256,
+            Hash(Encoding.UTF8.GetBytes(ToWire(intent.ThreadId))),
+            StringComparison.Ordinal) &&
+        IsLowerHexSha256(intent.IdempotencyKeySha256) &&
+        IsLowerHexSha256(intent.RequestSha256) &&
+        intent.Sequence > 0 &&
+        intent.CompletedAt.Offset == TimeSpan.Zero &&
+        intent.ExpiresAt.Offset == TimeSpan.Zero &&
+        intent.ExpiresAt > intent.CompletedAt;
+
+    public void DeleteDeletionRecoveryIntent(Guid threadId)
+    {
+        var path = GetDeletionRecoveryIntentPath(threadId);
+        GuardPath(path);
+        if (File.Exists(path))
+        {
+            File.Delete(path);
+        }
+    }
+
+    public void DeleteOwnedRecovery(Guid threadId)
+    {
+        SessionIds.RequireVersion7(threadId, nameof(threadId), "Thread ID");
+        var directory = Path.Combine(
+            _paths.ThreadRecoveryDirectory,
+            ToWire(threadId));
+        GuardPath(directory);
+        if (Directory.Exists(directory))
+        {
+            DeleteOwnedDirectory(directory);
+        }
     }
 
     public async Task<ThreadJournalEntry> AppendAsync(
@@ -1305,6 +1551,13 @@ internal sealed class ThreadJournal
             EnsureRecoveryDirectory(threadId),
             $"{ToWire(threadId)}.intent.json");
 
+    private string GetDeletionRecoveryIntentPath(Guid threadId)
+    {
+        SessionIds.RequireVersion7(threadId, nameof(threadId), "Thread ID");
+        var directory = EnsureDirectory(ThreadJournalLocation.Deleting);
+        return Path.Combine(directory, $"{ToWire(threadId)}.delete.json");
+    }
+
     private string EnsureDirectory(ThreadJournalLocation location)
     {
         var directory = GetDirectory(location);
@@ -1340,14 +1593,48 @@ internal sealed class ThreadJournal
     private void GuardPath(string path)
     {
         var declaration = Path.Combine(
-            _paths.WorkspaceRoot,
+            _paths.RuntimeDirectory,
             ".opencowork-journal-anchor");
-        var relative = Path.GetRelativePath(_paths.WorkspaceRoot, path);
+        var relative = Path.GetRelativePath(_paths.RuntimeDirectory, path);
         var resolved = WorkspacePathGuard.ResolveContained(
-            _paths.WorkspaceRoot,
+            _paths.RuntimeDirectory,
             declaration,
             relative);
         WorkspacePathGuard.RevalidateForWrite(resolved);
+    }
+
+    private void DeleteOwnedDirectory(string path)
+    {
+        GuardPath(path);
+        var owner = new DirectoryInfo(path);
+        if ((owner.Attributes & FileAttributes.ReparsePoint) != 0)
+        {
+            throw new IOException(
+                $"Session-owned recovery path is a reparse point: {path}");
+        }
+
+        foreach (var entry in owner.EnumerateFileSystemInfos())
+        {
+            GuardPath(entry.FullName);
+            if ((entry.Attributes & FileAttributes.ReparsePoint) != 0)
+            {
+                throw new IOException(
+                    $"Session-owned recovery path contains a reparse point: {entry.FullName}");
+            }
+
+            if (entry is DirectoryInfo directory)
+            {
+                DeleteOwnedDirectory(directory.FullName);
+            }
+            else
+            {
+                GuardPath(entry.FullName);
+                File.Delete(entry.FullName);
+            }
+        }
+
+        GuardPath(path);
+        Directory.Delete(path);
     }
 
     private enum ScanFailure

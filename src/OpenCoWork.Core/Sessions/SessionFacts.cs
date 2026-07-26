@@ -15,6 +15,40 @@ internal sealed record ThreadRenamedFact(
 
 internal sealed record ThreadStateFact(string RequestSha256);
 
+internal sealed record HistoryCheckpointFact(
+    IReadOnlyList<TurnSnapshot> Turns,
+    IReadOnlyList<HistoryCheckpointItemFact> Items);
+
+internal sealed record HistoryCheckpointItemFact(
+    Guid ItemId,
+    Guid TurnId,
+    SessionItemType ItemType,
+    SessionItemStatus Status,
+    JsonElement Content,
+    string? ContentText,
+    long Sequence,
+    DateTimeOffset CreatedAt,
+    DateTimeOffset UpdatedAt);
+
+internal sealed record ThreadDeletionRequestedFact(
+    string ThreadIdSha256,
+    string IdempotencyKeySha256,
+    long ExpectedSequence,
+    string RequestSha256);
+
+internal sealed record ThreadForkedFact(
+    Guid SourceThreadId,
+    long SourceSequence,
+    string DisplayName,
+    HistoryMode HistoryMode,
+    HistoryCheckpointFact History,
+    string RequestSha256);
+
+internal sealed record ThreadRolledBackFact(
+    long TargetSequence,
+    HistoryCheckpointFact History,
+    string RequestSha256);
+
 internal sealed record TurnQueuedFact(
     Guid QueueItemId,
     string Text,
