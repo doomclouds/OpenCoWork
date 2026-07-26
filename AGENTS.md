@@ -46,6 +46,22 @@
   stderr 或日志中、启动失败逆序回滚、停止超时有界且没有残留进程。
 - Evidence: `Pending`；完成后写回对应验收目录或交付归档。
 
+### M2 - Durable Session Core
+
+- Status: `Pending`
+- Target: 与最终验证时选定的发布候选提交一致，RID 为 `osx-arm64`。
+- Build: restore、Release build、完整 test 和 framework-dependent publish；确认
+  零警告、零错误、零失败和零跳过。
+- Journal: 验证持久化 Flush、半行尾部修复、Checksum/Sequence、中段损坏隔离和
+  真实进程中断恢复。
+- Filesystem: 验证 active/archived/deleting 间移动、崩溃续跑、大小写文件系统差异
+  和 Symlink 根外逃逸拒绝。
+- Concurrency: 验证同 Thread 串行、不同 Thread 并行、SQLite WAL/FULL、文件锁与
+  慢订阅者隔离。
+- Recovery: 验证投影删除重建、Projection Degraded 追平、Waiting Checkpoint、
+  Resolution/Cancel 竞态和删除 Reconciler。
+- Evidence: `Pending`；完成后写回 M2 验收目录或交付归档。
+
 ### 后续里程碑
 
 - 新增 macOS 真机验证需求时，在这里按 `### M<N> - <Name>` 新建小节并沿用
