@@ -2,6 +2,17 @@ using OpenCoWork.Abstractions;
 
 namespace OpenCoWork.Core.Sessions;
 
+internal static class SessionIds
+{
+    public static void RequireVersion7(Guid value, string parameterName, string label)
+    {
+        if (value.Version != 7)
+        {
+            throw new ArgumentException($"{label} must be UUIDv7.", parameterName);
+        }
+    }
+}
+
 internal sealed class SessionStateException : InvalidOperationException
 {
     public SessionStateException(string code, string message)
@@ -54,10 +65,7 @@ internal sealed class SessionThreadState
         HistoryMode historyMode,
         DateTimeOffset createdAt)
     {
-        if (threadId.Version != 7)
-        {
-            throw new ArgumentException("Thread ID must be UUIDv7.", nameof(threadId));
-        }
+        SessionIds.RequireVersion7(threadId, nameof(threadId), "Thread ID");
 
         ArgumentException.ThrowIfNullOrWhiteSpace(displayName);
         if (historyMode != HistoryMode.Server)
@@ -227,15 +235,8 @@ internal sealed class SessionTurnState
         Guid threadId,
         DateTimeOffset createdAt)
     {
-        if (turnId.Version != 7)
-        {
-            throw new ArgumentException("Turn ID must be UUIDv7.", nameof(turnId));
-        }
-
-        if (threadId.Version != 7)
-        {
-            throw new ArgumentException("Thread ID must be UUIDv7.", nameof(threadId));
-        }
+        SessionIds.RequireVersion7(turnId, nameof(turnId), "Turn ID");
+        SessionIds.RequireVersion7(threadId, nameof(threadId), "Thread ID");
 
         return new SessionTurnState(turnId, threadId, createdAt);
     }
@@ -307,15 +308,8 @@ internal sealed class SessionItemState
         SessionItemType type,
         DateTimeOffset createdAt)
     {
-        if (itemId.Version != 7)
-        {
-            throw new ArgumentException("Item ID must be UUIDv7.", nameof(itemId));
-        }
-
-        if (turnId.Version != 7)
-        {
-            throw new ArgumentException("Turn ID must be UUIDv7.", nameof(turnId));
-        }
+        SessionIds.RequireVersion7(itemId, nameof(itemId), "Item ID");
+        SessionIds.RequireVersion7(turnId, nameof(turnId), "Turn ID");
 
         return new SessionItemState(itemId, turnId, type, createdAt);
     }
