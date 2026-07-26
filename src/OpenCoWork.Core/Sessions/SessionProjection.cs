@@ -1,0 +1,1512 @@
+using System.Globalization;
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json;
+using System.Text.Json.Serialization;
+using Microsoft.Data.Sqlite;
+using OpenCoWork.Abstractions;
+using OpenCoWork.Core.State;
+
+namespace OpenCoWork.Core.Sessions;
+
+internal enum ProjectionApplyDisposition
+{
+    Applied,
+    AlreadyApplied,
+}
+
+internal enum SessionProjectionFaultPoint
+{
+    BeforeTransaction,
+    BeforeCommit,
+    AfterCommit,
+}
+
+internal sealed record SessionProjectionCommitResult(
+    SessionCommandStatus Status,
+    SessionError? Error);
+
+internal sealed record SessionProjectionSnapshot(
+    string Sha256,
+    int ThreadCount,
+    int TurnCount,
+    int ItemCount,
+    int QueueCount,
+    int InteractionCount,
+    int IdempotencyCount);
+
+internal sealed record ThreadJournalSource(
+    ThreadJournalLocation Location,
+    Guid ThreadId,
+    IReadOnlyList<ThreadJournalEntry> Entries);
+
+internal sealed record SessionProjectionRebuildResult(
+    IReadOnlyList<Guid> RemovedOrphanThreadIds);
+
+internal sealed class SessionProjectionException : InvalidOperationException
+{
+    public SessionProjectionException(string code, string message)
+        : base(message)
+    {
+        Code = code;
+    }
+
+    public string Code { get; }
+}
+
+internal sealed class SessionProjection
+{
+    private static readonly JsonSerializerOptions JsonOptions = new()
+    {
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        Converters = { new JsonStringEnumConverter(JsonNamingPolicy.CamelCase) },
+    };
+    private readonly StateRuntime _stateRuntime;
+    private readonly Action<SessionProjectionFaultPoint>? _faultInjector;
+    private readonly object _statusGate = new();
+    private readonly List<ThreadJournalEntry> _pendingEntries = [];
+    private SessionProjectionState _state = SessionProjectionState.Ready;
+
+    public SessionProjection(
+        StateRuntime stateRuntime,
+        Action<SessionProjectionFaultPoint>? faultInjector = null)
+    {
+        ArgumentNullException.ThrowIfNull(stateRuntime);
+        _stateRuntime = stateRuntime;
+        _faultInjector = faultInjector;
+    }
+
+    public SessionProjectionState State
+    {
+        get
+        {
+            lock (_statusGate)
+            {
+                return _state;
+            }
+        }
+    }
+
+    public bool CanAcceptNewWork => State == SessionProjectionState.Ready;
+
+    public IReadOnlyList<ThreadJournalEntry> PendingEntries
+    {
+        get
+        {
+            lock (_statusGate)
+            {
+                return Array.AsReadOnly(_pendingEntries.ToArray());
+            }
+        }
+    }
+
+    public async Task<ProjectionApplyDisposition> ApplyAsync(
+        ThreadJournalEntry entry,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(entry);
+        var disposition = ProjectionApplyDisposition.Applied;
+        _faultInjector?.Invoke(SessionProjectionFaultPoint.BeforeTransaction);
+        await _stateRuntime.WriteCoordinator.ExecuteAsync(
+            async (connection, transaction, token) =>
+            {
+                disposition = await ApplyCoreAsync(
+                    connection,
+                    transaction,
+                    entry,
+                    token);
+                _faultInjector?.Invoke(SessionProjectionFaultPoint.BeforeCommit);
+            },
+            cancellationToken);
+        _faultInjector?.Invoke(SessionProjectionFaultPoint.AfterCommit);
+        return disposition;
+    }
+
+    public async Task<SessionProjectionCommitResult> ApplyCommittedAsync(
+        ThreadJournalEntry entry,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            await ApplyAsync(entry, cancellationToken);
+            return new SessionProjectionCommitResult(
+                SessionCommandStatus.Committed,
+                null);
+        }
+        catch
+        {
+            lock (_statusGate)
+            {
+                _state = SessionProjectionState.Degraded;
+                if (!_pendingEntries.Any(candidate =>
+                        candidate.ThreadId == entry.ThreadId &&
+                        candidate.Sequence == entry.Sequence))
+                {
+                    _pendingEntries.Add(entry);
+                }
+            }
+
+            return new SessionProjectionCommitResult(
+                SessionCommandStatus.CommittedPendingProjection,
+                new SessionError(
+                    SessionErrorCodes.ProjectionUnavailable,
+                    "The committed session fact is waiting for projection.",
+                    IsRetryable: true));
+        }
+    }
+
+    public async Task CatchUpAsync(
+        IEnumerable<ThreadJournalEntry> entries,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(entries);
+        var applied = new HashSet<(Guid ThreadId, long Sequence)>();
+        try
+        {
+            foreach (var entry in entries
+                         .OrderBy(candidate => candidate.ThreadId.ToString("D"), StringComparer.Ordinal)
+                         .ThenBy(candidate => candidate.Sequence))
+            {
+                await ApplyAsync(entry, cancellationToken);
+                applied.Add((entry.ThreadId, entry.Sequence));
+            }
+
+            lock (_statusGate)
+            {
+                _pendingEntries.RemoveAll(entry =>
+                    applied.Contains((entry.ThreadId, entry.Sequence)));
+                _state = _pendingEntries.Count == 0
+                    ? SessionProjectionState.Ready
+                    : SessionProjectionState.Degraded;
+            }
+        }
+        catch
+        {
+            lock (_statusGate)
+            {
+                _state = SessionProjectionState.Degraded;
+            }
+
+            throw;
+        }
+    }
+
+    public async Task<SessionProjectionRebuildResult> RebuildAsync(
+        IEnumerable<ThreadJournalSource> sources,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(sources);
+        var ordered = sources
+            .OrderBy(source => source.Location)
+            .ThenBy(source => source.ThreadId.ToString("D"), StringComparer.Ordinal)
+            .ToArray();
+        if (ordered
+            .GroupBy(source => source.ThreadId)
+            .Any(group => group.Count() != 1))
+        {
+            throw ProjectionError(
+                SessionErrorCodes.JournalCorrupt,
+                "A Thread journal exists in more than one lifecycle directory.");
+        }
+
+        var sourceIds = ordered.Select(source => source.ThreadId).ToHashSet();
+        var existingIds = await ReadThreadIdsAsync(cancellationToken);
+        var orphanIds = existingIds
+            .Where(threadId => !sourceIds.Contains(threadId))
+            .OrderBy(threadId => threadId.ToString("D"), StringComparer.Ordinal)
+            .ToArray();
+
+        lock (_statusGate)
+        {
+            _state = SessionProjectionState.Degraded;
+        }
+
+        await _stateRuntime.WriteCoordinator.ExecuteAsync(
+            async (connection, transaction, token) =>
+            {
+                await ExecuteAsync(
+                    connection,
+                    transaction,
+                    "DELETE FROM session_idempotency; DELETE FROM threads;",
+                    token);
+            },
+            cancellationToken);
+
+        try
+        {
+            foreach (var source in ordered)
+            {
+                foreach (var entry in source.Entries.OrderBy(entry => entry.Sequence))
+                {
+                    if (entry.ThreadId != source.ThreadId)
+                    {
+                        throw ProjectionError(
+                            SessionErrorCodes.JournalCorrupt,
+                            "Projection source contains another Thread ID.");
+                    }
+
+                    await ApplyAsync(entry, cancellationToken);
+                }
+            }
+
+            lock (_statusGate)
+            {
+                _pendingEntries.Clear();
+                _state = SessionProjectionState.Ready;
+            }
+
+            return new SessionProjectionRebuildResult(
+                Array.AsReadOnly(orphanIds));
+        }
+        catch
+        {
+            lock (_statusGate)
+            {
+                _state = SessionProjectionState.Degraded;
+            }
+
+            throw;
+        }
+    }
+
+    public async Task<SessionProjectionSnapshot> ReadNormalizedSnapshotAsync(
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection =
+            await _stateRuntime.OpenReadOnlyConnectionAsync(cancellationToken);
+        var tables = new[]
+        {
+            await ReadRowsAsync(
+                connection,
+                """
+                SELECT quote(thread_id) || '|' || quote(display_name) || '|' ||
+                       quote(display_name_search) || '|' || quote(status) || '|' ||
+                       quote(availability) || '|' || quote(history_mode) || '|' ||
+                       quote(current_sequence) || '|' || quote(last_applied_sequence) || '|' ||
+                       quote(active_turn_id) || '|' || quote(first_user_message) || '|' ||
+                       quote(first_user_message_search) || '|' || quote(fork_source_thread_id) || '|' ||
+                       quote(fork_source_sequence) || '|' || quote(diagnostic) || '|' ||
+                       quote(created_utc) || '|' || quote(updated_utc)
+                FROM threads ORDER BY thread_id;
+                """,
+                cancellationToken),
+            await ReadRowsAsync(
+                connection,
+                """
+                SELECT quote(turn_id) || '|' || quote(thread_id) || '|' ||
+                       quote(status) || '|' || quote(error_code) || '|' ||
+                       quote(error_message) || '|' || quote(created_utc) || '|' ||
+                       quote(updated_utc) || '|' || quote(completed_utc)
+                FROM turns ORDER BY turn_id;
+                """,
+                cancellationToken),
+            await ReadRowsAsync(
+                connection,
+                """
+                SELECT quote(item_id) || '|' || quote(thread_id) || '|' ||
+                       quote(turn_id) || '|' || quote(sequence) || '|' ||
+                       quote(item_type) || '|' || quote(status) || '|' ||
+                       quote(payload_json) || '|' || quote(content_text) || '|' ||
+                       quote(content_length) || '|' || quote(content_sha256) || '|' ||
+                       quote(created_utc) || '|' || quote(updated_utc)
+                FROM items ORDER BY item_id;
+                """,
+                cancellationToken),
+            await ReadRowsAsync(
+                connection,
+                """
+                SELECT quote(queue_item_id) || '|' || quote(thread_id) || '|' ||
+                       quote(position) || '|' || quote(payload_json) || '|' ||
+                       quote(created_utc)
+                FROM turn_queue ORDER BY thread_id, position, queue_item_id;
+                """,
+                cancellationToken),
+            await ReadRowsAsync(
+                connection,
+                """
+                SELECT quote(interaction_id) || '|' || quote(thread_id) || '|' ||
+                       quote(turn_id) || '|' || quote(item_id) || '|' ||
+                       quote(interaction_type) || '|' || quote(status) || '|' ||
+                       quote(request_json) || '|' || quote(resolution_json) || '|' ||
+                       quote(checkpoint_json) || '|' || quote(timeout_utc) || '|' ||
+                       quote(created_utc) || '|' || quote(updated_utc)
+                FROM pending_interactions ORDER BY interaction_id;
+                """,
+                cancellationToken),
+            await ReadRowsAsync(
+                connection,
+                """
+                SELECT quote(idempotency_key) || '|' || quote(operation) || '|' ||
+                       quote(thread_id) || '|' || quote(request_sha256) || '|' ||
+                       quote(status) || '|' || quote(result_json) || '|' ||
+                       quote(committed_sequence) || '|' || quote(created_utc) || '|' ||
+                       quote(updated_utc)
+                FROM session_idempotency ORDER BY idempotency_key;
+                """,
+                cancellationToken),
+        };
+        var canonical = new StringBuilder();
+        for (var index = 0; index < tables.Length; index++)
+        {
+            canonical.Append(index).Append('\n');
+            foreach (var row in tables[index])
+            {
+                canonical.Append(row).Append('\n');
+            }
+        }
+
+        return new SessionProjectionSnapshot(
+            Hash(Encoding.UTF8.GetBytes(canonical.ToString())),
+            tables[0].Count,
+            tables[1].Count,
+            tables[2].Count,
+            tables[3].Count,
+            tables[4].Count,
+            tables[5].Count);
+    }
+
+    public Task SaveDeleteReceiptAsync(
+        Guid threadId,
+        Guid idempotencyKey,
+        DateTimeOffset completedAt,
+        CancellationToken cancellationToken = default)
+    {
+        SessionIds.RequireVersion7(threadId, nameof(threadId), "Thread ID");
+        SessionIds.RequireVersion7(
+            idempotencyKey,
+            nameof(idempotencyKey),
+            "Idempotency key");
+        var completed = completedAt.ToUniversalTime().ToUnixTimeMilliseconds();
+        var expires = completedAt.AddDays(7).ToUniversalTime().ToUnixTimeMilliseconds();
+        return _stateRuntime.WriteCoordinator.ExecuteAsync(
+            async (connection, transaction, token) =>
+            {
+                await ExecuteAsync(
+                    connection,
+                    transaction,
+                    """
+                    DELETE FROM session_operation_receipts
+                    WHERE expires_utc <= $completed;
+                    INSERT OR REPLACE INTO session_operation_receipts (
+                        thread_id_sha256, idempotency_key_sha256, result_json,
+                        completed_utc, expires_utc)
+                    VALUES (
+                        $threadHash, $keyHash, '{"deleted":true}',
+                        $completed, $expires);
+                    """,
+                    token,
+                    ("$completed", completed),
+                    ("$expires", expires),
+                    ("$threadHash", HashId(threadId)),
+                    ("$keyHash", HashId(idempotencyKey)));
+            },
+            cancellationToken);
+    }
+
+    public async Task<bool> HasDeleteReceiptAsync(
+        Guid threadId,
+        Guid idempotencyKey,
+        DateTimeOffset now,
+        CancellationToken cancellationToken = default)
+    {
+        SessionIds.RequireVersion7(threadId, nameof(threadId), "Thread ID");
+        SessionIds.RequireVersion7(
+            idempotencyKey,
+            nameof(idempotencyKey),
+            "Idempotency key");
+        await using var connection =
+            await _stateRuntime.OpenReadOnlyConnectionAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText =
+            """
+            SELECT count(*)
+            FROM session_operation_receipts
+            WHERE thread_id_sha256 = $threadHash
+              AND idempotency_key_sha256 = $keyHash
+              AND expires_utc > $now;
+            """;
+        command.Parameters.AddWithValue("$threadHash", HashId(threadId));
+        command.Parameters.AddWithValue("$keyHash", HashId(idempotencyKey));
+        command.Parameters.AddWithValue(
+            "$now",
+            now.ToUniversalTime().ToUnixTimeMilliseconds());
+        return Convert.ToInt64(
+            await command.ExecuteScalarAsync(cancellationToken),
+            CultureInfo.InvariantCulture) == 1;
+    }
+
+    private async Task<ProjectionApplyDisposition> ApplyCoreAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        ThreadJournalEntry entry,
+        CancellationToken cancellationToken)
+    {
+        var requestSha256 = ReadRequestSha256(entry);
+        var water = await ReadWaterAsync(
+            connection,
+            transaction,
+            entry.ThreadId,
+            cancellationToken);
+        if (water is null)
+        {
+            if (entry.Sequence != 1 ||
+                entry.EntryType != SessionEventType.ThreadCreated)
+            {
+                throw SequenceConflict(entry.Sequence, 0);
+            }
+        }
+        else if (water.Value.CurrentSequence != water.Value.LastAppliedSequence)
+        {
+            throw ProjectionError(
+                SessionErrorCodes.ProjectionUnavailable,
+                "Projection sequence watermarks disagree.");
+        }
+        else if (entry.Sequence <= water.Value.LastAppliedSequence)
+        {
+            await ValidateAppliedReceiptAsync(
+                connection,
+                transaction,
+                entry,
+                requestSha256,
+                cancellationToken);
+            return ProjectionApplyDisposition.AlreadyApplied;
+        }
+        else if (entry.Sequence != water.Value.LastAppliedSequence + 1)
+        {
+            throw SequenceConflict(
+                entry.Sequence,
+                water.Value.LastAppliedSequence);
+        }
+
+        await EnsureIdempotencyKeyAvailableAsync(
+            connection,
+            transaction,
+            entry.IdempotencyKey,
+            cancellationToken);
+        await ApplyFactAsync(
+            connection,
+            transaction,
+            entry,
+            cancellationToken);
+        await InsertReceiptAsync(
+            connection,
+            transaction,
+            entry,
+            requestSha256,
+            cancellationToken);
+        var updated = await ExecuteAsync(
+            connection,
+            transaction,
+            """
+            UPDATE threads
+            SET current_sequence = $sequence,
+                last_applied_sequence = $sequence,
+                updated_utc = $updated
+            WHERE thread_id = $threadId;
+            """,
+            cancellationToken,
+            ("$sequence", entry.Sequence),
+            ("$updated", UnixMilliseconds(entry.Timestamp)),
+            ("$threadId", Wire(entry.ThreadId)));
+        if (updated != 1)
+        {
+            throw ProjectionError(
+                SessionErrorCodes.InvalidState,
+                "Projection did not retain the target thread.");
+        }
+
+        return ProjectionApplyDisposition.Applied;
+    }
+
+    private static async Task ApplyFactAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        ThreadJournalEntry entry,
+        CancellationToken cancellationToken)
+    {
+        switch (entry.EntryType)
+        {
+            case SessionEventType.ThreadCreated:
+                await ApplyThreadCreatedAsync(connection, transaction, entry, cancellationToken);
+                return;
+            case SessionEventType.ThreadRenamed:
+                var renamed = ReadFact<ThreadRenamedFact>(entry);
+                ArgumentException.ThrowIfNullOrWhiteSpace(renamed.DisplayName);
+                await ExecuteRequiredAsync(
+                    connection,
+                    transaction,
+                    """
+                    UPDATE threads
+                    SET display_name = $name,
+                        display_name_search = $search
+                    WHERE thread_id = $threadId AND availability = 'available';
+                    """,
+                    cancellationToken,
+                    ("$name", renamed.DisplayName),
+                    ("$search", SearchText(renamed.DisplayName)),
+                    ("$threadId", Wire(entry.ThreadId)));
+                return;
+            case SessionEventType.ThreadPaused:
+                await ApplyThreadStatusAsync(
+                    connection, transaction, entry, "active", "paused", cancellationToken);
+                return;
+            case SessionEventType.ThreadResumed:
+                await ApplyThreadStatusAsync(
+                    connection, transaction, entry, "paused", "active", cancellationToken);
+                return;
+            case SessionEventType.ThreadArchived:
+                await ApplyArchiveAsync(connection, transaction, entry, cancellationToken);
+                return;
+            case SessionEventType.ThreadUnarchived:
+                await ApplyThreadStatusAsync(
+                    connection, transaction, entry, "archived", "active", cancellationToken);
+                return;
+            case SessionEventType.TurnQueued:
+                await ApplyTurnQueuedAsync(connection, transaction, entry, cancellationToken);
+                return;
+            case SessionEventType.TurnQueueChanged:
+                await ApplyQueueChangedAsync(connection, transaction, entry, cancellationToken);
+                return;
+            case SessionEventType.TurnStarted:
+                await ApplyTurnStartedAsync(connection, transaction, entry, cancellationToken);
+                return;
+            case SessionEventType.TurnWaitingApproval:
+            case SessionEventType.TurnWaitingInput:
+                await ApplyTurnWaitingAsync(connection, transaction, entry, cancellationToken);
+                return;
+            case SessionEventType.InteractionResolved:
+                await ApplyInteractionResolvedAsync(
+                    connection, transaction, entry, cancellationToken);
+                return;
+            case SessionEventType.TurnExecutionResumed:
+                await ApplyTurnResumedAsync(connection, transaction, entry, cancellationToken);
+                return;
+            case SessionEventType.TurnCompleted:
+            case SessionEventType.TurnFailed:
+            case SessionEventType.TurnCancelled:
+                await ApplyTurnTerminalAsync(connection, transaction, entry, cancellationToken);
+                return;
+            case SessionEventType.ItemStarted:
+                await ApplyItemStartedAsync(connection, transaction, entry, cancellationToken);
+                return;
+            case SessionEventType.ItemDeltaAppended:
+                await ApplyItemDeltaAsync(connection, transaction, entry, cancellationToken);
+                return;
+            case SessionEventType.ItemCompleted:
+                await ApplyItemCompletedAsync(connection, transaction, entry, cancellationToken);
+                return;
+            case SessionEventType.ItemFailed:
+            case SessionEventType.ItemCancelled:
+                await ApplyItemTerminalAsync(connection, transaction, entry, cancellationToken);
+                return;
+            case SessionEventType.ThreadJournalRecovered:
+                return;
+            default:
+                throw ProjectionError(
+                    SessionErrorCodes.InvalidState,
+                    $"Projection for {entry.EntryType} is not implemented yet.");
+        }
+    }
+
+    private static async Task ApplyThreadCreatedAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        ThreadJournalEntry entry,
+        CancellationToken cancellationToken)
+    {
+        var fact = ReadFact<ThreadCreatedFact>(entry);
+        ArgumentException.ThrowIfNullOrWhiteSpace(fact.DisplayName);
+        if (fact.HistoryMode != HistoryMode.Server)
+        {
+            throw ProjectionError(
+                SessionErrorCodes.UnsupportedHistoryMode,
+                "M2 only supports server-managed history.");
+        }
+
+        await ExecuteRequiredAsync(
+            connection,
+            transaction,
+            """
+            INSERT INTO threads (
+                thread_id, display_name, display_name_search,
+                status, availability, history_mode,
+                current_sequence, last_applied_sequence,
+                active_turn_id, first_user_message, first_user_message_search,
+                fork_source_thread_id, fork_source_sequence, diagnostic,
+                created_utc, updated_utc)
+            VALUES (
+                $threadId, $name, $search,
+                'active', 'available', 'server',
+                0, 0,
+                NULL, $firstMessage, $firstMessageSearch,
+                NULL, NULL, NULL,
+                $timestamp, $timestamp);
+            """,
+            cancellationToken,
+            ("$threadId", Wire(entry.ThreadId)),
+            ("$name", fact.DisplayName),
+            ("$search", SearchText(fact.DisplayName)),
+            ("$firstMessage", fact.FirstUserMessage),
+            ("$firstMessageSearch", SearchText(fact.FirstUserMessage)),
+            ("$timestamp", UnixMilliseconds(entry.Timestamp)));
+    }
+
+    private static Task ApplyThreadStatusAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        ThreadJournalEntry entry,
+        string current,
+        string next,
+        CancellationToken cancellationToken)
+    {
+        ReadFact<ThreadStateFact>(entry);
+        return ExecuteRequiredAsync(
+            connection,
+            transaction,
+            """
+            UPDATE threads
+            SET status = $next
+            WHERE thread_id = $threadId
+              AND status = $current
+              AND active_turn_id IS NULL
+              AND availability = 'available';
+            """,
+            cancellationToken,
+            ("$next", next),
+            ("$threadId", Wire(entry.ThreadId)),
+            ("$current", current));
+    }
+
+    private static async Task ApplyArchiveAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        ThreadJournalEntry entry,
+        CancellationToken cancellationToken)
+    {
+        ReadFact<ThreadStateFact>(entry);
+        await ExecuteRequiredAsync(
+            connection,
+            transaction,
+            """
+            UPDATE threads
+            SET status = 'archived'
+            WHERE thread_id = $threadId
+              AND status IN ('active', 'paused')
+              AND active_turn_id IS NULL
+              AND availability = 'available'
+              AND NOT EXISTS (
+                  SELECT 1 FROM turn_queue WHERE thread_id = $threadId);
+            """,
+            cancellationToken,
+            ("$threadId", Wire(entry.ThreadId)));
+    }
+
+    private static async Task ApplyTurnQueuedAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        ThreadJournalEntry entry,
+        CancellationToken cancellationToken)
+    {
+        var fact = ReadFact<TurnQueuedFact>(entry);
+        SessionIds.RequireVersion7(fact.QueueItemId, nameof(fact.QueueItemId), "Queue item ID");
+        await ExecuteRequiredAsync(
+            connection,
+            transaction,
+            """
+            INSERT INTO turn_queue (
+                queue_item_id, thread_id, position, payload_json, created_utc)
+            VALUES ($itemId, $threadId, $position, $payload, $timestamp);
+            """,
+            cancellationToken,
+            ("$itemId", Wire(fact.QueueItemId)),
+            ("$threadId", Wire(entry.ThreadId)),
+            ("$position", fact.Position),
+            ("$payload", entry.Payload.GetRawText()),
+            ("$timestamp", UnixMilliseconds(entry.Timestamp)));
+        await ExecuteAsync(
+            connection,
+            transaction,
+            """
+            UPDATE threads
+            SET first_user_message = COALESCE(first_user_message, $text),
+                first_user_message_search = COALESCE(first_user_message_search, $search)
+            WHERE thread_id = $threadId;
+            """,
+            cancellationToken,
+            ("$text", fact.Text),
+            ("$search", SearchText(fact.Text)),
+            ("$threadId", Wire(entry.ThreadId)));
+    }
+
+    private static async Task ApplyQueueChangedAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        ThreadJournalEntry entry,
+        CancellationToken cancellationToken)
+    {
+        var fact = ReadFact<TurnQueueChangedFact>(entry);
+        foreach (var queueItemId in fact.QueueItemIds)
+        {
+            SessionIds.RequireVersion7(
+                queueItemId,
+                nameof(fact.QueueItemIds),
+                "Queue item ID");
+        }
+
+        if (fact.QueueItemIds.Count != fact.QueueItemIds.Distinct().Count())
+        {
+            throw ProjectionError(
+                SessionErrorCodes.InvalidState,
+                "Queue order contains duplicate items.");
+        }
+
+        var existing = await ReadStringsAsync(
+            connection,
+            transaction,
+            "SELECT queue_item_id FROM turn_queue WHERE thread_id = $threadId ORDER BY queue_item_id;",
+            cancellationToken,
+            ("$threadId", Wire(entry.ThreadId)));
+        var expected = fact.QueueItemIds
+            .Select(Wire)
+            .Order(StringComparer.Ordinal)
+            .ToArray();
+        if (!existing.SequenceEqual(expected, StringComparer.Ordinal))
+        {
+            throw ProjectionError(
+                SessionErrorCodes.InvalidState,
+                "Queue order does not contain the current queue membership.");
+        }
+
+        await ExecuteAsync(
+            connection,
+            transaction,
+            "UPDATE turn_queue SET position = position + 1000 WHERE thread_id = $threadId;",
+            cancellationToken,
+            ("$threadId", Wire(entry.ThreadId)));
+        for (var index = 0; index < fact.QueueItemIds.Count; index++)
+        {
+            await ExecuteRequiredAsync(
+                connection,
+                transaction,
+                """
+                UPDATE turn_queue
+                SET position = $position
+                WHERE thread_id = $threadId AND queue_item_id = $itemId;
+                """,
+                cancellationToken,
+                ("$position", index),
+                ("$threadId", Wire(entry.ThreadId)),
+                ("$itemId", Wire(fact.QueueItemIds[index])));
+        }
+    }
+
+    private static async Task ApplyTurnStartedAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        ThreadJournalEntry entry,
+        CancellationToken cancellationToken)
+    {
+        var fact = ReadFact<TurnStartedFact>(entry);
+        SessionIds.RequireVersion7(fact.TurnId, nameof(fact.TurnId), "Turn ID");
+        var timestamp = UnixMilliseconds(entry.Timestamp);
+        await ExecuteRequiredAsync(
+            connection,
+            transaction,
+            """
+            INSERT INTO turns (
+                turn_id, thread_id, status, error_code, error_message,
+                created_utc, updated_utc, completed_utc)
+            SELECT
+                $turnId, $threadId, 'running', NULL, NULL,
+                $timestamp, $timestamp, NULL
+            WHERE EXISTS (
+                SELECT 1 FROM threads
+                WHERE thread_id = $threadId
+                  AND status = 'active'
+                  AND availability = 'available'
+                  AND active_turn_id IS NULL);
+            """,
+            cancellationToken,
+            ("$turnId", Wire(fact.TurnId)),
+            ("$threadId", Wire(entry.ThreadId)),
+            ("$timestamp", timestamp));
+        await ExecuteRequiredAsync(
+            connection,
+            transaction,
+            """
+            UPDATE threads
+            SET active_turn_id = $turnId
+            WHERE thread_id = $threadId AND active_turn_id IS NULL;
+            """,
+            cancellationToken,
+            ("$turnId", Wire(fact.TurnId)),
+            ("$threadId", Wire(entry.ThreadId)));
+    }
+
+    private static async Task ApplyTurnWaitingAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        ThreadJournalEntry entry,
+        CancellationToken cancellationToken)
+    {
+        var fact = ReadFact<TurnWaitingFact>(entry);
+        SessionIds.RequireVersion7(fact.TurnId, nameof(fact.TurnId), "Turn ID");
+        SessionIds.RequireVersion7(
+            fact.InteractionId,
+            nameof(fact.InteractionId),
+            "Interaction ID");
+        SessionIds.RequireVersion7(fact.ItemId, nameof(fact.ItemId), "Item ID");
+        var expectedType = entry.EntryType == SessionEventType.TurnWaitingApproval
+            ? SessionInteractionType.Approval
+            : SessionInteractionType.UserInput;
+        if (fact.InteractionType != expectedType)
+        {
+            throw ProjectionError(
+                SessionErrorCodes.InvalidState,
+                "Waiting fact type does not match its event.");
+        }
+
+        var status = expectedType == SessionInteractionType.Approval
+            ? "waitingApproval"
+            : "waitingInput";
+        var timestamp = UnixMilliseconds(entry.Timestamp);
+        await ExecuteRequiredAsync(
+            connection,
+            transaction,
+            """
+            UPDATE turns
+            SET status = $status, updated_utc = $timestamp
+            WHERE turn_id = $turnId
+              AND thread_id = $threadId
+              AND status = 'running';
+            """,
+            cancellationToken,
+            ("$status", status),
+            ("$timestamp", timestamp),
+            ("$turnId", Wire(fact.TurnId)),
+            ("$threadId", Wire(entry.ThreadId)));
+        await ExecuteRequiredAsync(
+            connection,
+            transaction,
+            """
+            INSERT INTO pending_interactions (
+                interaction_id, thread_id, turn_id, item_id,
+                interaction_type, status, request_json, resolution_json,
+                checkpoint_json, timeout_utc, created_utc, updated_utc)
+            VALUES (
+                $interactionId, $threadId, $turnId, $itemId,
+                $type, 'pending', $request, NULL,
+                $checkpoint, $timeout, $timestamp, $timestamp);
+            """,
+            cancellationToken,
+            ("$interactionId", Wire(fact.InteractionId)),
+            ("$threadId", Wire(entry.ThreadId)),
+            ("$turnId", Wire(fact.TurnId)),
+            ("$itemId", Wire(fact.ItemId)),
+            ("$type", Wire(fact.InteractionType)),
+            ("$request", fact.Request.GetRawText()),
+            ("$checkpoint", JsonSerializer.Serialize(fact.Checkpoint, JsonOptions)),
+            ("$timeout", fact.TimeoutAt?.ToUniversalTime().ToUnixTimeMilliseconds()),
+            ("$timestamp", timestamp));
+    }
+
+    private static Task ApplyInteractionResolvedAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        ThreadJournalEntry entry,
+        CancellationToken cancellationToken)
+    {
+        var fact = ReadFact<InteractionResolvedFact>(entry);
+        SessionIds.RequireVersion7(
+            fact.InteractionId,
+            nameof(fact.InteractionId),
+            "Interaction ID");
+        return ExecuteRequiredAsync(
+            connection,
+            transaction,
+            """
+            UPDATE pending_interactions
+            SET status = 'resolved',
+                resolution_json = $resolution,
+                updated_utc = $timestamp
+            WHERE interaction_id = $interactionId
+              AND thread_id = $threadId
+              AND status = 'pending';
+            """,
+            cancellationToken,
+            ("$resolution", fact.Resolution.GetRawText()),
+            ("$timestamp", UnixMilliseconds(entry.Timestamp)),
+            ("$interactionId", Wire(fact.InteractionId)),
+            ("$threadId", Wire(entry.ThreadId)));
+    }
+
+    private static Task ApplyTurnResumedAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        ThreadJournalEntry entry,
+        CancellationToken cancellationToken)
+    {
+        var fact = ReadFact<TurnExecutionResumedFact>(entry);
+        SessionIds.RequireVersion7(fact.TurnId, nameof(fact.TurnId), "Turn ID");
+        SessionIds.RequireVersion7(
+            fact.InteractionId,
+            nameof(fact.InteractionId),
+            "Interaction ID");
+        return ExecuteRequiredAsync(
+            connection,
+            transaction,
+            """
+            UPDATE turns
+            SET status = 'running', updated_utc = $timestamp
+            WHERE turn_id = $turnId
+              AND thread_id = $threadId
+              AND status IN ('waitingApproval', 'waitingInput')
+              AND EXISTS (
+                  SELECT 1 FROM pending_interactions
+                  WHERE interaction_id = $interactionId
+                    AND turn_id = $turnId
+                    AND status = 'resolved');
+            """,
+            cancellationToken,
+            ("$timestamp", UnixMilliseconds(entry.Timestamp)),
+            ("$turnId", Wire(fact.TurnId)),
+            ("$threadId", Wire(entry.ThreadId)),
+            ("$interactionId", Wire(fact.InteractionId)));
+    }
+
+    private static async Task ApplyTurnTerminalAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        ThreadJournalEntry entry,
+        CancellationToken cancellationToken)
+    {
+        var fact = ReadFact<TurnTerminalFact>(entry);
+        SessionIds.RequireVersion7(fact.TurnId, nameof(fact.TurnId), "Turn ID");
+        var status = entry.EntryType switch
+        {
+            SessionEventType.TurnCompleted => "completed",
+            SessionEventType.TurnFailed => "failed",
+            _ => "cancelled",
+        };
+        var timestamp = UnixMilliseconds(entry.Timestamp);
+        await ExecuteRequiredAsync(
+            connection,
+            transaction,
+            """
+            UPDATE turns
+            SET status = $status,
+                error_code = $errorCode,
+                error_message = $errorMessage,
+                updated_utc = $timestamp,
+                completed_utc = $timestamp
+            WHERE turn_id = $turnId
+              AND thread_id = $threadId
+              AND status IN ('running', 'waitingApproval', 'waitingInput');
+            """,
+            cancellationToken,
+            ("$status", status),
+            ("$errorCode", fact.Error?.Code),
+            ("$errorMessage", fact.Error?.Message),
+            ("$timestamp", timestamp),
+            ("$turnId", Wire(fact.TurnId)),
+            ("$threadId", Wire(entry.ThreadId)));
+        await ExecuteRequiredAsync(
+            connection,
+            transaction,
+            """
+            UPDATE threads
+            SET active_turn_id = NULL
+            WHERE thread_id = $threadId AND active_turn_id = $turnId;
+            """,
+            cancellationToken,
+            ("$threadId", Wire(entry.ThreadId)),
+            ("$turnId", Wire(fact.TurnId)));
+    }
+
+    private static Task ApplyItemStartedAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        ThreadJournalEntry entry,
+        CancellationToken cancellationToken)
+    {
+        var fact = ReadFact<ItemStartedFact>(entry);
+        SessionIds.RequireVersion7(fact.ItemId, nameof(fact.ItemId), "Item ID");
+        SessionIds.RequireVersion7(fact.TurnId, nameof(fact.TurnId), "Turn ID");
+        var timestamp = UnixMilliseconds(entry.Timestamp);
+        return ExecuteRequiredAsync(
+            connection,
+            transaction,
+            """
+            INSERT INTO items (
+                item_id, thread_id, turn_id, sequence,
+                item_type, status, payload_json, content_text,
+                content_length, content_sha256, created_utc, updated_utc)
+            VALUES (
+                $itemId, $threadId, $turnId, $sequence,
+                $itemType, 'started', $payload, $contentText,
+                NULL, NULL, $timestamp, $timestamp);
+            """,
+            cancellationToken,
+            ("$itemId", Wire(fact.ItemId)),
+            ("$threadId", Wire(entry.ThreadId)),
+            ("$turnId", Wire(fact.TurnId)),
+            ("$sequence", entry.Sequence),
+            ("$itemType", Wire(fact.ItemType)),
+            ("$payload", fact.Content.GetRawText()),
+            ("$contentText", fact.ContentText),
+            ("$timestamp", timestamp));
+    }
+
+    private static Task ApplyItemDeltaAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        ThreadJournalEntry entry,
+        CancellationToken cancellationToken)
+    {
+        var fact = ReadFact<ItemDeltaFact>(entry);
+        SessionIds.RequireVersion7(fact.ItemId, nameof(fact.ItemId), "Item ID");
+        return ExecuteRequiredAsync(
+            connection,
+            transaction,
+            """
+            UPDATE items
+            SET status = 'streaming',
+                content_text = COALESCE(content_text, '') || $delta,
+                updated_utc = $timestamp
+            WHERE item_id = $itemId
+              AND thread_id = $threadId
+              AND item_type IN ('agentMessage', 'reasoning')
+              AND status IN ('started', 'streaming');
+            """,
+            cancellationToken,
+            ("$delta", fact.Delta),
+            ("$timestamp", UnixMilliseconds(entry.Timestamp)),
+            ("$itemId", Wire(fact.ItemId)),
+            ("$threadId", Wire(entry.ThreadId)));
+    }
+
+    private static async Task ApplyItemCompletedAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        ThreadJournalEntry entry,
+        CancellationToken cancellationToken)
+    {
+        var fact = ReadFact<ItemCompletedFact>(entry);
+        SessionIds.RequireVersion7(fact.ItemId, nameof(fact.ItemId), "Item ID");
+        if (fact.ContentLength < 0 || !IsLowerSha256(fact.ContentSha256))
+        {
+            throw ProjectionError(
+                SessionErrorCodes.InvalidState,
+                "Completed item content metadata is invalid.");
+        }
+
+        await ValidateCompletedItemAsync(
+            connection,
+            transaction,
+            entry.ThreadId,
+            fact,
+            cancellationToken);
+        await ExecuteRequiredAsync(
+            connection,
+            transaction,
+            """
+            UPDATE items
+            SET status = 'completed',
+                content_length = $length,
+                content_sha256 = $sha256,
+                updated_utc = $timestamp
+            WHERE item_id = $itemId
+              AND thread_id = $threadId
+              AND status IN ('started', 'streaming');
+            """,
+            cancellationToken,
+            ("$length", fact.ContentLength),
+            ("$sha256", fact.ContentSha256),
+            ("$timestamp", UnixMilliseconds(entry.Timestamp)),
+            ("$itemId", Wire(fact.ItemId)),
+            ("$threadId", Wire(entry.ThreadId)));
+    }
+
+    private static async Task ValidateCompletedItemAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        Guid threadId,
+        ItemCompletedFact fact,
+        CancellationToken cancellationToken)
+    {
+        await using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText =
+            """
+            SELECT content_text
+            FROM items
+            WHERE item_id = $itemId
+              AND thread_id = $threadId
+              AND status IN ('started', 'streaming');
+            """;
+        command.Parameters.AddWithValue("$itemId", Wire(fact.ItemId));
+        command.Parameters.AddWithValue("$threadId", Wire(threadId));
+        var value = await command.ExecuteScalarAsync(cancellationToken);
+        if (value is null)
+        {
+            throw ProjectionError(
+                SessionErrorCodes.InvalidState,
+                "Completed item does not match an active projected item.");
+        }
+
+        var text = value == DBNull.Value ? string.Empty : Convert.ToString(value) ?? string.Empty;
+        var bytes = Encoding.UTF8.GetBytes(text);
+        if (bytes.Length != fact.ContentLength ||
+            !string.Equals(
+                Hash(bytes),
+                fact.ContentSha256,
+                StringComparison.Ordinal))
+        {
+            throw ProjectionError(
+                SessionErrorCodes.JournalCorrupt,
+                "Completed item content does not match its final length and digest.");
+        }
+    }
+
+    private static Task ApplyItemTerminalAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        ThreadJournalEntry entry,
+        CancellationToken cancellationToken)
+    {
+        var fact = ReadFact<ItemTerminalFact>(entry);
+        SessionIds.RequireVersion7(fact.ItemId, nameof(fact.ItemId), "Item ID");
+        var status = entry.EntryType == SessionEventType.ItemFailed
+            ? "failed"
+            : "cancelled";
+        return ExecuteRequiredAsync(
+            connection,
+            transaction,
+            """
+            UPDATE items
+            SET status = $status, updated_utc = $timestamp
+            WHERE item_id = $itemId
+              AND thread_id = $threadId
+              AND status IN ('started', 'streaming');
+            """,
+            cancellationToken,
+            ("$status", status),
+            ("$timestamp", UnixMilliseconds(entry.Timestamp)),
+            ("$itemId", Wire(fact.ItemId)),
+            ("$threadId", Wire(entry.ThreadId)));
+    }
+
+    private static async Task<(long CurrentSequence, long LastAppliedSequence)?> ReadWaterAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        Guid threadId,
+        CancellationToken cancellationToken)
+    {
+        await using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText =
+            """
+            SELECT current_sequence, last_applied_sequence
+            FROM threads
+            WHERE thread_id = $threadId;
+            """;
+        command.Parameters.AddWithValue("$threadId", Wire(threadId));
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        return await reader.ReadAsync(cancellationToken)
+            ? (reader.GetInt64(0), reader.GetInt64(1))
+            : null;
+    }
+
+    private static async Task ValidateAppliedReceiptAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        ThreadJournalEntry entry,
+        string requestSha256,
+        CancellationToken cancellationToken)
+    {
+        await using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText =
+            """
+            SELECT operation, thread_id, request_sha256, committed_sequence, result_json
+            FROM session_idempotency
+            WHERE idempotency_key = $key;
+            """;
+        command.Parameters.AddWithValue("$key", Wire(entry.IdempotencyKey));
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        if (!await reader.ReadAsync(cancellationToken) ||
+            !string.Equals(reader.GetString(0), Wire(entry.EntryType), StringComparison.Ordinal) ||
+            !string.Equals(reader.GetString(1), Wire(entry.ThreadId), StringComparison.Ordinal) ||
+            !string.Equals(reader.GetString(2), requestSha256, StringComparison.Ordinal) ||
+            reader.GetInt64(3) != entry.Sequence ||
+            !ReceiptMatches(reader.GetString(4), entry))
+        {
+            throw ProjectionError(
+                SessionErrorCodes.IdempotencyConflict,
+                "Applied projection receipt does not match the journal entry.");
+        }
+    }
+
+    private static async Task EnsureIdempotencyKeyAvailableAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        Guid key,
+        CancellationToken cancellationToken)
+    {
+        await using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText =
+            """
+            SELECT count(*) FROM session_idempotency
+            WHERE idempotency_key = $key;
+            """;
+        command.Parameters.AddWithValue("$key", Wire(key));
+        if (Convert.ToInt64(
+                await command.ExecuteScalarAsync(cancellationToken),
+                CultureInfo.InvariantCulture) != 0)
+        {
+            throw ProjectionError(
+                SessionErrorCodes.IdempotencyConflict,
+                "Idempotency key is already bound to another journal entry.");
+        }
+    }
+
+    private static Task InsertReceiptAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        ThreadJournalEntry entry,
+        string requestSha256,
+        CancellationToken cancellationToken)
+    {
+        var timestamp = UnixMilliseconds(entry.Timestamp);
+        return ExecuteRequiredAsync(
+            connection,
+            transaction,
+            """
+            INSERT INTO session_idempotency (
+                idempotency_key, operation, thread_id, request_sha256,
+                status, result_json, committed_sequence, created_utc, updated_utc)
+            VALUES (
+                $key, $operation, $threadId, $requestSha256,
+                'committed', $result, $sequence, $timestamp, $timestamp);
+            """,
+            cancellationToken,
+            ("$key", Wire(entry.IdempotencyKey)),
+            ("$operation", Wire(entry.EntryType)),
+            ("$threadId", Wire(entry.ThreadId)),
+            ("$requestSha256", requestSha256),
+            ("$result", ReceiptJson(entry)),
+            ("$sequence", entry.Sequence),
+            ("$timestamp", timestamp));
+    }
+
+    private async Task<IReadOnlyList<Guid>> ReadThreadIdsAsync(
+        CancellationToken cancellationToken)
+    {
+        await using var connection =
+            await _stateRuntime.OpenReadOnlyConnectionAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = "SELECT thread_id FROM threads ORDER BY thread_id;";
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        var result = new List<Guid>();
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            result.Add(Guid.ParseExact(reader.GetString(0), "D"));
+        }
+
+        return result.AsReadOnly();
+    }
+
+    private static async Task<IReadOnlyList<string>> ReadRowsAsync(
+        SqliteConnection connection,
+        string sql,
+        CancellationToken cancellationToken)
+    {
+        await using var command = connection.CreateCommand();
+        command.CommandText = sql;
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        var rows = new List<string>();
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            rows.Add(reader.GetString(0));
+        }
+
+        return rows.AsReadOnly();
+    }
+
+    private static async Task<IReadOnlyList<string>> ReadStringsAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        string sql,
+        CancellationToken cancellationToken,
+        params (string Name, object? Value)[] parameters)
+    {
+        await using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = sql;
+        AddParameters(command, parameters);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        var result = new List<string>();
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            result.Add(reader.GetString(0));
+        }
+
+        return result.AsReadOnly();
+    }
+
+    private static async Task ExecuteRequiredAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        string sql,
+        CancellationToken cancellationToken,
+        params (string Name, object? Value)[] parameters)
+    {
+        if (await ExecuteAsync(
+                connection,
+                transaction,
+                sql,
+                cancellationToken,
+                parameters) != 1)
+        {
+            throw ProjectionError(
+                SessionErrorCodes.InvalidState,
+                "Journal fact does not match the projected state.");
+        }
+    }
+
+    private static async Task<int> ExecuteAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        string sql,
+        CancellationToken cancellationToken,
+        params (string Name, object? Value)[] parameters)
+    {
+        await using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = sql;
+        AddParameters(command, parameters);
+        return await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    private static void AddParameters(
+        SqliteCommand command,
+        IEnumerable<(string Name, object? Value)> parameters)
+    {
+        foreach (var (name, value) in parameters)
+        {
+            command.Parameters.AddWithValue(name, value ?? DBNull.Value);
+        }
+    }
+
+    private static T ReadFact<T>(ThreadJournalEntry entry)
+    {
+        try
+        {
+            return entry.Payload.Deserialize<T>(JsonOptions)
+                ?? throw new JsonException("Journal fact is null.");
+        }
+        catch (JsonException exception)
+        {
+            throw new SessionProjectionException(
+                SessionErrorCodes.JournalCorrupt,
+                $"Journal payload for {entry.EntryType} is invalid: {exception.Message}");
+        }
+    }
+
+    private static string ReadRequestSha256(ThreadJournalEntry entry)
+    {
+        if (entry.EntryType == SessionEventType.ThreadJournalRecovered)
+        {
+            return entry.Checksum;
+        }
+
+        if (entry.Payload.ValueKind != JsonValueKind.Object ||
+            !entry.Payload.TryGetProperty("requestSha256", out var property))
+        {
+            throw ProjectionError(
+                SessionErrorCodes.JournalCorrupt,
+                "Journal fact does not contain a request fingerprint.");
+        }
+
+        var value = property.GetString() ?? string.Empty;
+        if (!IsLowerSha256(value))
+        {
+            throw ProjectionError(
+                SessionErrorCodes.JournalCorrupt,
+                "Journal request fingerprint is invalid.");
+        }
+
+        return value;
+    }
+
+    private static string ReceiptJson(ThreadJournalEntry entry) =>
+        $"{{\"entryId\":\"{Wire(entry.EntryId)}\",\"checksum\":\"{entry.Checksum}\"}}";
+
+    private static bool ReceiptMatches(
+        string receiptJson,
+        ThreadJournalEntry entry)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(receiptJson);
+            var root = document.RootElement;
+            return string.Equals(
+                       root.GetProperty("entryId").GetString(),
+                       Wire(entry.EntryId),
+                       StringComparison.Ordinal) &&
+                   string.Equals(
+                       root.GetProperty("checksum").GetString(),
+                       entry.Checksum,
+                       StringComparison.Ordinal);
+        }
+        catch (Exception exception) when (
+            exception is JsonException
+                or KeyNotFoundException
+                or InvalidOperationException)
+        {
+            return false;
+        }
+    }
+
+    private static long UnixMilliseconds(DateTimeOffset value) =>
+        value.ToUniversalTime().ToUnixTimeMilliseconds();
+
+    private static string? SearchText(string? value) =>
+        value is null
+            ? null
+            : value.Normalize(NormalizationForm.FormKC).ToUpperInvariant();
+
+    private static string Wire(Guid value) =>
+        value.ToString("D", CultureInfo.InvariantCulture).ToLowerInvariant();
+
+    private static string Wire<T>(T value)
+        where T : struct, Enum
+    {
+        var name = value.ToString();
+        return char.ToLowerInvariant(name[0]) + name[1..];
+    }
+
+    private static string HashId(Guid value) =>
+        Hash(Encoding.UTF8.GetBytes(Wire(value)));
+
+    private static string Hash(ReadOnlySpan<byte> bytes) =>
+        Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
+
+    private static bool IsLowerSha256(string value) =>
+        value.Length == 64 &&
+        value.All(character =>
+            character is >= '0' and <= '9' or >= 'a' and <= 'f');
+
+    private static SessionProjectionException SequenceConflict(
+        long actual,
+        long current) =>
+        ProjectionError(
+            SessionErrorCodes.SequenceConflict,
+            $"Projection sequence {actual} does not follow {current}.");
+
+    private static SessionProjectionException ProjectionError(
+        string code,
+        string message) =>
+        new(code, message);
+}
