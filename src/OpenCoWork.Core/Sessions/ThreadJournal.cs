@@ -60,6 +60,11 @@ internal sealed record ThreadJournalReplayResult(
     string? Diagnostic,
     string? BackupPath);
 
+internal sealed record ThreadJournalMatch(
+    ThreadJournalLocation Location,
+    ThreadJournalReplayResult Replay,
+    ThreadJournalEntry Entry);
+
 internal sealed class ThreadJournalException : IOException
 {
     public ThreadJournalException(string code, string message)
@@ -69,6 +74,19 @@ internal sealed class ThreadJournalException : IOException
     }
 
     public string Code { get; }
+}
+
+internal sealed class ThreadJournalCommittedException : IOException
+{
+    public ThreadJournalCommittedException(
+        ThreadJournalEntry entry,
+        Exception innerException)
+        : base("Thread journal entry was committed before a later fault.", innerException)
+    {
+        Entry = entry;
+    }
+
+    public ThreadJournalEntry Entry { get; }
 }
 
 internal sealed class ThreadJournal
@@ -143,6 +161,15 @@ internal sealed class ThreadJournal
         var line = new byte[encoded.Length + 1];
         encoded.CopyTo(line, 0);
         line[^1] = (byte)'\n';
+        var committedEntry = new ThreadJournalEntry(
+            draft.ThreadId,
+            draft.Sequence,
+            draft.EntryId,
+            draft.Timestamp.ToUniversalTime(),
+            draft.EntryType,
+            draft.IdempotencyKey,
+            payload,
+            checksum);
         await using var stream = new FileStream(
             path,
             FileMode.OpenOrCreate,
@@ -166,17 +193,16 @@ internal sealed class ThreadJournal
 
         _faultInjector?.Invoke(ThreadJournalFaultPoint.BeforeFlush);
         stream.Flush(flushToDisk: true);
-        _faultInjector?.Invoke(ThreadJournalFaultPoint.AfterFlushBeforeMemory);
+        try
+        {
+            _faultInjector?.Invoke(ThreadJournalFaultPoint.AfterFlushBeforeMemory);
+        }
+        catch (Exception exception)
+        {
+            throw new ThreadJournalCommittedException(committedEntry, exception);
+        }
 
-        return new ThreadJournalEntry(
-            draft.ThreadId,
-            draft.Sequence,
-            draft.EntryId,
-            draft.Timestamp.ToUniversalTime(),
-            draft.EntryType,
-            draft.IdempotencyKey,
-            payload,
-            checksum);
+        return committedEntry;
     }
 
     public async Task<ThreadJournalReplayResult> ReplayAsync(
@@ -253,6 +279,64 @@ internal sealed class ThreadJournal
             scan.DiagnosticCode ?? SessionErrorCodes.JournalCorrupt,
             scan.Diagnostic ?? "Thread journal is corrupt.",
             backupPath);
+    }
+
+    public async Task<ThreadJournalMatch?> FindByIdempotencyKeyAsync(
+        Guid idempotencyKey,
+        CancellationToken cancellationToken = default)
+    {
+        SessionIds.RequireVersion7(
+            idempotencyKey,
+            nameof(idempotencyKey),
+            "Idempotency key");
+        ThreadJournalMatch? match = null;
+        foreach (var location in Enum.GetValues<ThreadJournalLocation>())
+        {
+            var directory = GetDirectory(location);
+            GuardPath(directory);
+            if (!Directory.Exists(directory))
+            {
+                continue;
+            }
+
+            foreach (var path in Directory.EnumerateFiles(
+                         directory,
+                         "*.jsonl",
+                         SearchOption.TopDirectoryOnly)
+                     .Order(StringComparer.Ordinal))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var fileName = Path.GetFileNameWithoutExtension(path);
+                if (!string.Equals(
+                        fileName,
+                        fileName.ToLowerInvariant(),
+                        StringComparison.Ordinal) ||
+                    !Guid.TryParseExact(fileName, "D", out var threadId) ||
+                    threadId.Version != 7)
+                {
+                    continue;
+                }
+
+                var replay = await ReplayAsync(
+                    location,
+                    threadId,
+                    cancellationToken);
+                foreach (var entry in replay.Entries.Where(
+                             entry => entry.IdempotencyKey == idempotencyKey))
+                {
+                    if (match is not null)
+                    {
+                        throw new ThreadJournalException(
+                            SessionErrorCodes.IdempotencyConflict,
+                            "Idempotency key appears in more than one journal entry.");
+                    }
+
+                    match = new ThreadJournalMatch(location, replay, entry);
+                }
+            }
+        }
+
+        return match;
     }
 
     private async Task<ThreadJournalReplayResult> RecoverTailAsync(

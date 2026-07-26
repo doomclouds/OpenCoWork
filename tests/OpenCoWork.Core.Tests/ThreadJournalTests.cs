@@ -326,11 +326,23 @@ public sealed class ThreadJournalTests
                 }
             });
 
-        await Assert.ThrowsAsync<InjectedJournalFaultException>(
-            () => faulted.AppendAsync(
-                ThreadJournalLocation.Active,
-                Draft(threadId, sequence: 1, new { Text = "fact" }),
-                cancellationToken));
+        if (faultPoint == ThreadJournalFaultPoint.AfterFlushBeforeMemory)
+        {
+            var committed = await Assert.ThrowsAsync<ThreadJournalCommittedException>(
+                () => faulted.AppendAsync(
+                    ThreadJournalLocation.Active,
+                    Draft(threadId, sequence: 1, new { Text = "fact" }),
+                    cancellationToken));
+            Assert.Equal(1, committed.Entry.Sequence);
+        }
+        else
+        {
+            await Assert.ThrowsAsync<InjectedJournalFaultException>(
+                () => faulted.AppendAsync(
+                    ThreadJournalLocation.Active,
+                    Draft(threadId, sequence: 1, new { Text = "fact" }),
+                    cancellationToken));
+        }
         var path = faulted.GetPath(ThreadJournalLocation.Active, threadId);
 
         if (faultPoint == ThreadJournalFaultPoint.BeforeWrite)

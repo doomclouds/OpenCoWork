@@ -43,6 +43,14 @@ internal sealed record ThreadJournalSource(
 internal sealed record SessionProjectionRebuildResult(
     IReadOnlyList<Guid> RemovedOrphanThreadIds);
 
+internal sealed record ProjectedIdempotency(
+    Guid IdempotencyKey,
+    string Operation,
+    Guid ThreadId,
+    string RequestSha256,
+    long CommittedSequence,
+    ThreadSnapshot Thread);
+
 internal sealed class SessionProjectionException : InvalidOperationException
 {
     public SessionProjectionException(string code, string message)
@@ -365,6 +373,69 @@ internal sealed class SessionProjection
             tables[5].Count);
     }
 
+    public async Task<ThreadSnapshot?> ReadThreadSnapshotAsync(
+        Guid threadId,
+        CancellationToken cancellationToken = default)
+    {
+        SessionIds.RequireVersion7(threadId, nameof(threadId), "Thread ID");
+        await using var connection =
+            await _stateRuntime.OpenReadOnlyConnectionAsync(cancellationToken);
+        return await ReadThreadSnapshotCoreAsync(
+            connection,
+            transaction: null,
+            threadId,
+            SessionProjectionState.Ready,
+            cancellationToken);
+    }
+
+    public async Task<ProjectedIdempotency?> ReadIdempotencyAsync(
+        Guid idempotencyKey,
+        CancellationToken cancellationToken = default)
+    {
+        SessionIds.RequireVersion7(
+            idempotencyKey,
+            nameof(idempotencyKey),
+            "Idempotency key");
+        await using var connection =
+            await _stateRuntime.OpenReadOnlyConnectionAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText =
+            """
+            SELECT operation, thread_id, request_sha256,
+                   committed_sequence, result_json
+            FROM session_idempotency
+            WHERE idempotency_key = $key;
+            """;
+        command.Parameters.AddWithValue("$key", Wire(idempotencyKey));
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        if (!await reader.ReadAsync(cancellationToken))
+        {
+            return null;
+        }
+
+        var operation = reader.GetString(0);
+        var threadId = Guid.ParseExact(reader.GetString(1), "D");
+        var requestSha256 = reader.GetString(2);
+        var sequence = reader.GetInt64(3);
+        var receipt = JsonSerializer.Deserialize<ProjectionReceipt>(
+            reader.GetString(4),
+            JsonOptions);
+        if (receipt?.Thread is null)
+        {
+            throw ProjectionError(
+                SessionErrorCodes.ProjectionUnavailable,
+                "Projected idempotency result is incomplete.");
+        }
+
+        return new ProjectedIdempotency(
+            idempotencyKey,
+            operation,
+            threadId,
+            requestSha256,
+            sequence,
+            receipt.Thread.ToSnapshot());
+    }
+
     public Task SaveDeleteReceiptAsync(
         Guid threadId,
         Guid idempotencyKey,
@@ -488,12 +559,6 @@ internal sealed class SessionProjection
             transaction,
             entry,
             cancellationToken);
-        await InsertReceiptAsync(
-            connection,
-            transaction,
-            entry,
-            requestSha256,
-            cancellationToken);
         var updated = await ExecuteAsync(
             connection,
             transaction,
@@ -515,6 +580,22 @@ internal sealed class SessionProjection
                 "Projection did not retain the target thread.");
         }
 
+        var snapshot = await ReadThreadSnapshotCoreAsync(
+            connection,
+            transaction,
+            entry.ThreadId,
+            SessionProjectionState.Ready,
+            cancellationToken)
+            ?? throw ProjectionError(
+                SessionErrorCodes.InvalidState,
+                "Projection did not retain a readable thread snapshot.");
+        await InsertReceiptAsync(
+            connection,
+            transaction,
+            entry,
+            requestSha256,
+            snapshot,
+            cancellationToken);
         return ProjectionApplyDisposition.Applied;
     }
 
@@ -1276,6 +1357,7 @@ internal sealed class SessionProjection
         SqliteTransaction transaction,
         ThreadJournalEntry entry,
         string requestSha256,
+        ThreadSnapshot snapshot,
         CancellationToken cancellationToken)
     {
         var timestamp = UnixMilliseconds(entry.Timestamp);
@@ -1295,7 +1377,7 @@ internal sealed class SessionProjection
             ("$operation", Wire(entry.EntryType)),
             ("$threadId", Wire(entry.ThreadId)),
             ("$requestSha256", requestSha256),
-            ("$result", ReceiptJson(entry)),
+            ("$result", ReceiptJson(entry, snapshot)),
             ("$sequence", entry.Sequence),
             ("$timestamp", timestamp));
     }
@@ -1332,6 +1414,97 @@ internal sealed class SessionProjection
         }
 
         return rows.AsReadOnly();
+    }
+
+    private static async Task<ThreadSnapshot?> ReadThreadSnapshotCoreAsync(
+        SqliteConnection connection,
+        SqliteTransaction? transaction,
+        Guid threadId,
+        SessionProjectionState projectionState,
+        CancellationToken cancellationToken)
+    {
+        await using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText =
+            """
+            SELECT display_name, status, availability, history_mode,
+                   current_sequence, active_turn_id,
+                   created_utc, updated_utc, diagnostic
+            FROM threads
+            WHERE thread_id = $threadId;
+            """;
+        command.Parameters.AddWithValue("$threadId", Wire(threadId));
+        string displayName;
+        ThreadStatus status;
+        ThreadAvailability availability;
+        HistoryMode historyMode;
+        long currentSequence;
+        Guid? activeTurnId;
+        DateTimeOffset createdAt;
+        DateTimeOffset updatedAt;
+        string? diagnostic;
+        await using (var reader = await command.ExecuteReaderAsync(cancellationToken))
+        {
+            if (!await reader.ReadAsync(cancellationToken))
+            {
+                return null;
+            }
+
+            displayName = reader.GetString(0);
+            status = ParseWire<ThreadStatus>(reader.GetString(1));
+            availability = ParseWire<ThreadAvailability>(reader.GetString(2));
+            historyMode = ParseWire<HistoryMode>(reader.GetString(3));
+            currentSequence = reader.GetInt64(4);
+            activeTurnId = reader.IsDBNull(5)
+                ? null
+                : Guid.ParseExact(reader.GetString(5), "D");
+            createdAt = DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(6));
+            updatedAt = DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(7));
+            diagnostic = reader.IsDBNull(8) ? null : reader.GetString(8);
+        }
+
+        await using var queueCommand = connection.CreateCommand();
+        queueCommand.Transaction = transaction;
+        queueCommand.CommandText =
+            """
+            SELECT queue_item_id, payload_json, position, created_utc
+            FROM turn_queue
+            WHERE thread_id = $threadId
+            ORDER BY position, queue_item_id;
+            """;
+        queueCommand.Parameters.AddWithValue("$threadId", Wire(threadId));
+        await using var queueReader =
+            await queueCommand.ExecuteReaderAsync(cancellationToken);
+        var queue = new List<QueuedTurnInputSnapshot>();
+        while (await queueReader.ReadAsync(cancellationToken))
+        {
+            var fact = JsonSerializer.Deserialize<TurnQueuedFact>(
+                queueReader.GetString(1),
+                JsonOptions)
+                ?? throw ProjectionError(
+                    SessionErrorCodes.ProjectionUnavailable,
+                    "Projected queue payload is invalid.");
+            queue.Add(new QueuedTurnInputSnapshot(
+                Guid.ParseExact(queueReader.GetString(0), "D"),
+                threadId,
+                fact.Text,
+                queueReader.GetInt32(2),
+                DateTimeOffset.FromUnixTimeMilliseconds(queueReader.GetInt64(3))));
+        }
+
+        return new ThreadSnapshot(
+            threadId,
+            displayName,
+            status,
+            availability,
+            historyMode,
+            currentSequence,
+            activeTurnId,
+            queue,
+            createdAt,
+            updatedAt,
+            projectionState,
+            diagnostic);
     }
 
     private static async Task<IReadOnlyList<string>> ReadStringsAsync(
@@ -1440,8 +1613,15 @@ internal sealed class SessionProjection
         return value;
     }
 
-    private static string ReceiptJson(ThreadJournalEntry entry) =>
-        $"{{\"entryId\":\"{Wire(entry.EntryId)}\",\"checksum\":\"{entry.Checksum}\"}}";
+    private static string ReceiptJson(
+        ThreadJournalEntry entry,
+        ThreadSnapshot snapshot) =>
+        JsonSerializer.Serialize(
+            new ProjectionReceipt(
+                Wire(entry.EntryId),
+                entry.Checksum,
+                StoredThreadSnapshot.From(snapshot)),
+            JsonOptions);
 
     private static bool ReceiptMatches(
         string receiptJson,
@@ -1475,7 +1655,23 @@ internal sealed class SessionProjection
     private static string? SearchText(string? value) =>
         value is null
             ? null
-            : value.Normalize(NormalizationForm.FormKC).ToUpperInvariant();
+            : value.Normalize(NormalizationForm.FormC).ToUpperInvariant();
+
+    private static T ParseWire<T>(string value)
+        where T : struct, Enum
+    {
+        foreach (var candidate in Enum.GetValues<T>())
+        {
+            if (string.Equals(Wire(candidate), value, StringComparison.Ordinal))
+            {
+                return candidate;
+            }
+        }
+
+        throw ProjectionError(
+            SessionErrorCodes.ProjectionUnavailable,
+            $"Projected {typeof(T).Name} value is invalid.");
+    }
 
     private static string Wire(Guid value) =>
         value.ToString("D", CultureInfo.InvariantCulture).ToLowerInvariant();
@@ -1509,4 +1705,54 @@ internal sealed class SessionProjection
         string code,
         string message) =>
         new(code, message);
+
+    private sealed record ProjectionReceipt(
+        string EntryId,
+        string Checksum,
+        StoredThreadSnapshot Thread);
+
+    private sealed record StoredThreadSnapshot(
+        Guid ThreadId,
+        string DisplayName,
+        ThreadStatus Status,
+        ThreadAvailability Availability,
+        HistoryMode HistoryMode,
+        long CurrentSequence,
+        Guid? ActiveTurnId,
+        QueuedTurnInputSnapshot[] Queue,
+        DateTimeOffset CreatedAt,
+        DateTimeOffset UpdatedAt,
+        SessionProjectionState ProjectionState,
+        string? Diagnostic)
+    {
+        public static StoredThreadSnapshot From(ThreadSnapshot snapshot) =>
+            new(
+                snapshot.ThreadId,
+                snapshot.DisplayName,
+                snapshot.Status,
+                snapshot.Availability,
+                snapshot.HistoryMode,
+                snapshot.CurrentSequence,
+                snapshot.ActiveTurnId,
+                snapshot.Queue.ToArray(),
+                snapshot.CreatedAt,
+                snapshot.UpdatedAt,
+                snapshot.ProjectionState,
+                snapshot.Diagnostic);
+
+        public ThreadSnapshot ToSnapshot() =>
+            new(
+                ThreadId,
+                DisplayName,
+                Status,
+                Availability,
+                HistoryMode,
+                CurrentSequence,
+                ActiveTurnId,
+                Queue,
+                CreatedAt,
+                UpdatedAt,
+                ProjectionState,
+                Diagnostic);
+    }
 }

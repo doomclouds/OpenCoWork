@@ -140,6 +140,18 @@ public static class SessionErrorCodes
 
 public sealed record SessionError(string Code, string Message, bool IsRetryable);
 
+public sealed class SessionSubscriptionException : Exception
+{
+    public SessionSubscriptionException(SessionError error)
+        : base(error?.Message)
+    {
+        ArgumentNullException.ThrowIfNull(error);
+        Error = error;
+    }
+
+    public SessionError Error { get; }
+}
+
 public sealed record SessionCommandResult<T>(
     SessionCommandStatus Status,
     T? Value,
@@ -285,7 +297,7 @@ public sealed record SessionEvent(
     SessionEventType Type,
     SessionEventPayload Payload);
 
-public sealed class SessionSubscription
+public sealed class SessionSubscription : IAsyncDisposable
 {
     public SessionSubscription(
         SessionSubscriptionDisposition disposition,
@@ -308,6 +320,11 @@ public sealed class SessionSubscription
     public long CurrentSequence { get; }
 
     public IAsyncEnumerable<SessionEvent> Events { get; }
+
+    public ValueTask DisposeAsync() =>
+        Events is IAsyncDisposable disposable
+            ? disposable.DisposeAsync()
+            : ValueTask.CompletedTask;
 }
 
 public sealed record CreateThreadRequest(
