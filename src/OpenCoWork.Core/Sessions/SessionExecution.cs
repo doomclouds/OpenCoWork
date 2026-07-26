@@ -429,7 +429,7 @@ internal sealed partial class SessionService
 
             if (!CanAcceptNewWork)
             {
-                return ProjectionUnavailable<TurnSnapshot>();
+                return NewWorkUnavailable<TurnSnapshot>();
             }
 
             if (thread.Status != ThreadStatus.Active ||

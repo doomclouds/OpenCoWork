@@ -360,7 +360,9 @@ public sealed class WorkspaceRuntime : IAsyncDisposable
                 lock (_stateGate)
                 {
                     Volatile.Write(ref _startedState, startedState);
-                    SetStatus(WorkspaceRuntimeStatus.Running);
+                    SetStatus(_degradedModules.Count == 0
+                        ? WorkspaceRuntimeStatus.Running
+                        : WorkspaceRuntimeStatus.Degraded);
                 }
             }
             catch (OperationCanceledException) when (!_coordinator.HasPendingCleanup)
@@ -404,7 +406,10 @@ public sealed class WorkspaceRuntime : IAsyncDisposable
             ThrowIfDisposed();
             EnsureHealthSignalAllowed(moduleId);
             _degradedModules[moduleId] = reason;
-            SetStatus(WorkspaceRuntimeStatus.Degraded);
+            if (Status != WorkspaceRuntimeStatus.Starting)
+            {
+                SetStatus(WorkspaceRuntimeStatus.Degraded);
+            }
         }
     }
 
@@ -417,9 +422,12 @@ public sealed class WorkspaceRuntime : IAsyncDisposable
             ThrowIfDisposed();
             EnsureHealthSignalAllowed(moduleId);
             _degradedModules.Remove(moduleId);
-            SetStatus(_degradedModules.Count == 0
-                ? WorkspaceRuntimeStatus.Running
-                : WorkspaceRuntimeStatus.Degraded);
+            if (Status != WorkspaceRuntimeStatus.Starting)
+            {
+                SetStatus(_degradedModules.Count == 0
+                    ? WorkspaceRuntimeStatus.Running
+                    : WorkspaceRuntimeStatus.Degraded);
+            }
         }
     }
 
@@ -474,6 +482,7 @@ public sealed class WorkspaceRuntime : IAsyncDisposable
     private void EnsureHealthSignalAllowed(string moduleId)
     {
         if (Status is not (
+            WorkspaceRuntimeStatus.Starting or
             WorkspaceRuntimeStatus.Running or WorkspaceRuntimeStatus.Degraded))
         {
             throw new WorkspaceRuntimeStateException(

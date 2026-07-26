@@ -162,6 +162,81 @@ public sealed class SessionQueueTests
     }
 
     [Fact]
+    public async Task First_text_input_sets_grapheme_safe_title_and_manual_rename_disables_it()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        using var files = new TempWorkspace();
+        var (_, journal, service) = await CreateServiceAsync(
+            files,
+            cancellationToken);
+        var automatic = (await service.CreateThreadAsync(
+            new CreateThreadRequest(
+                Guid.CreateVersion7(),
+                ExpectedSequence: 0,
+                DisplayName: null),
+            cancellationToken)).Value!;
+        var input = string.Concat(Enumerable.Repeat("👨‍👩‍👧‍👦", 51)) + " searchable";
+
+        await service.EnqueueInputAsync(
+            new EnqueueInputRequest(
+                automatic.ThreadId,
+                Guid.CreateVersion7(),
+                automatic.CurrentSequence,
+                input),
+            cancellationToken);
+
+        var titled = await service.GetThreadAsync(
+            automatic.ThreadId,
+            cancellationToken);
+        Assert.Equal(
+            50,
+            System.Globalization.StringInfo.ParseCombiningCharacters(
+                titled.Value!.DisplayName).Length);
+        var search = await service.SearchThreadsAsync(
+            new SearchThreadsRequest(
+                "searchable",
+                Cursor: null,
+                PageSize: 100,
+                IncludeArchived: false),
+            cancellationToken);
+        Assert.Contains(
+            search.Value!.Items,
+            item => item.ThreadId == automatic.ThreadId);
+        var replay = await journal.ReplayAsync(
+            ThreadJournalLocation.Active,
+            automatic.ThreadId,
+            cancellationToken);
+        Assert.Contains(
+            replay.Entries,
+            entry => entry.EntryType == SessionEventType.ThreadRenamed);
+
+        var manual = (await service.CreateThreadAsync(
+            new CreateThreadRequest(
+                Guid.CreateVersion7(),
+                ExpectedSequence: 0,
+                DisplayName: null),
+            cancellationToken)).Value!;
+        var renamed = await service.RenameThreadAsync(
+            new RenameThreadRequest(
+                manual.ThreadId,
+                Guid.CreateVersion7(),
+                manual.CurrentSequence,
+                "New thread"),
+            cancellationToken);
+        await service.EnqueueInputAsync(
+            new EnqueueInputRequest(
+                manual.ThreadId,
+                Guid.CreateVersion7(),
+                renamed.Value!.CurrentSequence,
+                "must not overwrite"),
+            cancellationToken);
+        var unchanged = await service.GetThreadAsync(
+            manual.ThreadId,
+            cancellationToken);
+        Assert.Equal("New thread", unchanged.Value!.DisplayName);
+    }
+
+    [Fact]
     public async Task Rejected_steer_keeps_the_committed_user_message_and_fails_the_turn()
     {
         var cancellationToken = TestContext.Current.CancellationToken;

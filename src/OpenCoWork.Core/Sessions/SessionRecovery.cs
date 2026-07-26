@@ -59,6 +59,14 @@ internal sealed partial class SessionService
         await threadGate.WaitAsync(cancellationToken);
         try
         {
+            if (!CanAcceptNewWork)
+            {
+                var unavailable = NewWorkUnavailable<DeletePreparation>();
+                return new SessionQueryResult<DeletePreparation>(
+                    null,
+                    unavailable.Error);
+            }
+
             var thread = await GetSnapshotAsync(request.ThreadId, cancellationToken);
             if (thread is null)
             {
@@ -159,6 +167,11 @@ internal sealed partial class SessionService
                     requestSha256,
                     journalMatch,
                     cancellationToken);
+            }
+
+            if (!CanAcceptNewWork)
+            {
+                return NewWorkUnavailable<bool>();
             }
 
             var threadGate = GetThreadGate(request.ThreadId);
@@ -348,6 +361,11 @@ internal sealed partial class SessionService
                 return replayed;
             }
 
+            if (!CanAcceptNewWork)
+            {
+                return NewWorkUnavailable<ThreadSnapshot>();
+            }
+
             ThreadSnapshot source;
             ThreadJournalEntry[] sourceEntries;
             var sourceGate = GetThreadGate(request.SourceThreadId);
@@ -494,15 +512,7 @@ internal sealed partial class SessionService
 
             if (!CanAcceptNewWork)
             {
-                return new SessionCommandResult<RollbackResult>(
-                    SessionCommandStatus.Rejected,
-                    null,
-                    null,
-                    null,
-                    new SessionError(
-                        SessionErrorCodes.ProjectionUnavailable,
-                        "Session projection is unavailable.",
-                        IsRetryable: true));
+                return NewWorkUnavailable<RollbackResult>();
             }
 
             var threadGate = GetThreadGate(request.ThreadId);
@@ -610,6 +620,10 @@ internal sealed partial class SessionService
                 if (found.Length != 1)
                 {
                     failures.Add(threadId);
+                    await MarkRecoveryRequiredAsync(
+                        threadId,
+                        "Thread journal exists in more than one lifecycle directory.",
+                        cancellationToken);
                     continue;
                 }
 
@@ -623,6 +637,10 @@ internal sealed partial class SessionService
                             cancellationToken))
                     {
                         failures.Add(threadId);
+                        await MarkRecoveryRequiredAsync(
+                            threadId,
+                            "Thread journal requires recovery.",
+                            cancellationToken);
                     }
                 }
                 finally
@@ -633,6 +651,10 @@ internal sealed partial class SessionService
             catch
             {
                 failures.Add(threadId);
+                await MarkRecoveryRequiredAsync(
+                    threadId,
+                    "Thread recovery failed.",
+                    CancellationToken.None);
             }
         }
 
@@ -656,6 +678,20 @@ internal sealed partial class SessionService
         }
 
         return failures.Order().ToArray();
+    }
+
+    private async Task MarkRecoveryRequiredAsync(
+        Guid threadId,
+        string diagnostic,
+        CancellationToken cancellationToken)
+    {
+        var snapshot = await _projection.ReadThreadSnapshotAsync(
+            threadId,
+            cancellationToken);
+        if (snapshot is not null)
+        {
+            MarkRecoveryRequired(snapshot, diagnostic);
+        }
     }
 
     private async Task<bool> RecoverJournalAsync(
@@ -783,7 +819,7 @@ internal sealed partial class SessionService
 
             if (!CanAcceptNewWork)
             {
-                return ProjectionUnavailable<ThreadSnapshot>();
+                return NewWorkUnavailable<ThreadSnapshot>();
             }
 
             var threadGate = GetThreadGate(request.ThreadId);

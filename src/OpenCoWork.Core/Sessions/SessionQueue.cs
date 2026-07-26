@@ -44,7 +44,7 @@ internal sealed partial class SessionService
 
             if (!CanAcceptNewWork)
             {
-                return ProjectionUnavailable<QueuedTurnInputSnapshot>();
+                return NewWorkUnavailable<QueuedTurnInputSnapshot>();
             }
 
             var threadGate = GetThreadGate(request.ThreadId);
@@ -84,6 +84,13 @@ internal sealed partial class SessionService
                         thread.CurrentSequence);
                 }
 
+                var shouldAutoTitle = string.Equals(
+                                          thread.DisplayName,
+                                          "New thread",
+                                          StringComparison.Ordinal) &&
+                                      !await HasRenameFactAsync(
+                                          thread,
+                                          cancellationToken);
                 var timestamp = _timeProvider.GetUtcNow();
                 var queueItem = new QueuedTurnInputSnapshot(
                     Guid.CreateVersion7(),
@@ -116,6 +123,36 @@ internal sealed partial class SessionService
                 {
                     _queueIdempotency[request.IdempotencyKey] =
                         new QueueIdempotency(operation, requestSha256, result);
+                    if (shouldAutoTitle)
+                    {
+                        var title = AutoTitle(request.Text);
+                        if (title.Length != 0)
+                        {
+                            var titleOperation = InternalRequestHash(
+                                SessionEventType.ThreadRenamed,
+                                new
+                                {
+                                    ThreadId = Wire(request.ThreadId),
+                                    title,
+                                    Automatic = true,
+                                });
+                            var titledThread = CopySnapshot(
+                                nextThread,
+                                displayName: title,
+                                currentSequence: nextThread.CurrentSequence + 1,
+                                updatedAt: timestamp);
+                            await CommitAsync(
+                                titleOperation.IdempotencyKey,
+                                Wire(SessionEventType.ThreadRenamed),
+                                titleOperation.RequestSha256,
+                                titledThread,
+                                new ThreadRenamedFact(
+                                    title,
+                                    titleOperation.RequestSha256),
+                                SessionEventType.ThreadRenamed,
+                                CancellationToken.None);
+                        }
+                    }
                 }
             }
             finally
@@ -134,6 +171,29 @@ internal sealed partial class SessionService
         }
 
         return result;
+    }
+
+    private async Task<bool> HasRenameFactAsync(
+        ThreadSnapshot thread,
+        CancellationToken cancellationToken)
+    {
+        var replay = await _journal.ReplayAsync(
+            thread.Status == ThreadStatus.Archived
+                ? ThreadJournalLocation.Archived
+                : ThreadJournalLocation.Active,
+            thread.ThreadId,
+            cancellationToken);
+        return replay.Entries.Any(
+            entry => entry.EntryType == SessionEventType.ThreadRenamed);
+    }
+
+    private static string AutoTitle(string text)
+    {
+        var value = text.Trim();
+        var elements = System.Globalization.StringInfo.ParseCombiningCharacters(value);
+        return elements.Length <= 50
+            ? value
+            : value[..elements[50]];
     }
 
     public Task<SessionCommandResult<ThreadSnapshot>> RemoveQueuedInputAsync(
@@ -270,7 +330,7 @@ internal sealed partial class SessionService
 
             if (!CanAcceptNewWork)
             {
-                return ProjectionUnavailable<ThreadSnapshot>();
+                return NewWorkUnavailable<ThreadSnapshot>();
             }
 
             var threadGate = GetThreadGate(request.ThreadId);
@@ -468,7 +528,7 @@ internal sealed partial class SessionService
 
             if (!CanAcceptNewWork)
             {
-                return ProjectionUnavailable<ThreadSnapshot>();
+                return NewWorkUnavailable<ThreadSnapshot>();
             }
 
             var threadGate = GetThreadGate(threadId);

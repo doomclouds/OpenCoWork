@@ -48,6 +48,28 @@ public sealed class WorkspaceRuntimeTests
     }
 
     [Fact]
+    public async Task Module_can_report_degraded_while_runtime_is_starting()
+    {
+        var probe = new LifecycleProbe();
+        WorkspaceRuntime? runtime = null;
+        probe.StartActions["root"] = _ =>
+        {
+            runtime!.ReportDegraded("root", "startup recovery is incomplete");
+            return ValueTask.CompletedTask;
+        };
+        runtime = CreateRuntime(
+            probe,
+            Module<RootModule>("root", [], canBePrimaryHost: true));
+
+        await runtime.StartAsync(TestContext.Current.CancellationToken);
+
+        Assert.Equal(WorkspaceRuntimeStatus.Degraded, runtime.Status);
+        runtime.ClearDegraded("root");
+        Assert.Equal(WorkspaceRuntimeStatus.Running, runtime.Status);
+        await runtime.StopAsync(TestContext.Current.CancellationToken);
+    }
+
+    [Fact]
     public async Task Startup_failure_rolls_back_only_successful_modules_and_requires_fault_cleanup()
     {
         var probe = new LifecycleProbe();

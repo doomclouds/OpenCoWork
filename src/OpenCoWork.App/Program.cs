@@ -8,6 +8,7 @@ using OpenCoWork.Core.Configuration;
 using OpenCoWork.Core.Diagnostics;
 using OpenCoWork.Core.Hosting;
 using OpenCoWork.Core.Logging;
+using OpenCoWork.Core.Sessions;
 using OpenCoWork.Core.Workspaces;
 using OpenCoWork.Generated;
 
@@ -256,22 +257,62 @@ namespace OpenCoWork.App
 
     public static class OpenCoWorkCompositionRoot
     {
-        public static IHost Build(string[] args)
+        public static IHost Build(
+            string[] args,
+            string? workspaceRoot = null,
+            Action<IServiceCollection>? configureServices = null)
         {
             ArgumentNullException.ThrowIfNull(args);
 
             var registry = new ModuleRegistry(RuntimeCatalog.Modules);
             var primaryHost = registry.SelectPrimaryModule();
             var builder = Host.CreateApplicationBuilder(args);
+            var runtimeConfig = new RuntimeConfig();
+            builder.Services.AddSingleton(
+                WorkspaceDiscovery.Discover(
+                    Environment.CurrentDirectory,
+                    workspaceRoot));
+            builder.Services.AddSingleton(runtimeConfig);
+            builder.Services.AddSingleton(new SessionConfig());
+            configureServices?.Invoke(builder.Services);
             builder.Services.AddOpenCoWorkRuntime(
                 registry,
                 primaryHost,
-                new RuntimeConfig().StopTimeout);
+                runtimeConfig.StopTimeout);
             return builder.Build();
         }
     }
 
-    [OpenCoWorkModule("cli", CanBePrimaryHost = true)]
+    [OpenCoWorkModule("session")]
+    public sealed class SessionModule : IOpenCoWorkModule
+    {
+        public void ConfigureServices(IServiceCollection services) =>
+            services.AddOpenCoWorkSessionRuntime();
+
+        public async ValueTask StartAsync(
+            IServiceProvider services,
+            CancellationToken cancellationToken)
+        {
+            var session = services.GetRequiredService<SessionRuntime>();
+            await session.StartAsync(cancellationToken);
+            if (session.IsDegraded)
+            {
+                services.GetRequiredService<WorkspaceRuntime>().ReportDegraded(
+                    "session",
+                    "Session projection recovery is incomplete.");
+            }
+        }
+
+        public ValueTask StopAsync(
+            IServiceProvider services,
+            CancellationToken cancellationToken) =>
+            new(services.GetRequiredService<SessionRuntime>().StopAsync(cancellationToken));
+    }
+
+    [OpenCoWorkModule(
+        "cli",
+        Dependencies = ["session"],
+        CanBePrimaryHost = true)]
     public sealed class CliModule : IOpenCoWorkModule
     {
         public void ConfigureServices(IServiceCollection services)

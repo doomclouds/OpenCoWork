@@ -83,6 +83,19 @@ internal sealed class SessionEventChannel
         }
     }
 
+    public void Complete()
+    {
+        lock (_gate)
+        {
+            foreach (var subscriber in _subscribers.Values.SelectMany(static item => item))
+            {
+                subscriber.Channel.Writer.TryComplete();
+            }
+
+            _subscribers.Clear();
+        }
+    }
+
     private async IAsyncEnumerable<SessionEvent> ReadAllAsync(
         Subscriber subscriber,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)

@@ -33,6 +33,7 @@ internal sealed partial class SessionService : ISessionService
     private readonly List<SessionEvent> _pendingEvents = [];
     private readonly SemaphoreSlim _projectionRecoveryGate = new(1, 1);
     private int _recoveryPublishing;
+    private int _acceptingWork = 1;
 
     public SessionService(
         StateRuntime stateRuntime,
@@ -107,7 +108,7 @@ internal sealed partial class SessionService : ISessionService
 
             if (!CanAcceptNewWork)
             {
-                return ProjectionUnavailable<ThreadSnapshot>();
+                return NewWorkUnavailable<ThreadSnapshot>();
             }
 
             var displayName = string.IsNullOrWhiteSpace(request.DisplayName)
@@ -609,7 +610,7 @@ internal sealed partial class SessionService : ISessionService
 
             if (!CanAcceptNewWork)
             {
-                return ProjectionUnavailable<ThreadSnapshot>();
+                return NewWorkUnavailable<ThreadSnapshot>();
             }
 
             var threadGate = GetThreadGate(threadId);
@@ -1306,16 +1307,26 @@ internal sealed partial class SessionService : ISessionService
             currentSequence,
             new SessionError(code, message, IsRetryable: false));
 
-    private static SessionCommandResult<T> ProjectionUnavailable<T>() =>
-        new(
-            SessionCommandStatus.Rejected,
-            default,
-            null,
-            null,
-            new SessionError(
-                SessionErrorCodes.ProjectionUnavailable,
-                "Session projection is unavailable.",
-                IsRetryable: true));
+    private SessionCommandResult<T> NewWorkUnavailable<T>() =>
+        Volatile.Read(ref _acceptingWork) == 0
+            ? new SessionCommandResult<T>(
+                SessionCommandStatus.Rejected,
+                default,
+                null,
+                null,
+                new SessionError(
+                    SessionErrorCodes.RuntimeShuttingDown,
+                    "Session runtime is not accepting new work.",
+                    IsRetryable: true))
+            : new SessionCommandResult<T>(
+                SessionCommandStatus.Rejected,
+                default,
+                null,
+                null,
+                new SessionError(
+                    SessionErrorCodes.ProjectionUnavailable,
+                    "Session projection is unavailable.",
+                    IsRetryable: true));
 
     private static SessionCommandResult<T> NotAvailable<T>() =>
         Rejected<T>(
@@ -1339,6 +1350,7 @@ internal sealed partial class SessionService : ISessionService
         SessionCommandResult<ThreadSnapshot> Result);
 
     private bool CanAcceptNewWork =>
+        Volatile.Read(ref _acceptingWork) != 0 &&
         _projection.CanAcceptNewWork &&
         Volatile.Read(ref _recoveryPublishing) == 0;
 }
