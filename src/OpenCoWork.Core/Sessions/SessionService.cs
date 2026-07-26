@@ -12,7 +12,7 @@ using OpenCoWork.Core.State;
 
 namespace OpenCoWork.Core.Sessions;
 
-internal sealed class SessionService : ISessionService
+internal sealed partial class SessionService : ISessionService
 {
     private const int MaximumPageSize = 100;
     private static readonly JsonSerializerOptions JsonOptions = new()
@@ -39,7 +39,10 @@ internal sealed class SessionService : ISessionService
         ThreadJournal journal,
         SessionProjection projection,
         SessionConfig config,
-        TimeProvider? timeProvider = null)
+        TimeProvider? timeProvider = null,
+        ISessionExecutor? executor = null,
+        string? executorKind = null,
+        Action<SessionExecutionFaultPoint>? executionFaultInjector = null)
     {
         ArgumentNullException.ThrowIfNull(stateRuntime);
         ArgumentNullException.ThrowIfNull(journal);
@@ -50,6 +53,10 @@ internal sealed class SessionService : ISessionService
         _projection = projection;
         _eventChannel = new SessionEventChannel(config.EventBufferCapacity);
         _timeProvider = timeProvider ?? TimeProvider.System;
+        _sessionConfig = config;
+        _executor = executor;
+        _executorKind = executorKind;
+        _executionFaultInjector = executionFaultInjector;
     }
 
     public async Task<SessionCommandResult<ThreadSnapshot>> CreateThreadAsync(
@@ -389,16 +396,6 @@ internal sealed class SessionService : ISessionService
         CancellationToken cancellationToken = default) =>
         Task.FromResult(NotAvailable<ThreadSnapshot>());
 
-    public Task<SessionCommandResult<TurnSnapshot>> CancelTurnAsync(
-        CancelTurnRequest request,
-        CancellationToken cancellationToken = default) =>
-        Task.FromResult(NotAvailable<TurnSnapshot>());
-
-    public Task<SessionCommandResult<PendingInteractionSnapshot>> ResolveInteractionAsync(
-        ResolveInteractionRequest request,
-        CancellationToken cancellationToken = default) =>
-        Task.FromResult(NotAvailable<PendingInteractionSnapshot>());
-
     public async Task<SessionSubscription> SubscribeAsync(
         SessionSubscriptionRequest request,
         CancellationToken cancellationToken = default)
@@ -725,7 +722,8 @@ internal sealed class SessionService : ISessionService
         ThreadSnapshot snapshot,
         object fact,
         SessionEventType eventType,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        SessionEventPayload? eventPayload = null)
     {
         ThreadJournalEntry entry;
         try
@@ -768,7 +766,9 @@ internal sealed class SessionService : ISessionService
             entry.EntryId,
             entry.Timestamp,
             entry.EntryType,
-            new SessionEventPayload(Thread: resultSnapshot));
+            eventPayload is null
+                ? new SessionEventPayload(Thread: resultSnapshot)
+                : eventPayload with { Thread = resultSnapshot });
         if (!projectionPending)
         {
             _eventChannel.Publish(sessionEvent);
@@ -1069,21 +1069,7 @@ internal sealed class SessionService : ISessionService
     {
         try
         {
-            var result = new List<SessionEvent>(entries.Count);
-            ThreadSnapshot? snapshot = null;
-            foreach (var entry in entries)
-            {
-                snapshot = ApplyHistoryFact(snapshot, entry);
-                result.Add(new SessionEvent(
-                    entry.ThreadId,
-                    entry.Sequence,
-                    entry.EntryId,
-                    entry.Timestamp,
-                    entry.EntryType,
-                    new SessionEventPayload(Thread: snapshot)));
-            }
-
-            events = result.ToArray();
+            events = BuildHistoryEvents(entries);
             return true;
         }
         catch (Exception exception) when (
@@ -1127,6 +1113,7 @@ internal sealed class SessionService : ISessionService
 
         var displayName = snapshot.DisplayName;
         var status = snapshot.Status;
+        var activeTurnId = snapshot.ActiveTurnId;
         switch (entry.EntryType)
         {
             case SessionEventType.ThreadRenamed:
@@ -1143,6 +1130,16 @@ internal sealed class SessionService : ISessionService
             case SessionEventType.ThreadArchived:
                 status = ThreadStatus.Archived;
                 break;
+            case SessionEventType.TurnStarted:
+                activeTurnId = entry.Payload
+                    .Deserialize<TurnStartedFact>(JsonOptions)?.TurnId
+                    ?? throw new JsonException("Turn start fact is missing.");
+                break;
+            case SessionEventType.TurnCompleted:
+            case SessionEventType.TurnFailed:
+            case SessionEventType.TurnCancelled:
+                activeTurnId = null;
+                break;
         }
 
         return new ThreadSnapshot(
@@ -1152,7 +1149,7 @@ internal sealed class SessionService : ISessionService
             snapshot.Availability,
             snapshot.HistoryMode,
             entry.Sequence,
-            snapshot.ActiveTurnId,
+            activeTurnId,
             snapshot.Queue,
             snapshot.CreatedAt,
             entry.Timestamp,

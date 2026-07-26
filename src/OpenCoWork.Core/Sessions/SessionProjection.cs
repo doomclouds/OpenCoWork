@@ -950,6 +950,22 @@ internal sealed class SessionProjection
         var status = expectedType == SessionInteractionType.Approval
             ? "waitingApproval"
             : "waitingInput";
+        var expectedItemType = expectedType == SessionInteractionType.Approval
+            ? SessionItemType.ApprovalRequest
+            : SessionItemType.UserInputRequest;
+        if (fact.RequestItemType != expectedItemType ||
+            fact.ContentLength < 0 ||
+            !IsLowerSha256(fact.ContentSha256) ||
+            !ContentMetadataMatches(
+                fact.ContentText,
+                fact.ContentLength,
+                fact.ContentSha256))
+        {
+            throw ProjectionError(
+                SessionErrorCodes.InvalidState,
+                "Waiting request item metadata is invalid.");
+        }
+
         var timestamp = UnixMilliseconds(entry.Timestamp);
         await ExecuteRequiredAsync(
             connection,
@@ -966,6 +982,57 @@ internal sealed class SessionProjection
             ("$timestamp", timestamp),
             ("$turnId", Wire(fact.TurnId)),
             ("$threadId", Wire(entry.ThreadId)));
+        await ExecuteAsync(
+            connection,
+            transaction,
+            """
+            INSERT OR IGNORE INTO items (
+                item_id, thread_id, turn_id, sequence,
+                item_type, status, payload_json, content_text,
+                content_length, content_sha256, created_utc, updated_utc)
+            VALUES (
+                $itemId, $threadId, $turnId, $sequence,
+                $itemType, 'completed', $request, $contentText,
+                $contentLength, $contentSha256, $timestamp, $timestamp);
+            """,
+            cancellationToken,
+            ("$itemId", Wire(fact.ItemId)),
+            ("$threadId", Wire(entry.ThreadId)),
+            ("$turnId", Wire(fact.TurnId)),
+            ("$sequence", entry.Sequence),
+            ("$itemType", Wire(fact.RequestItemType)),
+            ("$request", fact.Request.GetRawText()),
+            ("$contentText", fact.ContentText),
+            ("$contentLength", fact.ContentLength),
+            ("$contentSha256", fact.ContentSha256),
+            ("$timestamp", timestamp));
+        await ExecuteRequiredAsync(
+            connection,
+            transaction,
+            """
+            UPDATE items
+            SET status = 'completed',
+                content_length = $contentLength,
+                content_sha256 = $contentSha256,
+                updated_utc = $timestamp
+            WHERE item_id = $itemId
+              AND thread_id = $threadId
+              AND turn_id = $turnId
+              AND item_type = $itemType
+              AND payload_json = $request
+              AND COALESCE(content_text, '') = COALESCE($contentText, '')
+              AND status IN ('started', 'completed');
+            """,
+            cancellationToken,
+            ("$contentLength", fact.ContentLength),
+            ("$contentSha256", fact.ContentSha256),
+            ("$timestamp", timestamp),
+            ("$itemId", Wire(fact.ItemId)),
+            ("$threadId", Wire(entry.ThreadId)),
+            ("$turnId", Wire(fact.TurnId)),
+            ("$itemType", Wire(fact.RequestItemType)),
+            ("$request", fact.Request.GetRawText()),
+            ("$contentText", fact.ContentText));
         await ExecuteRequiredAsync(
             connection,
             transaction,
@@ -991,7 +1058,7 @@ internal sealed class SessionProjection
             ("$timestamp", timestamp));
     }
 
-    private static Task ApplyInteractionResolvedAsync(
+    private static async Task ApplyInteractionResolvedAsync(
         SqliteConnection connection,
         SqliteTransaction transaction,
         ThreadJournalEntry entry,
@@ -1002,7 +1069,60 @@ internal sealed class SessionProjection
             fact.InteractionId,
             nameof(fact.InteractionId),
             "Interaction ID");
-        return ExecuteRequiredAsync(
+        SessionIds.RequireVersion7(
+            fact.ResponseItemId,
+            nameof(fact.ResponseItemId),
+            "Response item ID");
+        if (fact.ContentLength < 0 || !IsLowerSha256(fact.ContentSha256))
+        {
+            throw ProjectionError(
+                SessionErrorCodes.InvalidState,
+                "Interaction response content metadata is invalid.");
+        }
+        if (!ContentMetadataMatches(
+                fact.ContentText,
+                fact.ContentLength,
+                fact.ContentSha256))
+        {
+            throw ProjectionError(
+                SessionErrorCodes.JournalCorrupt,
+                "Interaction response content metadata does not match its content.");
+        }
+
+        var timestamp = UnixMilliseconds(entry.Timestamp);
+        await ExecuteRequiredAsync(
+            connection,
+            transaction,
+            """
+            INSERT INTO items (
+                item_id, thread_id, turn_id, sequence,
+                item_type, status, payload_json, content_text,
+                content_length, content_sha256, created_utc, updated_utc)
+            SELECT
+                $itemId, $threadId, turn_id, $sequence,
+                $itemType, 'completed', $resolution, $contentText,
+                $contentLength, $contentSha256, $timestamp, $timestamp
+            FROM pending_interactions
+            WHERE interaction_id = $interactionId
+              AND thread_id = $threadId
+              AND status = 'pending'
+              AND (
+                  (interaction_type = 'approval' AND $itemType = 'approvalResponse')
+                  OR
+                  (interaction_type = 'userInput' AND $itemType = 'userInputResponse'));
+            """,
+            cancellationToken,
+            ("$itemId", Wire(fact.ResponseItemId)),
+            ("$threadId", Wire(entry.ThreadId)),
+            ("$sequence", entry.Sequence),
+            ("$itemType", Wire(fact.ResponseItemType)),
+            ("$resolution", fact.Resolution.GetRawText()),
+            ("$contentText", fact.ContentText),
+            ("$contentLength", fact.ContentLength),
+            ("$contentSha256", fact.ContentSha256),
+            ("$timestamp", timestamp),
+            ("$interactionId", Wire(fact.InteractionId)));
+        await ExecuteRequiredAsync(
             connection,
             transaction,
             """
@@ -1016,7 +1136,7 @@ internal sealed class SessionProjection
             """,
             cancellationToken,
             ("$resolution", fact.Resolution.GetRawText()),
-            ("$timestamp", UnixMilliseconds(entry.Timestamp)),
+            ("$timestamp", timestamp),
             ("$interactionId", Wire(fact.InteractionId)),
             ("$threadId", Wire(entry.ThreadId)));
     }
@@ -1693,6 +1813,16 @@ internal sealed class SessionProjection
         value.Length == 64 &&
         value.All(character =>
             character is >= '0' and <= '9' or >= 'a' and <= 'f');
+
+    private static bool ContentMetadataMatches(
+        string? content,
+        int length,
+        string sha256)
+    {
+        var bytes = Encoding.UTF8.GetBytes(content ?? string.Empty);
+        return bytes.Length == length &&
+               string.Equals(Hash(bytes), sha256, StringComparison.Ordinal);
+    }
 
     private static SessionProjectionException SequenceConflict(
         long actual,

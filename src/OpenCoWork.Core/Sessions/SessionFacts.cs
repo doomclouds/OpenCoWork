@@ -34,14 +34,23 @@ internal sealed record TurnWaitingFact(
     Guid InteractionId,
     Guid ItemId,
     SessionInteractionType InteractionType,
+    SessionItemType RequestItemType,
     JsonElement Request,
+    string? ContentText,
+    int ContentLength,
+    string ContentSha256,
     SessionExecutionCheckpoint Checkpoint,
     DateTimeOffset? TimeoutAt,
     string RequestSha256);
 
 internal sealed record InteractionResolvedFact(
     Guid InteractionId,
+    Guid ResponseItemId,
+    SessionItemType ResponseItemType,
     JsonElement Resolution,
+    string? ContentText,
+    int ContentLength,
+    string ContentSha256,
     string RequestSha256);
 
 internal sealed record TurnExecutionResumedFact(

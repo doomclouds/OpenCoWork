@@ -26,6 +26,7 @@ public sealed class SessionProjectionTests
         var queueItemId = Guid.CreateVersion7();
         var requestItemId = Guid.CreateVersion7();
         var interactionId = Guid.CreateVersion7();
+        var responseItemId = Guid.CreateVersion7();
         var agentItemId = Guid.CreateVersion7();
         var entries = new List<ThreadJournalEntry>
         {
@@ -73,7 +74,11 @@ public sealed class SessionProjectionTests
                     interactionId,
                     requestItemId,
                     SessionInteractionType.Approval,
+                    SessionItemType.ApprovalRequest,
                     JsonSerializer.SerializeToElement(new { Prompt = "approve?" }),
+                    "approve?",
+                    ContentLength: 8,
+                    RequestHashText("approve?"),
                     new SessionExecutionCheckpoint(
                         "test",
                         1,
@@ -89,7 +94,12 @@ public sealed class SessionProjectionTests
                 SessionEventType.InteractionResolved,
                 new InteractionResolvedFact(
                     interactionId,
+                    responseItemId,
+                    SessionItemType.ApprovalResponse,
                     JsonSerializer.SerializeToElement(new { Approved = true }),
+                    ContentText: null,
+                    ContentLength: 0,
+                    RequestHashText(string.Empty),
                     RequestHash(6)),
                 cancellationToken),
             await AppendAsync(
@@ -157,7 +167,7 @@ public sealed class SessionProjectionTests
         Assert.Equal(SessionErrorCodes.IdempotencyConflict, conflict.Code);
         Assert.Equal(1, snapshot.ThreadCount);
         Assert.Equal(1, snapshot.TurnCount);
-        Assert.Equal(2, snapshot.ItemCount);
+        Assert.Equal(3, snapshot.ItemCount);
         Assert.Equal(1, snapshot.QueueCount);
         Assert.Equal(1, snapshot.InteractionCount);
         Assert.Equal(11, snapshot.IdempotencyCount);
