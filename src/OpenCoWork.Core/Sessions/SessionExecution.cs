@@ -19,6 +19,14 @@ internal enum SessionExecutionStop
     Terminal,
 }
 
+internal interface ISessionSteerReceiver
+{
+    ValueTask SteerAsync(
+        Guid turnId,
+        SessionItemSnapshot input,
+        CancellationToken cancellationToken);
+}
+
 internal static class SessionExecutionCheckpointCodec
 {
     private const int MaximumPayloadBytes = 256 * 1024;
@@ -382,7 +390,8 @@ internal sealed partial class SessionService
         Guid turnId,
         Guid idempotencyKey,
         long expectedSequence,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        QueuedTurnInputSnapshot? queuedInput = null)
     {
         RequireId(threadId, nameof(threadId), "Thread ID");
         RequireId(turnId, nameof(turnId), "Turn ID");
@@ -423,7 +432,11 @@ internal sealed partial class SessionService
 
             if (thread.Status != ThreadStatus.Active ||
                 thread.Availability != ThreadAvailability.Available ||
-                thread.ActiveTurnId is not null)
+                thread.ActiveTurnId is not null ||
+                queuedInput is not null &&
+                (thread.Queue.Count == 0 ||
+                 thread.Queue[0].QueueItemId != queuedInput.QueueItemId ||
+                 queuedInput.ThreadId != threadId))
             {
                 return Rejected<TurnSnapshot>(
                     SessionErrorCodes.InvalidState,
@@ -447,27 +460,63 @@ internal sealed partial class SessionService
                     ThreadId = Wire(threadId),
                     TurnId = Wire(turnId),
                     ExpectedSequence = expectedSequence,
+                    QueueItemId = queuedInput is null
+                        ? null
+                        : Wire(queuedInput.QueueItemId),
+                    queuedInput?.Text,
                 });
+            var userItem = queuedInput is null
+                ? null
+                : new SessionItemSnapshot(
+                    Guid.CreateVersion7(),
+                    turnId,
+                    SessionItemType.UserMessage,
+                    SessionItemStatus.Completed,
+                    new TextItemContent(queuedInput.Text),
+                    thread.CurrentSequence + 1,
+                    timestamp,
+                    timestamp);
+            var nextQueue = queuedInput is null
+                ? thread.Queue
+                : thread.Queue
+                    .Skip(1)
+                    .Select((item, position) => item with { Position = position })
+                    .ToArray();
             var nextThread = ExecutionThread(
                 thread,
                 thread.CurrentSequence + 1,
                 timestamp,
-                turnId);
+                turnId,
+                nextQueue);
             var committed = await CommitAsync(
                 idempotencyKey,
                 Wire(SessionEventType.TurnStarted),
                 requestSha256,
                 nextThread,
-                new TurnStartedFact(turnId, requestSha256),
+                new TurnStartedFact(
+                    turnId,
+                    queuedInput?.QueueItemId,
+                    userItem?.ItemId,
+                    queuedInput?.Text,
+                    RequestSha256: requestSha256),
                 SessionEventType.TurnStarted,
                 cancellationToken,
-                new SessionEventPayload(Turn: turn));
+                new SessionEventPayload(
+                    Turn: turn,
+                    Item: userItem,
+                    QueueItem: queuedInput));
             if (committed.Status == SessionCommandStatus.Rejected)
             {
                 return ConvertResult(committed, turn);
             }
 
             _turns[turnId] = turn;
+            if (userItem is not null)
+            {
+                _items[userItem.ItemId] = userItem;
+                _itemText[userItem.ItemId] = queuedInput!.Text;
+            }
+
             result = ConvertResult(committed, turn);
         }
         finally
@@ -1029,13 +1078,21 @@ internal sealed partial class SessionService
         }
         finally
         {
-            if (_turns.TryGetValue(turnId, out var turn) &&
-                turn.Status is TurnStatus.Completed or TurnStatus.Failed or TurnStatus.Cancelled &&
+            var terminal = _turns.TryGetValue(turnId, out var turn) &&
+                           turn.Status is TurnStatus.Completed
+                               or TurnStatus.Failed
+                               or TurnStatus.Cancelled;
+            if (terminal &&
                 _executionRuns.TryGetValue(turnId, out var current) &&
                 ReferenceEquals(current, run) &&
                 _executionRuns.TryRemove(turnId, out _))
             {
                 await run.DisposeAsync();
+            }
+
+            if (terminal)
+            {
+                await TryScheduleNextAsync(threadId, CancellationToken.None);
             }
         }
     }
@@ -1571,6 +1628,7 @@ internal sealed partial class SessionService
 
         var threadGate = GetThreadGate(knownTurn.ThreadId);
         await threadGate.WaitAsync(cancellationToken);
+        var committed = false;
         try
         {
             var thread = await GetSnapshotAsync(knownTurn.ThreadId, cancellationToken);
@@ -1587,10 +1645,16 @@ internal sealed partial class SessionService
                 SessionEventType.TurnFailed,
                 error,
                 cancellationToken);
+            committed = true;
         }
         finally
         {
             threadGate.Release();
+        }
+
+        if (committed)
+        {
+            await TryScheduleNextAsync(knownTurn.ThreadId, CancellationToken.None);
         }
     }
 
@@ -1666,6 +1730,34 @@ internal sealed partial class SessionService
                         entry.Timestamp,
                         CompletedAt: null,
                         Error: null);
+                    if (started.UserItemId is { } userItemId &&
+                        started.Text is { } userText)
+                    {
+                        _items[userItemId] = new SessionItemSnapshot(
+                            userItemId,
+                            started.TurnId,
+                            SessionItemType.UserMessage,
+                            SessionItemStatus.Completed,
+                            new TextItemContent(userText),
+                            entry.Sequence,
+                            entry.Timestamp,
+                            entry.Timestamp);
+                        _itemText[userItemId] = userText;
+                    }
+
+                    break;
+                case SessionEventType.TurnSteered:
+                    var steered = ReadFact<TurnSteeredFact>(entry);
+                    _items[steered.UserItemId] = new SessionItemSnapshot(
+                        steered.UserItemId,
+                        steered.TurnId,
+                        SessionItemType.UserMessage,
+                        SessionItemStatus.Completed,
+                        new TextItemContent(steered.Text),
+                        entry.Sequence,
+                        entry.Timestamp,
+                        entry.Timestamp);
+                    _itemText[steered.UserItemId] = steered.Text;
                     break;
                 case SessionEventType.ItemStarted:
                     RestoreStartedItem(entry);
@@ -1712,16 +1804,49 @@ internal sealed partial class SessionService
         var items = new Dictionary<Guid, SessionItemSnapshot>();
         var texts = new Dictionary<Guid, string>();
         var interactions = new Dictionary<Guid, PendingInteractionSnapshot>();
+        var queueItems = new Dictionary<Guid, QueuedTurnInputSnapshot>();
         ThreadSnapshot? thread = null;
         foreach (var entry in entries)
         {
             thread = ApplyHistoryFact(thread, entry);
             TurnSnapshot? turn = null;
             SessionItemSnapshot? item = null;
+            QueuedTurnInputSnapshot? queueItem = null;
             PendingInteractionSnapshot? interaction = null;
             SessionError? error = null;
             switch (entry.EntryType)
             {
+                case SessionEventType.TurnQueued:
+                    var queued = ReadFact<TurnQueuedFact>(entry);
+                    var queuedItem = new QueuedTurnInputSnapshot(
+                        queued.QueueItemId,
+                        entry.ThreadId,
+                        queued.Text,
+                        queued.Position,
+                        entry.Timestamp);
+                    queueItems[queued.QueueItemId] = queuedItem;
+                    events.Add(new SessionEvent(
+                        entry.ThreadId,
+                        entry.Sequence,
+                        entry.EntryId,
+                        entry.Timestamp,
+                        entry.EntryType,
+                        new SessionEventPayload(
+                            Thread: thread,
+                            QueueItem: queuedItem)));
+                    continue;
+                case SessionEventType.TurnQueueChanged:
+                    var queueChanged = ReadFact<TurnQueueChangedFact>(entry);
+                    var removedQueueItem = queueChanged.RemovedQueueItemId is { } removedId
+                        ? queueItems.GetValueOrDefault(removedId)
+                        : null;
+                    if (removedQueueItem is not null)
+                    {
+                        queueItems.Remove(removedQueueItem.QueueItemId);
+                    }
+
+                    queueItem = removedQueueItem;
+                    break;
                 case SessionEventType.TurnStarted:
                     var started = ReadFact<TurnStartedFact>(entry);
                     turn = new TurnSnapshot(
@@ -1733,7 +1858,68 @@ internal sealed partial class SessionService
                         CompletedAt: null,
                         Error: null);
                     turns[started.TurnId] = turn;
+                    if (started.QueueItemId is { } scheduledQueueItemId &&
+                        started.UserItemId is { } userItemId &&
+                        started.Text is { } userText)
+                    {
+                        var scheduledQueueItem =
+                            queueItems.GetValueOrDefault(scheduledQueueItemId);
+                        queueItems.Remove(scheduledQueueItemId);
+                        item = new SessionItemSnapshot(
+                            userItemId,
+                            started.TurnId,
+                            SessionItemType.UserMessage,
+                            SessionItemStatus.Completed,
+                            new TextItemContent(userText),
+                            entry.Sequence,
+                            entry.Timestamp,
+                            entry.Timestamp);
+                        items[item.ItemId] = item;
+                        texts[item.ItemId] = userText;
+                        events.Add(new SessionEvent(
+                            entry.ThreadId,
+                            entry.Sequence,
+                            entry.EntryId,
+                            entry.Timestamp,
+                            entry.EntryType,
+                            new SessionEventPayload(
+                                Thread: thread,
+                                Turn: turn,
+                                Item: item,
+                                QueueItem: scheduledQueueItem)));
+                        continue;
+                    }
+
                     break;
+                case SessionEventType.TurnSteered:
+                    var steered = ReadFact<TurnSteeredFact>(entry);
+                    var steeredQueueItem =
+                        queueItems.GetValueOrDefault(steered.QueueItemId);
+                    queueItems.Remove(steered.QueueItemId);
+                    turn = turns.GetValueOrDefault(steered.TurnId);
+                    item = new SessionItemSnapshot(
+                        steered.UserItemId,
+                        steered.TurnId,
+                        SessionItemType.UserMessage,
+                        SessionItemStatus.Completed,
+                        new TextItemContent(steered.Text),
+                        entry.Sequence,
+                        entry.Timestamp,
+                        entry.Timestamp);
+                    items[item.ItemId] = item;
+                    texts[item.ItemId] = steered.Text;
+                    events.Add(new SessionEvent(
+                        entry.ThreadId,
+                        entry.Sequence,
+                        entry.EntryId,
+                        entry.Timestamp,
+                        entry.EntryType,
+                        new SessionEventPayload(
+                            Thread: thread,
+                            Turn: turn,
+                            Item: item,
+                            QueueItem: steeredQueueItem)));
+                    continue;
                 case SessionEventType.ItemStarted:
                     var itemStarted = ReadFact<ItemStartedFact>(entry);
                     item = new SessionItemSnapshot(
@@ -1874,6 +2060,7 @@ internal sealed partial class SessionService
                     Thread: thread,
                     Turn: turn,
                     Item: item,
+                    QueueItem: queueItem,
                     Interaction: interaction,
                     Error: error)));
         }
@@ -2162,7 +2349,8 @@ internal sealed partial class SessionService
         ThreadSnapshot thread,
         long sequence,
         DateTimeOffset timestamp,
-        Guid? activeTurnId) =>
+        Guid? activeTurnId,
+        IReadOnlyList<QueuedTurnInputSnapshot>? queue = null) =>
         new(
             thread.ThreadId,
             thread.DisplayName,
@@ -2171,7 +2359,7 @@ internal sealed partial class SessionService
             thread.HistoryMode,
             sequence,
             activeTurnId,
-            thread.Queue,
+            queue ?? thread.Queue,
             thread.CreatedAt,
             timestamp,
             thread.ProjectionState,

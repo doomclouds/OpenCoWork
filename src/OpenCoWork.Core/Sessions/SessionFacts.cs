@@ -23,10 +23,21 @@ internal sealed record TurnQueuedFact(
 
 internal sealed record TurnQueueChangedFact(
     IReadOnlyList<Guid> QueueItemIds,
+    Guid? RemovedQueueItemId,
     string RequestSha256);
 
 internal sealed record TurnStartedFact(
     Guid TurnId,
+    Guid? QueueItemId,
+    Guid? UserItemId,
+    string? Text,
+    string RequestSha256);
+
+internal sealed record TurnSteeredFact(
+    Guid TurnId,
+    Guid QueueItemId,
+    Guid UserItemId,
+    string Text,
     string RequestSha256);
 
 internal sealed record TurnWaitingFact(

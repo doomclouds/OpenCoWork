@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Collections.Concurrent;
 using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
@@ -113,6 +114,11 @@ internal sealed class ThreadJournal
     };
     private readonly OpenCoWorkPaths _paths;
     private readonly Action<ThreadJournalFaultPoint>? _faultInjector;
+    private readonly SemaphoreSlim _idempotencyIndexGate = new(1, 1);
+    private readonly ConcurrentDictionary<Guid, IdempotencyIndexEntry>
+        _idempotencyIndex = [];
+    private readonly ConcurrentDictionary<Guid, SemaphoreSlim> _journalGates = [];
+    private volatile bool _idempotencyIndexInitialized;
 
     public ThreadJournal(
         OpenCoWorkPaths paths,
@@ -135,6 +141,51 @@ internal sealed class ThreadJournal
         ThreadJournalLocation location,
         ThreadJournalDraft draft,
         CancellationToken cancellationToken = default)
+    {
+        if (_idempotencyIndexInitialized)
+        {
+            return await AppendWithJournalGateAsync(
+                location,
+                draft,
+                cancellationToken);
+        }
+
+        await _idempotencyIndexGate.WaitAsync(cancellationToken);
+        try
+        {
+            return await AppendWithJournalGateAsync(
+                location,
+                draft,
+                cancellationToken);
+        }
+        finally
+        {
+            _idempotencyIndexGate.Release();
+        }
+    }
+
+    private async Task<ThreadJournalEntry> AppendWithJournalGateAsync(
+        ThreadJournalLocation location,
+        ThreadJournalDraft draft,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(draft);
+        var gate = GetJournalGate(draft.ThreadId);
+        await gate.WaitAsync(cancellationToken);
+        try
+        {
+            return await AppendCoreAsync(location, draft, cancellationToken);
+        }
+        finally
+        {
+            gate.Release();
+        }
+    }
+
+    private async Task<ThreadJournalEntry> AppendCoreAsync(
+        ThreadJournalLocation location,
+        ThreadJournalDraft draft,
+        CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(draft);
         ValidateDraft(draft);
@@ -193,6 +244,11 @@ internal sealed class ThreadJournal
 
         _faultInjector?.Invoke(ThreadJournalFaultPoint.BeforeFlush);
         stream.Flush(flushToDisk: true);
+        if (_idempotencyIndexInitialized)
+        {
+            Index(committedEntry);
+        }
+
         try
         {
             _faultInjector?.Invoke(ThreadJournalFaultPoint.AfterFlushBeforeMemory);
@@ -209,6 +265,23 @@ internal sealed class ThreadJournal
         ThreadJournalLocation location,
         Guid threadId,
         CancellationToken cancellationToken = default)
+    {
+        var gate = GetJournalGate(threadId);
+        await gate.WaitAsync(cancellationToken);
+        try
+        {
+            return await ReplayCoreAsync(location, threadId, cancellationToken);
+        }
+        finally
+        {
+            gate.Release();
+        }
+    }
+
+    private async Task<ThreadJournalReplayResult> ReplayCoreAsync(
+        ThreadJournalLocation location,
+        Guid threadId,
+        CancellationToken cancellationToken)
     {
         var path = GetPath(location, threadId);
         GuardPath(path);
@@ -289,55 +362,134 @@ internal sealed class ThreadJournal
             idempotencyKey,
             nameof(idempotencyKey),
             "Idempotency key");
+        await EnsureIdempotencyIndexAsync(cancellationToken);
+        if (!_idempotencyIndex.TryGetValue(idempotencyKey, out var indexed))
+        {
+            return null;
+        }
+
+        if (indexed.Conflict)
+        {
+            throw IdempotencyConflict();
+        }
+
         ThreadJournalMatch? match = null;
         foreach (var location in Enum.GetValues<ThreadJournalLocation>())
         {
-            var directory = GetDirectory(location);
-            GuardPath(directory);
-            if (!Directory.Exists(directory))
+            var path = GetPath(location, indexed.ThreadId);
+            GuardPath(path);
+            if (!File.Exists(path))
             {
                 continue;
             }
 
-            foreach (var path in Directory.EnumerateFiles(
-                         directory,
-                         "*.jsonl",
-                         SearchOption.TopDirectoryOnly)
-                     .Order(StringComparer.Ordinal))
+            var replay = await ReplayAsync(
+                location,
+                indexed.ThreadId,
+                cancellationToken);
+            foreach (var entry in replay.Entries.Where(
+                         entry => entry.IdempotencyKey == idempotencyKey))
             {
-                cancellationToken.ThrowIfCancellationRequested();
-                var fileName = Path.GetFileNameWithoutExtension(path);
-                if (!string.Equals(
-                        fileName,
-                        fileName.ToLowerInvariant(),
-                        StringComparison.Ordinal) ||
-                    !Guid.TryParseExact(fileName, "D", out var threadId) ||
-                    threadId.Version != 7)
+                if (match is not null)
                 {
-                    continue;
+                    throw IdempotencyConflict();
                 }
 
-                var replay = await ReplayAsync(
-                    location,
-                    threadId,
-                    cancellationToken);
-                foreach (var entry in replay.Entries.Where(
-                             entry => entry.IdempotencyKey == idempotencyKey))
-                {
-                    if (match is not null)
-                    {
-                        throw new ThreadJournalException(
-                            SessionErrorCodes.IdempotencyConflict,
-                            "Idempotency key appears in more than one journal entry.");
-                    }
-
-                    match = new ThreadJournalMatch(location, replay, entry);
-                }
+                match = new ThreadJournalMatch(location, replay, entry);
             }
         }
 
         return match;
     }
+
+    private async Task EnsureIdempotencyIndexAsync(
+        CancellationToken cancellationToken)
+    {
+        if (_idempotencyIndexInitialized)
+        {
+            return;
+        }
+
+        await _idempotencyIndexGate.WaitAsync(cancellationToken);
+        try
+        {
+            if (_idempotencyIndexInitialized)
+            {
+                return;
+            }
+
+            _idempotencyIndex.Clear();
+            foreach (var location in Enum.GetValues<ThreadJournalLocation>())
+            {
+                var directory = GetDirectory(location);
+                GuardPath(directory);
+                if (!Directory.Exists(directory))
+                {
+                    continue;
+                }
+
+                foreach (var path in Directory.EnumerateFiles(
+                             directory,
+                             "*.jsonl",
+                             SearchOption.TopDirectoryOnly)
+                         .Order(StringComparer.Ordinal))
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    var fileName = Path.GetFileNameWithoutExtension(path);
+                    if (!string.Equals(
+                            fileName,
+                            fileName.ToLowerInvariant(),
+                            StringComparison.Ordinal) ||
+                        !Guid.TryParseExact(fileName, "D", out var threadId) ||
+                        threadId.Version != 7)
+                    {
+                        continue;
+                    }
+
+                    var replay = await ReplayAsync(
+                        location,
+                        threadId,
+                        cancellationToken);
+                    foreach (var entry in replay.Entries)
+                    {
+                        Index(entry);
+                    }
+                }
+            }
+
+            _idempotencyIndexInitialized = true;
+        }
+        finally
+        {
+            _idempotencyIndexGate.Release();
+        }
+    }
+
+    private void Index(ThreadJournalEntry entry)
+    {
+        var indexed = new IdempotencyIndexEntry(
+            entry.ThreadId,
+            entry.Sequence,
+            entry.EntryId,
+            Conflict: false);
+        _idempotencyIndex.AddOrUpdate(
+            entry.IdempotencyKey,
+            indexed,
+            (_, current) =>
+                current.ThreadId == indexed.ThreadId &&
+                current.Sequence == indexed.Sequence &&
+                current.EntryId == indexed.EntryId
+                    ? current
+                    : current with { Conflict = true });
+    }
+
+    private static ThreadJournalException IdempotencyConflict() =>
+        new(
+            SessionErrorCodes.IdempotencyConflict,
+            "Idempotency key appears in more than one journal entry.");
+
+    private SemaphoreSlim GetJournalGate(Guid threadId) =>
+        _journalGates.GetOrAdd(threadId, static _ => new SemaphoreSlim(1, 1));
 
     private async Task<ThreadJournalReplayResult> RecoverTailAsync(
         ThreadJournalLocation location,
@@ -438,7 +590,7 @@ internal sealed class ThreadJournal
         var entries = scan.Entries
             .Where(entry => entry.Sequence <= scan.Entries.Count)
             .ToList();
-        var recovered = await AppendAsync(
+        var recovered = await AppendCoreAsync(
             intent.Location,
             new ThreadJournalDraft(
                 intent.ThreadId,
@@ -1212,6 +1364,12 @@ internal sealed class ThreadJournal
         ScanFailure Failure,
         string? DiagnosticCode,
         string? Diagnostic);
+
+    private sealed record IdempotencyIndexEntry(
+        Guid ThreadId,
+        long Sequence,
+        Guid EntryId,
+        bool Conflict);
 
     private sealed record RecoveryIntent(
         Guid ThreadId,

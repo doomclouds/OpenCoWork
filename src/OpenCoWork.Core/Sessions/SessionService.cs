@@ -331,17 +331,23 @@ internal sealed partial class SessionService : ISessionService
             cancellationToken);
     }
 
-    public Task<SessionCommandResult<ThreadSnapshot>> ResumeThreadAsync(
+    public async Task<SessionCommandResult<ThreadSnapshot>> ResumeThreadAsync(
         ThreadMutationRequest request,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(request);
-        return ChangeStatusAsync(
+        var result = await ChangeStatusAsync(
             request,
             SessionEventType.ThreadResumed,
             ThreadStatus.Paused,
             ThreadStatus.Active,
             cancellationToken);
+        if (result.Status != SessionCommandStatus.Rejected)
+        {
+            await TryScheduleNextAsync(request.ThreadId, CancellationToken.None);
+        }
+
+        return result;
     }
 
     public Task<SessionCommandResult<ThreadSnapshot>> ArchiveThreadAsync(
@@ -375,26 +381,6 @@ internal sealed partial class SessionService : ISessionService
         RollbackThreadRequest request,
         CancellationToken cancellationToken = default) =>
         Task.FromResult(NotAvailable<RollbackResult>());
-
-    public Task<SessionCommandResult<QueuedTurnInputSnapshot>> EnqueueInputAsync(
-        EnqueueInputRequest request,
-        CancellationToken cancellationToken = default) =>
-        Task.FromResult(NotAvailable<QueuedTurnInputSnapshot>());
-
-    public Task<SessionCommandResult<ThreadSnapshot>> RemoveQueuedInputAsync(
-        RemoveQueuedInputRequest request,
-        CancellationToken cancellationToken = default) =>
-        Task.FromResult(NotAvailable<ThreadSnapshot>());
-
-    public Task<SessionCommandResult<ThreadSnapshot>> ReorderQueuedInputsAsync(
-        ReorderQueuedInputsRequest request,
-        CancellationToken cancellationToken = default) =>
-        Task.FromResult(NotAvailable<ThreadSnapshot>());
-
-    public Task<SessionCommandResult<ThreadSnapshot>> SteerTurnAsync(
-        SteerTurnRequest request,
-        CancellationToken cancellationToken = default) =>
-        Task.FromResult(NotAvailable<ThreadSnapshot>());
 
     public async Task<SessionSubscription> SubscribeAsync(
         SessionSubscriptionRequest request,
@@ -1114,6 +1100,7 @@ internal sealed partial class SessionService : ISessionService
         var displayName = snapshot.DisplayName;
         var status = snapshot.Status;
         var activeTurnId = snapshot.ActiveTurnId;
+        IReadOnlyList<QueuedTurnInputSnapshot> queue = snapshot.Queue;
         switch (entry.EntryType)
         {
             case SessionEventType.ThreadRenamed:
@@ -1131,9 +1118,45 @@ internal sealed partial class SessionService : ISessionService
                 status = ThreadStatus.Archived;
                 break;
             case SessionEventType.TurnStarted:
-                activeTurnId = entry.Payload
-                    .Deserialize<TurnStartedFact>(JsonOptions)?.TurnId
+                var started = entry.Payload
+                    .Deserialize<TurnStartedFact>(JsonOptions)
                     ?? throw new JsonException("Turn start fact is missing.");
+                activeTurnId = started.TurnId;
+                if (started.QueueItemId is { } scheduledQueueItemId)
+                {
+                    queue = RepositionQueue(
+                        queue.Where(item => item.QueueItemId != scheduledQueueItemId));
+                }
+
+                break;
+            case SessionEventType.TurnQueued:
+                var queued = entry.Payload
+                    .Deserialize<TurnQueuedFact>(JsonOptions)
+                    ?? throw new JsonException("Queue fact is missing.");
+                queue = RepositionQueue(
+                    queue.Append(new QueuedTurnInputSnapshot(
+                        queued.QueueItemId,
+                        entry.ThreadId,
+                        queued.Text,
+                        queued.Position,
+                        entry.Timestamp)));
+                break;
+            case SessionEventType.TurnQueueChanged:
+                var changed = entry.Payload
+                    .Deserialize<TurnQueueChangedFact>(JsonOptions)
+                    ?? throw new JsonException("Queue change fact is missing.");
+                var byId = queue.ToDictionary(item => item.QueueItemId);
+                queue = changed.QueueItemIds
+                    .Select((itemId, position) =>
+                        byId[itemId] with { Position = position })
+                    .ToArray();
+                break;
+            case SessionEventType.TurnSteered:
+                var steered = entry.Payload
+                    .Deserialize<TurnSteeredFact>(JsonOptions)
+                    ?? throw new JsonException("Steer fact is missing.");
+                queue = RepositionQueue(
+                    queue.Where(item => item.QueueItemId != steered.QueueItemId));
                 break;
             case SessionEventType.TurnCompleted:
             case SessionEventType.TurnFailed:
@@ -1150,12 +1173,17 @@ internal sealed partial class SessionService : ISessionService
             snapshot.HistoryMode,
             entry.Sequence,
             activeTurnId,
-            snapshot.Queue,
+            queue,
             snapshot.CreatedAt,
             entry.Timestamp,
             snapshot.ProjectionState,
             snapshot.Diagnostic);
     }
+
+    private static IReadOnlyList<QueuedTurnInputSnapshot> RepositionQueue(
+        IEnumerable<QueuedTurnInputSnapshot> queue) =>
+        Array.AsReadOnly(
+            queue.Select((item, position) => item with { Position = position }).ToArray());
 
     private static async IAsyncEnumerable<SessionEvent> CombineEvents(
         IEnumerable<SessionEvent> catchUp,

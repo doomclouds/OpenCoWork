@@ -49,7 +49,12 @@ public sealed class SessionProjectionTests
                 threadId,
                 3,
                 SessionEventType.TurnStarted,
-                new TurnStartedFact(turnId, RequestHash(3)),
+                new TurnStartedFact(
+                    turnId,
+                    QueueItemId: null,
+                    UserItemId: null,
+                    Text: null,
+                    RequestSha256: RequestHash(3)),
                 cancellationToken),
             await AppendAsync(
                 journal,
@@ -239,7 +244,12 @@ public sealed class SessionProjectionTests
                 threadId,
                 2,
                 SessionEventType.TurnStarted,
-                new TurnStartedFact(turnId, RequestHash(2)),
+                new TurnStartedFact(
+                    turnId,
+                    QueueItemId: null,
+                    UserItemId: null,
+                    Text: null,
+                    RequestSha256: RequestHash(2)),
                 cancellationToken),
             await AppendAsync(
                 journal,

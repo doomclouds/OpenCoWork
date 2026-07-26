@@ -648,6 +648,9 @@ internal sealed class SessionProjection
             case SessionEventType.TurnQueueChanged:
                 await ApplyQueueChangedAsync(connection, transaction, entry, cancellationToken);
                 return;
+            case SessionEventType.TurnSteered:
+                await ApplyTurnSteeredAsync(connection, transaction, entry, cancellationToken);
+                return;
             case SessionEventType.TurnStarted:
                 await ApplyTurnStartedAsync(connection, transaction, entry, cancellationToken);
                 return;
@@ -790,13 +793,22 @@ internal sealed class SessionProjection
     {
         var fact = ReadFact<TurnQueuedFact>(entry);
         SessionIds.RequireVersion7(fact.QueueItemId, nameof(fact.QueueItemId), "Queue item ID");
+        ArgumentException.ThrowIfNullOrWhiteSpace(fact.Text);
         await ExecuteRequiredAsync(
             connection,
             transaction,
             """
             INSERT INTO turn_queue (
                 queue_item_id, thread_id, position, payload_json, created_utc)
-            VALUES ($itemId, $threadId, $position, $payload, $timestamp);
+            SELECT $itemId, $threadId, $position, $payload, $timestamp
+            WHERE EXISTS (
+                SELECT 1 FROM threads
+                WHERE thread_id = $threadId
+                  AND status IN ('active', 'paused')
+                  AND availability = 'available')
+              AND $position = (
+                  SELECT count(*) FROM turn_queue WHERE thread_id = $threadId)
+              AND $position < 128;
             """,
             cancellationToken,
             ("$itemId", Wire(fact.QueueItemId)),
@@ -851,11 +863,35 @@ internal sealed class SessionProjection
             .Select(Wire)
             .Order(StringComparer.Ordinal)
             .ToArray();
-        if (!existing.SequenceEqual(expected, StringComparer.Ordinal))
+        var expectedBeforeChange = fact.RemovedQueueItemId is { } removedQueueItemId
+            ? expected
+                .Append(Wire(removedQueueItemId))
+                .Order(StringComparer.Ordinal)
+                .ToArray()
+            : expected;
+        if (!existing.SequenceEqual(expectedBeforeChange, StringComparer.Ordinal))
         {
             throw ProjectionError(
                 SessionErrorCodes.InvalidState,
                 "Queue order does not contain the current queue membership.");
+        }
+
+        if (fact.RemovedQueueItemId is { } removed)
+        {
+            SessionIds.RequireVersion7(
+                removed,
+                nameof(fact.RemovedQueueItemId),
+                "Removed queue item ID");
+            await ExecuteRequiredAsync(
+                connection,
+                transaction,
+                """
+                DELETE FROM turn_queue
+                WHERE thread_id = $threadId AND queue_item_id = $itemId;
+                """,
+                cancellationToken,
+                ("$threadId", Wire(entry.ThreadId)),
+                ("$itemId", Wire(removed)));
         }
 
         await ExecuteAsync(
@@ -889,6 +925,68 @@ internal sealed class SessionProjection
     {
         var fact = ReadFact<TurnStartedFact>(entry);
         SessionIds.RequireVersion7(fact.TurnId, nameof(fact.TurnId), "Turn ID");
+        var scheduled = fact.QueueItemId is not null ||
+                        fact.UserItemId is not null ||
+                        fact.Text is not null;
+        if (scheduled &&
+            (fact.QueueItemId is null ||
+             fact.UserItemId is null ||
+             string.IsNullOrWhiteSpace(fact.Text)))
+        {
+            throw ProjectionError(
+                SessionErrorCodes.InvalidState,
+                "Scheduled turn input is incomplete.");
+        }
+
+        if (scheduled)
+        {
+            SessionIds.RequireVersion7(
+                fact.QueueItemId!.Value,
+                nameof(fact.QueueItemId),
+                "Queue item ID");
+            SessionIds.RequireVersion7(
+                fact.UserItemId!.Value,
+                nameof(fact.UserItemId),
+                "User item ID");
+            var queuedInput = await ReadQueueInputAsync(
+                connection,
+                transaction,
+                entry.ThreadId,
+                fact.QueueItemId.Value,
+                requireHead: true,
+                cancellationToken);
+            if (!string.Equals(queuedInput.Text, fact.Text, StringComparison.Ordinal))
+            {
+                throw ProjectionError(
+                    SessionErrorCodes.JournalCorrupt,
+                    "Scheduled turn text does not match its queued input.");
+            }
+
+            await ExecuteRequiredAsync(
+                connection,
+                transaction,
+                """
+                DELETE FROM turn_queue
+                WHERE queue_item_id = $queueItemId
+                  AND thread_id = $threadId
+                  AND position = 0
+                  AND EXISTS (
+                      SELECT 1 FROM threads
+                      WHERE thread_id = $threadId
+                        AND status = 'active'
+                        AND availability = 'available'
+                        AND active_turn_id IS NULL);
+                """,
+                cancellationToken,
+                ("$queueItemId", Wire(fact.QueueItemId.Value)),
+                ("$threadId", Wire(entry.ThreadId)));
+            await NormalizeQueueAsync(
+                connection,
+                transaction,
+                entry.ThreadId,
+                cancellationToken);
+        }
+
         var timestamp = UnixMilliseconds(entry.Timestamp);
         await ExecuteRequiredAsync(
             connection,
@@ -922,6 +1020,190 @@ internal sealed class SessionProjection
             cancellationToken,
             ("$turnId", Wire(fact.TurnId)),
             ("$threadId", Wire(entry.ThreadId)));
+        if (scheduled)
+        {
+            var text = fact.Text!;
+            var bytes = Encoding.UTF8.GetBytes(text);
+            await ExecuteRequiredAsync(
+                connection,
+                transaction,
+                """
+                INSERT INTO items (
+                    item_id, thread_id, turn_id, sequence,
+                    item_type, status, payload_json, content_text,
+                    content_length, content_sha256, created_utc, updated_utc)
+                VALUES (
+                    $itemId, $threadId, $turnId, $sequence,
+                    'userMessage', 'completed', $payload, $text,
+                    $length, $sha256, $timestamp, $timestamp);
+                """,
+                cancellationToken,
+                ("$itemId", Wire(fact.UserItemId!.Value)),
+                ("$threadId", Wire(entry.ThreadId)),
+                ("$turnId", Wire(fact.TurnId)),
+                ("$sequence", entry.Sequence),
+                ("$payload", JsonSerializer.Serialize(
+                    new TextItemContent(text),
+                    JsonOptions)),
+                ("$text", text),
+                ("$length", bytes.Length),
+                ("$sha256", Hash(bytes)),
+                ("$timestamp", timestamp));
+        }
+    }
+
+    private static async Task ApplyTurnSteeredAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        ThreadJournalEntry entry,
+        CancellationToken cancellationToken)
+    {
+        var fact = ReadFact<TurnSteeredFact>(entry);
+        SessionIds.RequireVersion7(fact.TurnId, nameof(fact.TurnId), "Turn ID");
+        SessionIds.RequireVersion7(
+            fact.QueueItemId,
+            nameof(fact.QueueItemId),
+            "Queue item ID");
+        SessionIds.RequireVersion7(
+            fact.UserItemId,
+            nameof(fact.UserItemId),
+            "User item ID");
+        ArgumentException.ThrowIfNullOrWhiteSpace(fact.Text);
+        var queuedInput = await ReadQueueInputAsync(
+            connection,
+            transaction,
+            entry.ThreadId,
+            fact.QueueItemId,
+            requireHead: false,
+            cancellationToken);
+        if (!string.Equals(queuedInput.Text, fact.Text, StringComparison.Ordinal))
+        {
+            throw ProjectionError(
+                SessionErrorCodes.JournalCorrupt,
+                "Steer text does not match its queued input.");
+        }
+
+        await ExecuteRequiredAsync(
+            connection,
+            transaction,
+            """
+            DELETE FROM turn_queue
+            WHERE queue_item_id = $queueItemId
+              AND thread_id = $threadId
+              AND EXISTS (
+                  SELECT 1 FROM threads
+                  WHERE thread_id = $threadId AND active_turn_id = $turnId)
+              AND EXISTS (
+                  SELECT 1 FROM turns
+                  WHERE turn_id = $turnId
+                    AND thread_id = $threadId
+                    AND status = 'running');
+            """,
+            cancellationToken,
+            ("$queueItemId", Wire(fact.QueueItemId)),
+            ("$threadId", Wire(entry.ThreadId)),
+            ("$turnId", Wire(fact.TurnId)));
+        await NormalizeQueueAsync(
+            connection,
+            transaction,
+            entry.ThreadId,
+            cancellationToken);
+        var timestamp = UnixMilliseconds(entry.Timestamp);
+        var bytes = Encoding.UTF8.GetBytes(fact.Text);
+        await ExecuteRequiredAsync(
+            connection,
+            transaction,
+            """
+            INSERT INTO items (
+                item_id, thread_id, turn_id, sequence,
+                item_type, status, payload_json, content_text,
+                content_length, content_sha256, created_utc, updated_utc)
+            VALUES (
+                $itemId, $threadId, $turnId, $sequence,
+                'userMessage', 'completed', $payload, $text,
+                $length, $sha256, $timestamp, $timestamp);
+            """,
+            cancellationToken,
+            ("$itemId", Wire(fact.UserItemId)),
+            ("$threadId", Wire(entry.ThreadId)),
+            ("$turnId", Wire(fact.TurnId)),
+            ("$sequence", entry.Sequence),
+            ("$payload", JsonSerializer.Serialize(
+                new TextItemContent(fact.Text),
+                JsonOptions)),
+            ("$text", fact.Text),
+            ("$length", bytes.Length),
+            ("$sha256", Hash(bytes)),
+            ("$timestamp", timestamp));
+    }
+
+    private static async Task NormalizeQueueAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        Guid threadId,
+        CancellationToken cancellationToken)
+    {
+        var queueItemIds = await ReadStringsAsync(
+            connection,
+            transaction,
+            """
+            SELECT queue_item_id FROM turn_queue
+            WHERE thread_id = $threadId
+            ORDER BY position, queue_item_id;
+            """,
+            cancellationToken,
+            ("$threadId", Wire(threadId)));
+        await ExecuteAsync(
+            connection,
+            transaction,
+            "UPDATE turn_queue SET position = position + 1000 WHERE thread_id = $threadId;",
+            cancellationToken,
+            ("$threadId", Wire(threadId)));
+        for (var index = 0; index < queueItemIds.Count; index++)
+        {
+            await ExecuteRequiredAsync(
+                connection,
+                transaction,
+                """
+                UPDATE turn_queue SET position = $position
+                WHERE thread_id = $threadId AND queue_item_id = $itemId;
+                """,
+                cancellationToken,
+                ("$position", index),
+                ("$threadId", Wire(threadId)),
+                ("$itemId", queueItemIds[index]));
+        }
+    }
+
+    private static async Task<TurnQueuedFact> ReadQueueInputAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        Guid threadId,
+        Guid queueItemId,
+        bool requireHead,
+        CancellationToken cancellationToken)
+    {
+        await using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText =
+            """
+            SELECT payload_json FROM turn_queue
+            WHERE thread_id = $threadId
+              AND queue_item_id = $itemId
+              AND ($requireHead = 0 OR position = 0);
+            """;
+        command.Parameters.AddWithValue("$threadId", Wire(threadId));
+        command.Parameters.AddWithValue("$itemId", Wire(queueItemId));
+        command.Parameters.AddWithValue("$requireHead", requireHead ? 1 : 0);
+        var payload = await command.ExecuteScalarAsync(cancellationToken) as string;
+        return payload is null
+            ? throw ProjectionError(
+                SessionErrorCodes.InvalidState,
+                "Queued input is unavailable for this operation.")
+            : JsonSerializer.Deserialize<TurnQueuedFact>(payload, JsonOptions)
+              ?? throw ProjectionError(
+                  SessionErrorCodes.JournalCorrupt,
+                  "Queued input payload is invalid.");
     }
 
     private static async Task ApplyTurnWaitingAsync(
