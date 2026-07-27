@@ -4,6 +4,7 @@ using System.CommandLine.Invocation;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using OpenCoWork.Abstractions;
+using OpenCoWork.Core.Agents;
 using OpenCoWork.Core.Configuration;
 using OpenCoWork.Core.Diagnostics;
 using OpenCoWork.Core.Hosting;
@@ -286,8 +287,11 @@ namespace OpenCoWork.App
     [OpenCoWorkModule("session")]
     public sealed class SessionModule : IOpenCoWorkModule
     {
-        public void ConfigureServices(IServiceCollection services) =>
+        public void ConfigureServices(IServiceCollection services)
+        {
+            services.AddOpenCoWorkAgentRuntime();
             services.AddOpenCoWorkSessionRuntime();
+        }
 
         public async ValueTask StartAsync(
             IServiceProvider services,

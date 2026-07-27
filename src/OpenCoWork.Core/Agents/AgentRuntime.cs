@@ -1,10 +1,46 @@
 using System.Security.Cryptography;
 using System.Text;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using OpenCoWork.Abstractions;
 using OpenCoWork.Core.Configuration;
 using OpenCoWork.Core.Workspaces;
 
 namespace OpenCoWork.Core.Agents;
+
+public static class OpenCoWorkAgentExtensions
+{
+    public static IServiceCollection AddOpenCoWorkAgentRuntime(
+        this IServiceCollection services)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+        services.TryAddSingleton<ModelsConfig>();
+        services.TryAddSingleton(serviceProvider =>
+            FrozenProviderCredentials.Capture(
+                serviceProvider.GetRequiredService<ModelsConfig>()));
+        services.TryAddSingleton(serviceProvider =>
+            new ProviderRegistry(
+                serviceProvider.GetRequiredService<ModelsConfig>(),
+                serviceProvider.GetRequiredService<FrozenProviderCredentials>(),
+                AppContext.BaseDirectory,
+                serviceProvider.GetRequiredService<OpenCoWorkPaths>().WorkspaceRoot));
+        services.TryAddSingleton(serviceProvider =>
+            new AgentFactory(
+                serviceProvider.GetRequiredService<ProviderRegistry>(),
+                serviceProvider.GetRequiredService<OpenCoWorkPaths>()));
+        services.TryAddSingleton(static _ =>
+            OpenAiCompatibleChatClient.CreateSharedHttpClient());
+        services.TryAddSingleton(serviceProvider =>
+            new AgentRuntimeExecutor(
+                serviceProvider.GetRequiredService<AgentFactory>(),
+                serviceProvider.GetRequiredService<OpenCoWorkPaths>(),
+                serviceProvider.GetRequiredService<HttpClient>(),
+                serviceProvider.GetService<TimeProvider>()));
+        services.TryAddSingleton<ISessionExecutor>(serviceProvider =>
+            serviceProvider.GetRequiredService<AgentRuntimeExecutor>());
+        return services;
+    }
+}
 
 internal sealed record ProviderModelRegistration(
     string ProviderId,
@@ -301,5 +337,357 @@ internal sealed class AgentFactory(
         }
 
         return count;
+    }
+}
+
+internal sealed class AgentRuntimeExecutor : ISessionExecutor
+{
+    private static readonly TimeSpan InvocationTimeout = TimeSpan.FromMinutes(30);
+    private readonly AgentFactory _factory;
+    private readonly OpenCoWorkPaths _paths;
+    private readonly Func<ProviderModelRegistration, IChatCompletionClient> _clients;
+    private readonly TimeProvider _timeProvider;
+
+    public AgentRuntimeExecutor(
+        AgentFactory factory,
+        OpenCoWorkPaths paths,
+        HttpClient httpClient,
+        TimeProvider? timeProvider = null)
+        : this(
+            factory,
+            paths,
+            provider => new OpenAiCompatibleChatClient(
+                httpClient,
+                provider.BaseUri,
+                provider.ApiKey,
+                timeProvider),
+            timeProvider)
+    {
+    }
+
+    internal AgentRuntimeExecutor(
+        AgentFactory factory,
+        OpenCoWorkPaths paths,
+        Func<ProviderModelRegistration, IChatCompletionClient> clients,
+        TimeProvider? timeProvider = null)
+    {
+        _factory = factory ?? throw new ArgumentNullException(nameof(factory));
+        _paths = paths ?? throw new ArgumentNullException(nameof(paths));
+        _clients = clients ?? throw new ArgumentNullException(nameof(clients));
+        _timeProvider = timeProvider ?? TimeProvider.System;
+    }
+
+    public async ValueTask ExecuteAsync(
+        AgentSession context,
+        ISessionExecutionSink sink,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+        ArgumentNullException.ThrowIfNull(sink);
+        using var deadline = new CancellationTokenSource(
+            InvocationTimeout,
+            _timeProvider);
+        using var invocationCancellation =
+            CancellationTokenSource.CreateLinkedTokenSource(
+                cancellationToken,
+                deadline.Token);
+        var invocationToken = invocationCancellation.Token;
+        AgentInvocationDraft draft;
+        try
+        {
+            var instructions = WorkspaceInstructionDocument.Read(_paths);
+            draft = _factory.Create(
+                context,
+                Guid.CreateVersion7(_timeProvider.GetUtcNow()),
+                instructions);
+            await sink.EmitAsync(
+                new RecordAgentInvocationSnapshotIntent(draft.Snapshot),
+                cancellationToken);
+            if (draft.Disposition == AgentInvocationDraftDisposition.CompactionRequired)
+            {
+                await sink.EmitAsync(
+                    new FailTurnIntent(new SessionError(
+                        AgentErrorCodes.ContextCompactionFailed,
+                        "Conversation compaction is required.",
+                        IsRetryable: false)),
+                    cancellationToken);
+                return;
+            }
+        }
+        catch (AgentPreparationException exception)
+        {
+            await sink.EmitAsync(
+                new FailTurnIntent(new SessionError(
+                    exception.Code,
+                    exception.Message,
+                    IsRetryable: false)),
+                cancellationToken);
+            return;
+        }
+        catch (Exception exception) when (
+            exception is InvalidOperationException or IOException or
+            UnauthorizedAccessException)
+        {
+            await sink.EmitAsync(
+                new FailTurnIntent(new SessionError(
+                    AgentErrorCodes.ContextInputInvalid,
+                    "Agent invocation preparation failed.",
+                    IsRetryable: false)),
+                cancellationToken);
+            return;
+        }
+
+        var contentItemId = Guid.Empty;
+        var reasoningItemId = Guid.Empty;
+        var visible = false;
+        var content = new StringBuilder();
+        var reasoning = new StringBuilder();
+        try
+        {
+            for (var attempt = 1; attempt <= 3; attempt++)
+            {
+                var usageRecorded = false;
+                ChatCompletionFinishReason? finishReason = null;
+                try
+                {
+                    var request = new ChatCompletionRequest(
+                        draft.Provider.ModelId,
+                        draft.Messages,
+                        draft.Provider.MaxOutputTokens,
+                        draft.Snapshot.InvocationId,
+                        attempt,
+                        ChatCompletionInvocationPurpose.Response);
+                    await foreach (var item in _clients(draft.Provider)
+                                       .StreamAsync(request, invocationToken)
+                                       .WithCancellation(invocationToken))
+                    {
+                        switch (item)
+                        {
+                            case ChatCompletionContentDeltaEvent delta
+                                when delta.Delta.Length != 0:
+                                if (contentItemId == Guid.Empty)
+                                {
+                                    contentItemId =
+                                        Guid.CreateVersion7(_timeProvider.GetUtcNow());
+                                    await sink.EmitAsync(
+                                        new StartItemIntent(
+                                            contentItemId,
+                                            SessionItemType.AgentMessage,
+                                            new TextItemContent(string.Empty)),
+                                        cancellationToken);
+                                }
+
+                                await sink.EmitAsync(
+                                    new AppendItemDeltaIntent(
+                                        contentItemId,
+                                        delta.Delta,
+                                        Flush: !visible),
+                                    cancellationToken);
+                                content.Append(delta.Delta);
+                                visible = true;
+                                break;
+                            case ChatCompletionReasoningDeltaEvent delta
+                                when delta.Delta.Length != 0:
+                                if (reasoningItemId == Guid.Empty)
+                                {
+                                    reasoningItemId =
+                                        Guid.CreateVersion7(_timeProvider.GetUtcNow());
+                                    await sink.EmitAsync(
+                                        new StartItemIntent(
+                                            reasoningItemId,
+                                            SessionItemType.Reasoning,
+                                            new TextItemContent(string.Empty)),
+                                        cancellationToken);
+                                }
+
+                                await sink.EmitAsync(
+                                    new AppendItemDeltaIntent(
+                                        reasoningItemId,
+                                        delta.Delta,
+                                        Flush: !visible),
+                                    cancellationToken);
+                                reasoning.Append(delta.Delta);
+                                visible = true;
+                                break;
+                            case ChatCompletionUsageEvent usage:
+                                await sink.EmitAsync(
+                                    new RecordProviderUsageIntent(
+                                        new ProviderUsageSnapshot(
+                                            draft.Snapshot.InvocationId,
+                                            attempt,
+                                            ChatCompletionInvocationPurpose.Response,
+                                            usage.Usage.PromptTokens,
+                                            usage.Usage.CompletionTokens,
+                                            usage.Usage.TotalTokens,
+                                            ProviderUsageSource.Provider,
+                                            IsEstimate: false)),
+                                    cancellationToken);
+                                usageRecorded = true;
+                                break;
+                            case ChatCompletionCompletedEvent completed:
+                                finishReason = completed.FinishReason;
+                                break;
+                        }
+                    }
+
+                    if (!usageRecorded)
+                    {
+                        var completionTokens = draft.Provider.Tokenizer.CountTokens(
+                            content.ToString() + reasoning);
+                        await sink.EmitAsync(
+                            new RecordProviderUsageIntent(
+                                new ProviderUsageSnapshot(
+                                    draft.Snapshot.InvocationId,
+                                    attempt,
+                                    ChatCompletionInvocationPurpose.Response,
+                                    draft.InputTokenCount,
+                                    completionTokens,
+                                    checked(draft.InputTokenCount + completionTokens),
+                                    ProviderUsageSource.LocalEstimate,
+                                    IsEstimate: true)),
+                            cancellationToken);
+                    }
+
+                    var error = FinishError(finishReason, content.Length != 0);
+                    if (error is not null)
+                    {
+                        await FailAsync(
+                            sink,
+                            contentItemId,
+                            reasoningItemId,
+                            error,
+                            cancellationToken);
+                        return;
+                    }
+
+                    if (reasoningItemId != Guid.Empty)
+                    {
+                        await sink.EmitAsync(
+                            new CompleteItemIntent(reasoningItemId),
+                            cancellationToken);
+                    }
+
+                    if (contentItemId != Guid.Empty)
+                    {
+                        await sink.EmitAsync(
+                            new CompleteItemIntent(contentItemId),
+                            cancellationToken);
+                    }
+
+                    if (finishReason == ChatCompletionFinishReason.Length)
+                    {
+                        var noticeId =
+                            Guid.CreateVersion7(_timeProvider.GetUtcNow());
+                        await sink.EmitAsync(
+                            new StartItemIntent(
+                                noticeId,
+                                SessionItemType.SystemNotice,
+                                new SystemNoticeContent("response.truncated")),
+                            cancellationToken);
+                        await sink.EmitAsync(
+                            new CompleteItemIntent(noticeId),
+                            cancellationToken);
+                    }
+
+                    await sink.EmitAsync(
+                        new CompleteTurnIntent(),
+                        cancellationToken);
+                    return;
+                }
+                catch (ChatCompletionException exception)
+                {
+                    if (!visible && exception.IsTransient && attempt < 3)
+                    {
+                        var delay = exception.RetryAfter ??
+                                    (attempt == 1
+                                        ? TimeSpan.FromMilliseconds(250)
+                                        : TimeSpan.FromSeconds(1));
+                        await Task.Delay(
+                            delay > TimeSpan.FromSeconds(30)
+                                ? TimeSpan.FromSeconds(30)
+                                : delay,
+                            _timeProvider,
+                            invocationToken);
+                        continue;
+                    }
+
+                    await FailAsync(
+                        sink,
+                        contentItemId,
+                        reasoningItemId,
+                        new SessionError(
+                            exception.Code,
+                            exception.Message,
+                            exception.IsTransient),
+                        cancellationToken);
+                    return;
+                }
+            }
+        }
+        catch (OperationCanceledException) when (
+            deadline.IsCancellationRequested &&
+            !cancellationToken.IsCancellationRequested)
+        {
+            await FailAsync(
+                sink,
+                contentItemId,
+                reasoningItemId,
+                new SessionError(
+                    AgentErrorCodes.ProviderTimeout,
+                    "Provider invocation timed out.",
+                    IsRetryable: false),
+                cancellationToken);
+        }
+    }
+
+    private static SessionError? FinishError(
+        ChatCompletionFinishReason? finishReason,
+        bool hasContent) =>
+        finishReason switch
+        {
+            ChatCompletionFinishReason.Stop when hasContent => null,
+            ChatCompletionFinishReason.Length when hasContent => null,
+            ChatCompletionFinishReason.ContentFilter => new SessionError(
+                AgentErrorCodes.ProviderContentFiltered,
+                "Provider filtered the response.",
+                IsRetryable: false),
+            ChatCompletionFinishReason.ToolCall => new SessionError(
+                AgentErrorCodes.ProviderUnsupportedToolCall,
+                "Provider returned an unsupported tool call.",
+                IsRetryable: false),
+            _ when !hasContent => new SessionError(
+                AgentErrorCodes.ProviderEmptyResponse,
+                "Provider returned no response content.",
+                IsRetryable: false),
+            _ => new SessionError(
+                AgentErrorCodes.ProviderInvalidStream,
+                "Provider returned an invalid finish reason.",
+                IsRetryable: false),
+        };
+
+    private static async ValueTask FailAsync(
+        ISessionExecutionSink sink,
+        Guid contentItemId,
+        Guid reasoningItemId,
+        SessionError error,
+        CancellationToken cancellationToken)
+    {
+        if (reasoningItemId != Guid.Empty)
+        {
+            await sink.EmitAsync(
+                new FailItemIntent(reasoningItemId, error),
+                cancellationToken);
+        }
+
+        if (contentItemId != Guid.Empty)
+        {
+            await sink.EmitAsync(
+                new FailItemIntent(contentItemId, error),
+                cancellationToken);
+        }
+
+        await sink.EmitAsync(
+            new FailTurnIntent(error),
+            cancellationToken);
     }
 }

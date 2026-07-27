@@ -242,7 +242,8 @@ internal sealed class SessionExecution
                     }
 
                     buffer.Append(delta.Delta);
-                    if (Encoding.UTF8.GetByteCount(buffer.ToString()) >= flushBytes)
+                    if (delta.Flush ||
+                        Encoding.UTF8.GetByteCount(buffer.ToString()) >= flushBytes)
                     {
                         await FlushItemCoreAsync(delta.ItemId, cancellationToken);
                     }

@@ -614,7 +614,10 @@ public sealed record StartItemIntent(
     SessionItemType Type,
     SessionItemContent Content) : SessionExecutionIntent;
 
-public sealed record AppendItemDeltaIntent(Guid ItemId, string Delta) : SessionExecutionIntent;
+public sealed record AppendItemDeltaIntent(
+    Guid ItemId,
+    string Delta,
+    bool Flush = false) : SessionExecutionIntent;
 
 public sealed record CompleteItemIntent(Guid ItemId) : SessionExecutionIntent;
 

@@ -240,6 +240,75 @@ public sealed class ChatCompletionClientTests
         Assert.Equal(AgentErrorCodes.ProviderInvalidStream, exception.Code);
     }
 
+    [Fact]
+    public async Task Response_header_wait_times_out_with_a_typed_error()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var clock = new ManualTimerTimeProvider(
+            new DateTimeOffset(2026, 7, 27, 13, 0, 0, TimeSpan.Zero));
+        var handler = new BlockingHandler();
+        using var httpClient = new HttpClient(handler)
+        {
+            Timeout = Timeout.InfiniteTimeSpan,
+        };
+        var client = new OpenAiCompatibleChatClient(
+            httpClient,
+            new Uri("https://provider.example/v1/"),
+            "secret",
+            clock);
+        var operation = DrainAsync(
+            client.StreamAsync(Request(), cancellationToken),
+            cancellationToken);
+
+        await handler.Started.Task.WaitAsync(cancellationToken);
+        clock.Advance(TimeSpan.FromSeconds(120));
+        var exception = await Assert.ThrowsAsync<ChatCompletionException>(
+            () => operation.WaitAsync(TimeSpan.FromSeconds(1), cancellationToken));
+
+        Assert.Equal(AgentErrorCodes.ProviderTimeout, exception.Code);
+        Assert.True(exception.IsTransient);
+    }
+
+    [Fact]
+    public async Task Sse_byte_idle_times_out_with_a_typed_error()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var clock = new ManualTimerTimeProvider(
+            new DateTimeOffset(2026, 7, 27, 13, 0, 0, TimeSpan.Zero));
+        var stream = new BlockingReadStream();
+        var handler = new RecordingHandler(_ =>
+        {
+            var response = new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StreamContent(stream),
+            };
+            response.Content.Headers.ContentType =
+                new System.Net.Http.Headers.MediaTypeHeaderValue(
+                    "text/event-stream");
+            return response;
+        });
+        using var httpClient = new HttpClient(handler)
+        {
+            Timeout = Timeout.InfiniteTimeSpan,
+        };
+        var client = new OpenAiCompatibleChatClient(
+            httpClient,
+            new Uri("https://provider.example/v1/"),
+            "secret",
+            clock);
+        var operation = DrainAsync(
+            client.StreamAsync(Request(), cancellationToken),
+            cancellationToken);
+
+        await stream.ReadStarted.Task.WaitAsync(cancellationToken);
+        clock.Advance(TimeSpan.FromSeconds(120));
+        var exception = await Assert.ThrowsAsync<ChatCompletionException>(
+            () => operation.WaitAsync(TimeSpan.FromSeconds(1), cancellationToken));
+
+        Assert.Equal(AgentErrorCodes.ProviderTimeout, exception.Code);
+        Assert.True(exception.IsTransient);
+    }
+
     private static ChatCompletionRequest Request() =>
         new(
             "qwen3.8-max-preview",
@@ -310,6 +379,66 @@ public sealed class ChatCompletionClientTests
             RequestBody = await request.Content!.ReadAsStringAsync(cancellationToken);
             return response(request);
         }
+    }
+
+    private sealed class BlockingHandler : HttpMessageHandler
+    {
+        public TaskCompletionSource Started { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        protected override async Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            Started.TrySetResult();
+            await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+            throw new InvalidOperationException("Unreachable.");
+        }
+    }
+
+    private sealed class BlockingReadStream : Stream
+    {
+        public TaskCompletionSource ReadStarted { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public override bool CanRead => true;
+
+        public override bool CanSeek => false;
+
+        public override bool CanWrite => false;
+
+        public override long Length => throw new NotSupportedException();
+
+        public override long Position
+        {
+            get => throw new NotSupportedException();
+            set => throw new NotSupportedException();
+        }
+
+        public override void Flush()
+        {
+        }
+
+        public override int Read(byte[] buffer, int offset, int count) =>
+            throw new NotSupportedException();
+
+        public override async ValueTask<int> ReadAsync(
+            Memory<byte> buffer,
+            CancellationToken cancellationToken = default)
+        {
+            ReadStarted.TrySetResult();
+            await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+            return 0;
+        }
+
+        public override long Seek(long offset, SeekOrigin origin) =>
+            throw new NotSupportedException();
+
+        public override void SetLength(long value) =>
+            throw new NotSupportedException();
+
+        public override void Write(byte[] buffer, int offset, int count) =>
+            throw new NotSupportedException();
     }
 
     private sealed class FragmentedReadStream(

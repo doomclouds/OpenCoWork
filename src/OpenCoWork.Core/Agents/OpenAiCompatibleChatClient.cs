@@ -12,12 +12,17 @@ namespace OpenCoWork.Core.Agents;
 internal sealed class OpenAiCompatibleChatClient(
     HttpClient httpClient,
     Uri baseUri,
-    string apiKey) : IChatCompletionClient
+    string apiKey,
+    TimeProvider? timeProvider = null) : IChatCompletionClient
 {
     private const int MaximumEventBytes = 1024 * 1024;
     private const int MaximumBodyBytes = 16 * 1024 * 1024;
     private const int MaximumErrorBodyBytes = 64 * 1024;
     private const int MaximumOutputBytes = 4 * 1024 * 1024;
+    private static readonly TimeSpan ResponseHeaderTimeout =
+        TimeSpan.FromSeconds(120);
+    private static readonly TimeSpan StreamIdleTimeout =
+        TimeSpan.FromSeconds(120);
     private static readonly UTF8Encoding StrictUtf8 =
         new(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
     private readonly HttpClient _httpClient =
@@ -32,6 +37,8 @@ internal sealed class OpenAiCompatibleChatClient(
         !string.IsNullOrWhiteSpace(apiKey)
             ? apiKey
             : throw new ArgumentException("API key cannot be empty.", nameof(apiKey));
+    private readonly TimeProvider _timeProvider =
+        timeProvider ?? TimeProvider.System;
 
     public async IAsyncEnumerable<ChatCompletionEvent> StreamAsync(
         ChatCompletionRequest request,
@@ -42,7 +49,10 @@ internal sealed class OpenAiCompatibleChatClient(
         using var response = await SendAsync(message, cancellationToken);
         if (!response.IsSuccessStatusCode)
         {
-            await ThrowHttpErrorAsync(response, cancellationToken);
+            await ThrowHttpErrorAsync(
+                response,
+                _timeProvider.GetUtcNow(),
+                cancellationToken);
         }
 
         if (!string.Equals(
@@ -55,7 +65,7 @@ internal sealed class OpenAiCompatibleChatClient(
 
         await using var stream =
             await response.Content.ReadAsStreamAsync(cancellationToken);
-        var reader = new SseReader(stream);
+        var reader = new SseReader(stream, _timeProvider);
         ChatCompletionFinishReason? finishReason = null;
         var outputBytes = 0;
         while (true)
@@ -113,6 +123,8 @@ internal sealed class OpenAiCompatibleChatClient(
                 DecompressionMethods.GZip |
                 DecompressionMethods.Deflate |
                 DecompressionMethods.Brotli,
+            ConnectTimeout = TimeSpan.FromSeconds(15),
+            ResponseDrainTimeout = TimeSpan.FromSeconds(2),
             UseCookies = false,
         };
         return new HttpClient(handler)
@@ -167,12 +179,25 @@ internal sealed class OpenAiCompatibleChatClient(
         HttpRequestMessage request,
         CancellationToken cancellationToken)
     {
+        using var timeout = new CancellationTokenSource(
+            ResponseHeaderTimeout,
+            _timeProvider);
+        using var requestCancellation =
+            CancellationTokenSource.CreateLinkedTokenSource(
+                cancellationToken,
+                timeout.Token);
         try
         {
             return await _httpClient.SendAsync(
                 request,
                 HttpCompletionOption.ResponseHeadersRead,
-                cancellationToken);
+                requestCancellation.Token);
+        }
+        catch (OperationCanceledException) when (
+            timeout.IsCancellationRequested &&
+            !cancellationToken.IsCancellationRequested)
+        {
+            throw ProviderTimeout();
         }
         catch (OperationCanceledException)
         {
@@ -197,6 +222,7 @@ internal sealed class OpenAiCompatibleChatClient(
 
     private static async Task ThrowHttpErrorAsync(
         HttpResponseMessage response,
+        DateTimeOffset now,
         CancellationToken cancellationToken)
     {
         var body = await ReadBoundedAsync(
@@ -204,7 +230,7 @@ internal sealed class OpenAiCompatibleChatClient(
             MaximumErrorBodyBytes,
             cancellationToken);
         var status = response.StatusCode;
-        var retryAfter = ReadRetryAfter(response);
+        var retryAfter = ReadRetryAfter(response, now);
         var promptTooLong = IsPromptTooLong(status, body);
         var (code, transient) = status switch
         {
@@ -307,7 +333,9 @@ internal sealed class OpenAiCompatibleChatClient(
         }
     }
 
-    private static TimeSpan? ReadRetryAfter(HttpResponseMessage response)
+    private static TimeSpan? ReadRetryAfter(
+        HttpResponseMessage response,
+        DateTimeOffset now)
     {
         var retryAfter = response.Headers.RetryAfter;
         if (retryAfter?.Delta is { } delta)
@@ -317,7 +345,7 @@ internal sealed class OpenAiCompatibleChatClient(
 
         if (retryAfter?.Date is { } date)
         {
-            var value = date - DateTimeOffset.UtcNow;
+            var value = date - now;
             return value > TimeSpan.Zero ? value : TimeSpan.Zero;
         }
 
@@ -447,11 +475,19 @@ internal sealed class OpenAiCompatibleChatClient(
             AgentErrorCodes.ProviderInvalidStream,
             "Provider returned an invalid streaming response.");
 
+    private static ChatCompletionException ProviderTimeout() =>
+        new(
+            AgentErrorCodes.ProviderTimeout,
+            "Provider response timed out.",
+            isTransient: true);
+
     private sealed record ParsedChunk(
         IReadOnlyList<ChatCompletionEvent> Events,
         ChatCompletionFinishReason? FinishReason);
 
-    private sealed class SseReader(Stream stream)
+    private sealed class SseReader(
+        Stream stream,
+        TimeProvider timeProvider)
     {
         private readonly byte[] _buffer = new byte[8192];
         private int _offset;
@@ -518,7 +554,26 @@ internal sealed class OpenAiCompatibleChatClient(
             {
                 if (_offset == _count)
                 {
-                    _count = await stream.ReadAsync(_buffer, cancellationToken);
+                    using var timeout = new CancellationTokenSource(
+                        StreamIdleTimeout,
+                        timeProvider);
+                    using var readCancellation =
+                        CancellationTokenSource.CreateLinkedTokenSource(
+                            cancellationToken,
+                            timeout.Token);
+                    try
+                    {
+                        _count = await stream.ReadAsync(
+                            _buffer,
+                            readCancellation.Token);
+                    }
+                    catch (OperationCanceledException) when (
+                        timeout.IsCancellationRequested &&
+                        !cancellationToken.IsCancellationRequested)
+                    {
+                        throw ProviderTimeout();
+                    }
+
                     _offset = 0;
                     if (_count == 0)
                     {
