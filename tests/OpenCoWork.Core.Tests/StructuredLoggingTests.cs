@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
+using OpenCoWork.Core.Configuration;
 using OpenCoWork.Core.Logging;
 using Xunit;
 
@@ -8,6 +9,34 @@ namespace OpenCoWork.Core.Tests;
 [Collection("Console redirection")]
 public sealed class StructuredLoggingTests
 {
+    [Fact]
+    public void Snapshot_redactor_includes_frozen_provider_credentials()
+    {
+        const string providerSecret = "provider-secret-bd47f8";
+        var snapshot = ConfigLoader.Load(new ConfigLoadRequest([])).Snapshot!;
+        var credentials = FrozenProviderCredentials.Capture(
+            new ModelsConfig
+            {
+                Providers = new Dictionary<string, ProviderConfig>(StringComparer.Ordinal)
+                {
+                    ["provider"] = new()
+                    {
+                        ApiKey = new ProviderApiKeyConfig
+                        {
+                            Environment = "PROVIDER_KEY",
+                        },
+                    },
+                },
+            },
+            name => name == "PROVIDER_KEY" ? providerSecret : null);
+
+        var redactor = SecretRedactor.FromSnapshot(snapshot, credentials);
+
+        Assert.Equal(
+            $"failed with {SecretRedactor.Replacement}",
+            redactor.RedactText($"failed with {providerSecret}"));
+    }
+
     [Fact]
     public void Redaction_happens_before_file_provider_for_message_scope_properties_and_exception()
     {

@@ -895,6 +895,12 @@ public sealed class OpenCoWorkGenerator : IIncrementalGenerator
                      BuildTypeSchema(array.ElementType, visitedTypes) +
                      "}";
         }
+        else if (TryGetStringDictionaryValueType(type, out var valueType))
+        {
+            schema = "{\"type\":\"object\",\"additionalProperties\":" +
+                     BuildTypeSchema(valueType, visitedTypes) +
+                     "}";
+        }
         else if (type.TypeKind == TypeKind.Enum && type is INamedTypeSymbol enumType)
         {
             var names = enumType.GetMembers()
@@ -965,6 +971,30 @@ public sealed class OpenCoWorkGenerator : IIncrementalGenerator
         return unwrapped is INamedTypeSymbol namedType
             ? BuildObjectSchema(namedType, visitedTypes)
             : "{}";
+    }
+
+    private static bool TryGetStringDictionaryValueType(
+        ITypeSymbol type,
+        out ITypeSymbol valueType)
+    {
+        var candidates = type is INamedTypeSymbol named
+            ? named.AllInterfaces.Prepend(named)
+            : Enumerable.Empty<INamedTypeSymbol>();
+        foreach (var candidate in candidates)
+        {
+            if (candidate is { IsGenericType: true, TypeArguments.Length: 2 } &&
+                candidate.TypeArguments[0].SpecialType == SpecialType.System_String &&
+                candidate.OriginalDefinition.ToDisplayString() is
+                    "System.Collections.Generic.IDictionary<TKey, TValue>" or
+                    "System.Collections.Generic.IReadOnlyDictionary<TKey, TValue>")
+            {
+                valueType = candidate.TypeArguments[1];
+                return true;
+            }
+        }
+
+        valueType = type;
+        return false;
     }
 
     private static ITypeSymbol UnwrapNullable(ITypeSymbol type)

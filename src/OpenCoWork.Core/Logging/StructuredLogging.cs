@@ -39,6 +39,16 @@ public sealed class SecretRedactor
         return new SecretRedactor(snapshot.GetSecretValues());
     }
 
+    internal static SecretRedactor FromSnapshot(
+        EffectiveConfigSnapshot snapshot,
+        FrozenProviderCredentials credentials)
+    {
+        ArgumentNullException.ThrowIfNull(snapshot);
+        ArgumentNullException.ThrowIfNull(credentials);
+        return new SecretRedactor(
+            snapshot.GetSecretValues().Concat(credentials.GetSecretValues()));
+    }
+
     public string RedactText(string? value)
     {
         if (string.IsNullOrEmpty(value))

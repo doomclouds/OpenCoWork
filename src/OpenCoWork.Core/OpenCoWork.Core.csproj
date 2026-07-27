@@ -4,6 +4,7 @@
     <PackageReference Include="Microsoft.Extensions.Hosting.Abstractions" />
     <PackageReference Include="Microsoft.Extensions.Logging" />
     <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" />
+    <PackageReference Include="Tiktoken" />
   </ItemGroup>
 
   <ItemGroup>
@@ -11,5 +12,16 @@
     <ProjectReference Include="..\OpenCoWork.Generators\OpenCoWork.Generators.csproj"
                       OutputItemType="Analyzer"
                       ReferenceOutputAssembly="false" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Update="Agents\Tokenizers\*.json.gz"
+          CopyToOutputDirectory="PreserveNewest"
+          CopyToPublishDirectory="PreserveNewest"
+          TargetPath="tokenizers\%(Filename)%(Extension)" />
+    <None Update="Agents\Tokenizers\NOTICE.md"
+          CopyToOutputDirectory="PreserveNewest"
+          CopyToPublishDirectory="PreserveNewest"
+          TargetPath="tokenizers\NOTICE.md" />
   </ItemGroup>
 </Project>

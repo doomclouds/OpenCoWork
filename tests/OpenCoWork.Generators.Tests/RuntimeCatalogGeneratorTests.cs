@@ -534,7 +534,15 @@ public sealed class RuntimeCatalogGeneratorTests
                 [Range(1, 120)]
                 public int MaxWorkers { get; init; } = 8;
 
+                public global::System.Collections.Generic.Dictionary<string, ModelConfig> Models { get; init; } = new();
+
                 public TimeSpan StopTimeout { get; init; } = TimeSpan.FromSeconds(30);
+            }
+
+            public sealed record ModelConfig
+            {
+                [Required]
+                public string Name { get; init; } = string.Empty;
             }
 
             [ConfigSection("operations")]
@@ -608,7 +616,7 @@ public sealed class RuntimeCatalogGeneratorTests
                         "runtime",
                         typeof(global::Sample.RuntimeConfig),
                         static () => new global::Sample.RuntimeConfig(),
-                        "{\"type\":\"object\",\"properties\":{\"maxWorkers\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":120},\"stopTimeout\":{\"type\":\"string\",\"format\":\"duration\"}},\"additionalProperties\":false}"),
+                        "{\"type\":\"object\",\"properties\":{\"maxWorkers\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":120},\"models\":{\"type\":\"object\",\"additionalProperties\":{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\"}},\"required\":[\"name\"],\"additionalProperties\":false}},\"stopTimeout\":{\"type\":\"string\",\"format\":\"duration\"}},\"additionalProperties\":false}"),
                 };
         }
         """ + "\n";
