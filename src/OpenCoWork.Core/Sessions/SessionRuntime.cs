@@ -136,7 +136,11 @@ internal sealed partial class SessionService
         foreach (var turnId in executions)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            if (_turns.TryGetValue(turnId, out var turn))
+            if (_turns.TryGetValue(turnId, out var turn) &&
+                turn.Status is not (
+                    TurnStatus.Completed or
+                    TurnStatus.Failed or
+                    TurnStatus.Cancelled))
             {
                 await StopExecutionWithErrorAsync(
                     turn.ThreadId,

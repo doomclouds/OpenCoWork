@@ -4,12 +4,23 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using OpenCoWork.Abstractions;
 using OpenCoWork.Core.Configuration;
+using OpenCoWork.Core.Logging;
 using OpenCoWork.Core.Workspaces;
 
 namespace OpenCoWork.Core.Agents;
 
 public static class OpenCoWorkAgentExtensions
 {
+    public static void ValidateOpenCoWorkAgentModel(
+        this IServiceProvider services,
+        string providerId,
+        string modelId)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+        services.GetRequiredService<ProviderRegistry>()
+            .Resolve(providerId, modelId);
+    }
+
     public static IServiceCollection AddOpenCoWorkAgentRuntime(
         this IServiceCollection services)
     {
@@ -18,6 +29,16 @@ public static class OpenCoWorkAgentExtensions
         services.TryAddSingleton(serviceProvider =>
             FrozenProviderCredentials.Capture(
                 serviceProvider.GetRequiredService<ModelsConfig>()));
+        services.TryAddSingleton(serviceProvider =>
+        {
+            var credentials =
+                serviceProvider.GetRequiredService<FrozenProviderCredentials>();
+            var snapshot =
+                serviceProvider.GetService<EffectiveConfigSnapshot>();
+            return snapshot is null
+                ? new SecretRedactor(credentials.GetSecretValues())
+                : SecretRedactor.FromSnapshot(snapshot, credentials);
+        });
         services.TryAddSingleton(serviceProvider =>
             new ProviderRegistry(
                 serviceProvider.GetRequiredService<ModelsConfig>(),

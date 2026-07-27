@@ -71,6 +71,7 @@ public sealed class CliIntegrationTests
             Assert.Equal(
                 0,
                 (await InvokeAsync(["init", "--workspace", root], root)).ExitCode);
+            await ConfigureModelsAsync(root);
             var before = SnapshotFiles(root);
 
             var result = await InvokeAsync(
@@ -218,6 +219,7 @@ public sealed class CliIntegrationTests
             Assert.Equal(
                 0,
                 (await InvokeAsync(["init", "--workspace", root], root)).ExitCode);
+            await ConfigureModelsAsync(root);
             var before = SnapshotFiles(root);
 
             var result = await InvokeAsync(
@@ -261,6 +263,7 @@ public sealed class CliIntegrationTests
             Assert.Equal(
                 0,
                 (await InvokeAsync(["init", "--workspace", root], root)).ExitCode);
+            await ConfigureModelsAsync(root);
 
             var result = await InvokeAsync(
                 ["doctor", "--workspace", root, "--json"],
@@ -303,6 +306,7 @@ public sealed class CliIntegrationTests
             Assert.Equal(
                 0,
                 (await InvokeAsync(["init", "--workspace", root], root)).ExitCode);
+            await ConfigureModelsAsync(root);
 
             if (OperatingSystem.IsWindows())
             {
@@ -372,6 +376,7 @@ public sealed class CliIntegrationTests
             Assert.Equal(
                 0,
                 (await InvokeAsync(["init", "--workspace", root], root)).ExitCode);
+            await ConfigureModelsAsync(root);
             await File.WriteAllTextAsync(
                 Path.Combine(root, ".opencowork", "runtime", "state.db-wal"),
                 "active-journal-canary",
@@ -398,6 +403,33 @@ public sealed class CliIntegrationTests
             Directory.Delete(root, recursive: true);
         }
     }
+
+    private static Task ConfigureModelsAsync(string root) =>
+        File.WriteAllTextAsync(
+            Path.Combine(root, ".opencowork", "config.jsonc"),
+            """
+            {
+              "models": {
+                "defaultProvider": "test",
+                "defaultModel": "qwen3.8-max-preview",
+                "providers": {
+                  "test": {
+                    "baseUrl": "https://example.test/v1",
+                    "apiKey": { "environment": "OPENCOWORK_TEST_API_KEY" },
+                    "models": {
+                      "qwen3.8-max-preview": {
+                        "tokenizerProfileId": "qwen-o200k",
+                        "tokenizerProfileVersion": "1",
+                        "contextWindowTokens": 983616,
+                        "maxOutputTokens": 131072
+                      }
+                    }
+                  }
+                }
+              }
+            }
+            """,
+            TestContext.Current.CancellationToken);
 
     private static async Task<CliResult> InvokeAsync(string[] args, string workingDirectory)
     {

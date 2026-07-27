@@ -24,21 +24,46 @@ namespace OpenCoWork.App
             CancellationToken cancellationToken = default) =>
             RunAsync(
                 args,
+                Console.In,
                 Console.Out,
                 Console.Error,
                 Environment.CurrentDirectory,
                 Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+                !Console.IsInputRedirected,
+                configureServices: null,
                 cancellationToken);
 
-        public static async Task<int> RunAsync(
+        public static Task<int> RunAsync(
             string[] args,
             TextWriter output,
             TextWriter error,
             string workingDirectory,
             string userProfileDirectory,
+            CancellationToken cancellationToken = default) =>
+            RunAsync(
+                args,
+                Console.In,
+                output,
+                error,
+                workingDirectory,
+                userProfileDirectory,
+                !Console.IsInputRedirected,
+                configureServices: null,
+                cancellationToken);
+
+        public static async Task<int> RunAsync(
+            string[] args,
+            TextReader input,
+            TextWriter output,
+            TextWriter error,
+            string workingDirectory,
+            string userProfileDirectory,
+            bool isInteractive,
+            Action<IServiceCollection>? configureServices = null,
             CancellationToken cancellationToken = default)
         {
             ArgumentNullException.ThrowIfNull(args);
+            ArgumentNullException.ThrowIfNull(input);
             ArgumentNullException.ThrowIfNull(output);
             ArgumentNullException.ThrowIfNull(error);
             ArgumentException.ThrowIfNullOrWhiteSpace(workingDirectory);
@@ -48,7 +73,10 @@ namespace OpenCoWork.App
             var root = CreateRootCommand(
                 product,
                 workingDirectory,
-                userProfileDirectory);
+                userProfileDirectory,
+                input,
+                isInteractive,
+                configureServices);
             var parseResult = root.Parse(args);
             var exitCode = await parseResult.InvokeAsync(
                 new InvocationConfiguration
@@ -64,7 +92,10 @@ namespace OpenCoWork.App
         private static RootCommand CreateRootCommand(
             ProductMetadata product,
             string workingDirectory,
-            string userProfileDirectory)
+            string userProfileDirectory,
+            TextReader input,
+            bool isInteractive,
+            Action<IServiceCollection>? configureServices)
         {
             var root = new RootCommand(
                 "OpenCoWork agent collaboration runtime.");
@@ -81,6 +112,7 @@ namespace OpenCoWork.App
                     Commands:
                       init      Initialize an OpenCoWork workspace.
                       doctor    Inspect runtime and workspace health without modifying state.
+                      chat      Run a local multi-turn agent conversation.
 
                     Options:
                       --version  Show version information.
@@ -158,6 +190,64 @@ namespace OpenCoWork.App
                     parseResult.InvocationConfiguration.Error,
                     cancellationToken));
             root.Subcommands.Add(doctor);
+
+            var chatWorkspace = CreateWorkspaceOption();
+            var chatConfig = new Option<string?>("--config")
+            {
+                Description = "Use an additional JSONC configuration file.",
+            };
+            var chatSet = new Option<string[]>("--set")
+            {
+                Description = "Override configuration with path=value; repeatable.",
+            };
+            var chatStrictConfig = new Option<bool>("--strict-config")
+            {
+                Description = "Treat unknown configuration fields as failures.",
+            };
+            var thread = new Option<Guid?>("--thread")
+            {
+                Description = "Resume the exact existing thread ID.",
+            };
+            var provider = new Option<string?>("--provider")
+            {
+                Description = "Select an exact configured provider ID.",
+            };
+            var model = new Option<string?>("--model")
+            {
+                Description = "Select an exact configured model ID.",
+            };
+            var chat = new Command(
+                "chat",
+                "Run a local multi-turn agent conversation.")
+            {
+                chatWorkspace,
+                chatConfig,
+                chatSet,
+                chatStrictConfig,
+                thread,
+                provider,
+                model,
+            };
+            chat.SetAction((parseResult, cancellationToken) =>
+                RunChatAsync(
+                    parseResult.GetValue(chatWorkspace),
+                    ResolveOptionalPath(
+                        parseResult.GetValue(chatConfig),
+                        workingDirectory),
+                    parseResult.GetValue(chatSet) ?? [],
+                    parseResult.GetValue(chatStrictConfig),
+                    parseResult.GetValue(thread),
+                    parseResult.GetValue(provider),
+                    parseResult.GetValue(model),
+                    workingDirectory,
+                    userProfileDirectory,
+                    input,
+                    parseResult.InvocationConfiguration.Output,
+                    parseResult.InvocationConfiguration.Error,
+                    isInteractive,
+                    configureServices,
+                    cancellationToken));
+            root.Subcommands.Add(chat);
             return root;
         }
 
@@ -228,6 +318,107 @@ namespace OpenCoWork.App
             }
         }
 
+        private static async Task<int> RunChatAsync(
+            string? explicitWorkspace,
+            string? explicitConfigPath,
+            IReadOnlyList<string> setOverrides,
+            bool strictConfig,
+            Guid? threadId,
+            string? providerId,
+            string? modelId,
+            string workingDirectory,
+            string userProfileDirectory,
+            TextReader input,
+            TextWriter output,
+            TextWriter error,
+            bool isInteractive,
+            Action<IServiceCollection>? configureServices,
+            CancellationToken cancellationToken)
+        {
+            var redactor = new SecretRedactor([]);
+            try
+            {
+                if (string.IsNullOrWhiteSpace(providerId) !=
+                    string.IsNullOrWhiteSpace(modelId))
+                {
+                    await error.WriteLineAsync(
+                        "--provider and --model must be specified together.");
+                    return 2;
+                }
+
+                var paths = WorkspaceDiscovery.Discover(
+                    workingDirectory,
+                    explicitWorkspace);
+                var loaded = ConfigLoader.Load(
+                    new ConfigLoadRequest(RuntimeCatalog.ConfigSections)
+                    {
+                        UserConfigPath = Path.Combine(
+                            userProfileDirectory,
+                            ".opencowork",
+                            "config.jsonc"),
+                        WorkspaceConfigPath = paths.ConfigPath,
+                        LocalConfigPath = paths.LocalConfigPath,
+                        ExplicitConfigPath = explicitConfigPath,
+                        Environment = ReadEnvironment(),
+                        SetOverrides = setOverrides,
+                        Strict = strictConfig,
+                    });
+                if (!loaded.Validation.IsValid || loaded.Snapshot is null)
+                {
+                    foreach (var diagnostic in loaded.Validation.Diagnostics)
+                    {
+                        await error.WriteLineAsync(
+                            $"{diagnostic.Code}: {diagnostic.Message}");
+                    }
+
+                    return 3;
+                }
+
+                var snapshot = loaded.Snapshot;
+                redactor = SecretRedactor.FromSnapshot(snapshot);
+                var runtimeConfig = snapshot.GetRequiredSection<RuntimeConfig>();
+                using var host = OpenCoWorkCompositionRoot.Build(
+                    [],
+                    paths.WorkspaceRoot,
+                    services =>
+                    {
+                        services.AddSingleton(snapshot);
+                        services.AddSingleton(
+                            snapshot.GetRequiredSection<SessionConfig>());
+                        services.AddSingleton(
+                            snapshot.GetRequiredSection<ModelsConfig>());
+                        configureServices?.Invoke(services);
+                    },
+                    runtimeConfig);
+                redactor = host.Services.GetRequiredService<SecretRedactor>();
+                await host.StartAsync(cancellationToken);
+                try
+                {
+                    return await ChatCommandRunner.RunAsync(
+                        host.Services,
+                        threadId,
+                        providerId,
+                        modelId,
+                        input,
+                        output,
+                        error,
+                        isInteractive,
+                        cancellationToken);
+                }
+                finally
+                {
+                    await host.StopAsync(CancellationToken.None);
+                }
+            }
+            catch (Exception exception) when (
+                exception is not OperationCanceledException)
+            {
+                await error.WriteLineAsync(
+                    redactor.RedactText(exception.Message));
+                return 1;
+            }
+        }
+
         private static IReadOnlyDictionary<string, string> ReadEnvironment()
         {
             var result = new Dictionary<string, string>(StringComparer.Ordinal);
@@ -261,14 +452,15 @@ namespace OpenCoWork.App
         public static IHost Build(
             string[] args,
             string? workspaceRoot = null,
-            Action<IServiceCollection>? configureServices = null)
+            Action<IServiceCollection>? configureServices = null,
+            RuntimeConfig? effectiveRuntimeConfig = null)
         {
             ArgumentNullException.ThrowIfNull(args);
 
             var registry = new ModuleRegistry(RuntimeCatalog.Modules);
             var primaryHost = registry.SelectPrimaryModule();
             var builder = Host.CreateApplicationBuilder(args);
-            var runtimeConfig = new RuntimeConfig();
+            var runtimeConfig = effectiveRuntimeConfig ?? new RuntimeConfig();
             builder.Services.AddSingleton(
                 WorkspaceDiscovery.Discover(
                     Environment.CurrentDirectory,

@@ -39,7 +39,7 @@ Milestone standard: [README.md](README.md)
   - Related spec: docs/superpowers/specs/2026-07-27-open-cowork-m3-agent-runtime-alpha-design.md
   - Related plan: docs/superpowers/plans/2026-07-27-open-cowork-m3-agent-runtime-alpha-implementation-plan.md
   - Related archive: None yet.
-  - Current stage: Outcome 1-6 已完成，正在推进 `opencowork chat`。
+  - Current stage: Outcome 1-7 已完成，正在推进双平台发布与真实 Provider 验证。
   - Completion signal: 真实多轮对话、重启恢复、流重试和上下文压缩验收通过。
 - [ ] 5. M4 - Tool Runtime Alpha
   - Status: Not Started

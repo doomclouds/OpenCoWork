@@ -1,6 +1,6 @@
 # OpenCoWork M3 Agent Runtime Alpha 实施计划
 
-**Status:** In Progress；Outcome 1-6 已完成，正在推进 Outcome 7。
+**Status:** In Progress；Outcome 1-7 已完成，正在推进 Outcome 8。
 
 **Goal:** 在 M2 Durable Session Core 上交付 Provider 中立、无真实工具、支持
 真实多轮对话、流式响应、重试、Token 预算和可恢复压缩的 Agent Runtime。
@@ -301,7 +301,7 @@ stdout、stderr 或测试产物；最终只生成一份 M3 交付归档。
   - `M3-ACC-006`
   - `M3-ACC-007`
 
-### Outcome 7: `opencowork chat` 只经 ISessionService 完成多轮、恢复和模式切换（进行中）
+### Outcome 7: `opencowork chat` 只经 ISessionService 完成多轮、恢复和模式切换（已完成）
 
 - Work:
   - 在 `Program.cs` 增加 `chat` 命令及
@@ -334,7 +334,7 @@ stdout、stderr 或测试产物；最终只生成一份 M3 交付归档。
   - `M3-ACC-003`
   - `M3-ACC-008`
 
-### Outcome 8: 双平台故障矩阵、真实 Provider 矩阵和 M3 统一收口
+### Outcome 8: 双平台故障矩阵、真实 Provider 矩阵和 M3 统一收口（进行中）
 
 - Work:
   - 默认离线回归在 Windows 与 Apple Silicon macOS 分别执行 Provider Contract、
