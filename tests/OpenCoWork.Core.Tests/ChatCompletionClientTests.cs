@@ -1,0 +1,404 @@
+using System.Net;
+using System.Net.Sockets;
+using System.Text;
+using System.Text.Json;
+using OpenCoWork.Abstractions;
+using OpenCoWork.Core.Agents;
+using Xunit;
+
+namespace OpenCoWork.Core.Tests;
+
+public sealed class ChatCompletionClientTests
+{
+    [Fact]
+    public async Task Shared_http_client_completes_a_real_loopback_sse_exchange()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        await using var server = new LoopbackSseServer(
+            """
+            data: {"choices":[{"index":0,"delta":{"content":"loopback"},"finish_reason":"stop"}]}
+
+            data: [DONE]
+
+            """);
+        using var httpClient =
+            OpenAiCompatibleChatClient.CreateSharedHttpClient();
+        var client = new OpenAiCompatibleChatClient(
+            httpClient,
+            server.BaseUri,
+            "loopback-secret");
+
+        var events = await DrainAsync(
+            client.StreamAsync(Request(), cancellationToken),
+            cancellationToken);
+        var headers = await server.RequestHeaders.WaitAsync(cancellationToken);
+
+        Assert.Equal(2, events.Count);
+        Assert.Contains(
+            "POST /v1/chat/completions HTTP/1.1",
+            headers,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "Authorization: Bearer loopback-secret",
+            headers,
+            StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task Streams_fragmented_content_reasoning_usage_and_completion_after_done()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        const string secret = "provider-secret-c2f17e";
+        var sse = """
+                  data: {"choices":[{"index":0,"delta":{"reasoning_content":"think","content":"Hel"},"finish_reason":null}],"usage":null}
+
+                  data: {"choices":[{"index":0,"delta":{"content":"lo"},"finish_reason":"stop"}],"usage":{"prompt_tokens":11,"completion_tokens":3,"total_tokens":14}}
+
+                  data: [DONE]
+
+                  """;
+        var handler = new RecordingHandler(_ =>
+            Response(HttpStatusCode.OK, sse, maximumReadSize: 1));
+        using var httpClient = new HttpClient(handler)
+        {
+            Timeout = Timeout.InfiniteTimeSpan,
+        };
+        var client = new OpenAiCompatibleChatClient(
+            httpClient,
+            new Uri("https://provider.example/v1/"),
+            secret);
+
+        var events = await DrainAsync(
+            client.StreamAsync(Request(), cancellationToken),
+            cancellationToken);
+
+        Assert.Collection(
+            events,
+            item => Assert.Equal(
+                new ChatCompletionContentDeltaEvent("Hel"),
+                item),
+            item => Assert.Equal(
+                new ChatCompletionReasoningDeltaEvent("think"),
+                item),
+            item => Assert.Equal(
+                new ChatCompletionContentDeltaEvent("lo"),
+                item),
+            item => Assert.Equal(
+                new ChatCompletionUsageEvent(
+                    new ChatCompletionUsage(11, 3, 14)),
+                item),
+            item => Assert.Equal(
+                new ChatCompletionCompletedEvent(
+                    ChatCompletionFinishReason.Stop),
+                item));
+        Assert.Equal(
+            new Uri("https://provider.example/v1/chat/completions"),
+            handler.RequestUri);
+        Assert.Equal("Bearer", handler.AuthorizationScheme);
+        Assert.Equal(secret, handler.AuthorizationParameter);
+        Assert.DoesNotContain(secret, handler.RequestBody, StringComparison.Ordinal);
+        using var requestJson = JsonDocument.Parse(handler.RequestBody);
+        Assert.True(requestJson.RootElement.GetProperty("stream").GetBoolean());
+        Assert.True(
+            requestJson.RootElement
+                .GetProperty("stream_options")
+                .GetProperty("include_usage")
+                .GetBoolean());
+        Assert.False(
+            requestJson.RootElement.TryGetProperty(
+                "previous_response_id",
+                out _));
+    }
+
+    [Fact]
+    public async Task Rejects_early_eof_and_maps_http_errors_without_exposing_body()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var earlyEofHandler = new RecordingHandler(_ => Response(
+            HttpStatusCode.OK,
+            """
+            data: {"choices":[{"index":0,"delta":{"content":"partial"},"finish_reason":"stop"}]}
+
+            """));
+        using var earlyEofHttpClient = new HttpClient(earlyEofHandler)
+        {
+            Timeout = Timeout.InfiniteTimeSpan,
+        };
+        var earlyEofClient = new OpenAiCompatibleChatClient(
+            earlyEofHttpClient,
+            new Uri("https://provider.example/v1/"),
+            "secret");
+
+        var invalidStream = await Assert.ThrowsAsync<ChatCompletionException>(
+            () => DrainAsync(
+                earlyEofClient.StreamAsync(Request(), cancellationToken),
+                cancellationToken));
+        Assert.Equal(AgentErrorCodes.ProviderInvalidStream, invalidStream.Code);
+
+        const string canary = "error-body-canary-6b13";
+        var rateLimitHandler = new RecordingHandler(_ =>
+        {
+            var response = Response(
+                HttpStatusCode.TooManyRequests,
+                JsonSerializer.Serialize(new
+                {
+                    error = new
+                    {
+                        message = canary,
+                    },
+                }));
+            response.Headers.RetryAfter =
+                new System.Net.Http.Headers.RetryConditionHeaderValue(
+                    TimeSpan.FromSeconds(2));
+            return response;
+        });
+        using var rateLimitHttpClient = new HttpClient(rateLimitHandler)
+        {
+            Timeout = Timeout.InfiniteTimeSpan,
+        };
+        var rateLimitClient = new OpenAiCompatibleChatClient(
+            rateLimitHttpClient,
+            new Uri("https://provider.example/v1/"),
+            "secret");
+
+        var rateLimited = await Assert.ThrowsAsync<ChatCompletionException>(
+            () => DrainAsync(
+                rateLimitClient.StreamAsync(Request(), cancellationToken),
+                cancellationToken));
+        Assert.Equal(AgentErrorCodes.ProviderRateLimited, rateLimited.Code);
+        Assert.Equal(TimeSpan.FromSeconds(2), rateLimited.RetryAfter);
+        Assert.True(rateLimited.IsTransient);
+        Assert.DoesNotContain(canary, rateLimited.ToString(), StringComparison.Ordinal);
+
+        var promptTooLongHandler = new RecordingHandler(_ => Response(
+            HttpStatusCode.BadRequest,
+            JsonSerializer.Serialize(new
+            {
+                error = new
+                {
+                    code = "InvalidParameter",
+                    message = "Range of input length should be [1, 100].",
+                },
+            })));
+        using var promptTooLongHttpClient = new HttpClient(promptTooLongHandler)
+        {
+            Timeout = Timeout.InfiniteTimeSpan,
+        };
+        var promptTooLongClient = new OpenAiCompatibleChatClient(
+            promptTooLongHttpClient,
+            new Uri("https://provider.example/v1/"),
+            "secret");
+        var promptTooLong = await Assert.ThrowsAsync<ChatCompletionException>(
+            () => DrainAsync(
+                promptTooLongClient.StreamAsync(Request(), cancellationToken),
+                cancellationToken));
+        Assert.Equal(AgentErrorCodes.ProviderInvalidRequest, promptTooLong.Code);
+        Assert.True(promptTooLong.IsPromptTooLong);
+        Assert.False(promptTooLong.IsTransient);
+
+        var redirectHandler = new RecordingHandler(_ => Response(
+            HttpStatusCode.Redirect,
+            string.Empty));
+        using var redirectHttpClient = new HttpClient(redirectHandler)
+        {
+            Timeout = Timeout.InfiniteTimeSpan,
+        };
+        var redirectClient = new OpenAiCompatibleChatClient(
+            redirectHttpClient,
+            new Uri("https://provider.example/v1/"),
+            "secret");
+        var redirect = await Assert.ThrowsAsync<ChatCompletionException>(
+            () => DrainAsync(
+                redirectClient.StreamAsync(Request(), cancellationToken),
+                cancellationToken));
+        Assert.Equal(
+            AgentErrorCodes.ProviderRedirectNotAllowed,
+            redirect.Code);
+    }
+
+    [Fact]
+    public async Task Rejects_an_sse_event_over_one_mebibyte_before_json_parsing()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var handler = new RecordingHandler(_ => Response(
+            HttpStatusCode.OK,
+            "data: " + new string('x', (1024 * 1024) + 1) + "\n\n"));
+        using var httpClient = new HttpClient(handler)
+        {
+            Timeout = Timeout.InfiniteTimeSpan,
+        };
+        var client = new OpenAiCompatibleChatClient(
+            httpClient,
+            new Uri("https://provider.example/v1/"),
+            "secret");
+
+        var exception = await Assert.ThrowsAsync<ChatCompletionException>(
+            () => DrainAsync(
+                client.StreamAsync(Request(), cancellationToken),
+                cancellationToken));
+
+        Assert.Equal(AgentErrorCodes.ProviderInvalidStream, exception.Code);
+    }
+
+    private static ChatCompletionRequest Request() =>
+        new(
+            "qwen3.8-max-preview",
+            [
+                new ChatCompletionMessage(
+                    ChatCompletionMessageRole.System,
+                    "system"),
+                new ChatCompletionMessage(
+                    ChatCompletionMessageRole.User,
+                    "hello"),
+            ],
+            maxOutputTokens: 32,
+            Guid.Parse("019f2fac-2732-7c7e-86ec-46375a08d598"),
+            attemptNumber: 1,
+            ChatCompletionInvocationPurpose.Response);
+
+    private static HttpResponseMessage Response(
+        HttpStatusCode statusCode,
+        string body,
+        int maximumReadSize = int.MaxValue)
+    {
+        var response = new HttpResponseMessage(statusCode)
+        {
+            Content = new StreamContent(new FragmentedReadStream(
+                Encoding.UTF8.GetBytes(body),
+                maximumReadSize)),
+        };
+        response.Content.Headers.ContentType =
+            new System.Net.Http.Headers.MediaTypeHeaderValue(
+                statusCode == HttpStatusCode.OK
+                    ? "text/event-stream"
+                    : "application/json");
+        return response;
+    }
+
+    private static async Task<List<ChatCompletionEvent>> DrainAsync(
+        IAsyncEnumerable<ChatCompletionEvent> source,
+        CancellationToken cancellationToken)
+    {
+        var result = new List<ChatCompletionEvent>();
+        await foreach (var item in source.WithCancellation(cancellationToken))
+        {
+            result.Add(item);
+        }
+
+        return result;
+    }
+
+    private sealed class RecordingHandler(
+        Func<HttpRequestMessage, HttpResponseMessage> response)
+        : HttpMessageHandler
+    {
+        public Uri? RequestUri { get; private set; }
+
+        public string? AuthorizationScheme { get; private set; }
+
+        public string? AuthorizationParameter { get; private set; }
+
+        public string RequestBody { get; private set; } = string.Empty;
+
+        protected override async Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            RequestUri = request.RequestUri;
+            AuthorizationScheme = request.Headers.Authorization?.Scheme;
+            AuthorizationParameter = request.Headers.Authorization?.Parameter;
+            RequestBody = await request.Content!.ReadAsStringAsync(cancellationToken);
+            return response(request);
+        }
+    }
+
+    private sealed class FragmentedReadStream(
+        byte[] bytes,
+        int maximumReadSize) : MemoryStream(bytes, writable: false)
+    {
+        public override int Read(byte[] buffer, int offset, int count) =>
+            base.Read(buffer, offset, Math.Min(count, maximumReadSize));
+
+        public override int Read(Span<byte> buffer) =>
+            base.Read(buffer[..Math.Min(buffer.Length, maximumReadSize)]);
+
+        public override ValueTask<int> ReadAsync(
+            Memory<byte> buffer,
+            CancellationToken cancellationToken = default) =>
+            base.ReadAsync(
+                buffer[..Math.Min(buffer.Length, maximumReadSize)],
+                cancellationToken);
+    }
+
+    private sealed class LoopbackSseServer : IAsyncDisposable
+    {
+        private readonly TcpListener _listener;
+        private readonly Task _serverTask;
+
+        public LoopbackSseServer(string responseBody)
+        {
+            _listener = new TcpListener(IPAddress.Loopback, 0);
+            _listener.Start();
+            var endpoint = (IPEndPoint)_listener.LocalEndpoint;
+            BaseUri = new Uri($"http://127.0.0.1:{endpoint.Port}/v1/");
+            var requestHeaders =
+                new TaskCompletionSource<string>(
+                    TaskCreationOptions.RunContinuationsAsynchronously);
+            RequestHeaders = requestHeaders.Task;
+            _serverTask = ServeAsync(responseBody, requestHeaders);
+        }
+
+        public Uri BaseUri { get; }
+
+        public Task<string> RequestHeaders { get; }
+
+        public async ValueTask DisposeAsync()
+        {
+            _listener.Stop();
+            await _serverTask;
+        }
+
+        private async Task ServeAsync(
+            string responseBody,
+            TaskCompletionSource<string> requestHeaders)
+        {
+            try
+            {
+                using var client = await _listener.AcceptTcpClientAsync();
+                await using var stream = client.GetStream();
+                using var reader = new StreamReader(
+                    stream,
+                    Encoding.ASCII,
+                    detectEncodingFromByteOrderMarks: false,
+                    bufferSize: 1024,
+                    leaveOpen: true);
+                var headers = new StringBuilder();
+                while (await reader.ReadLineAsync() is { } line)
+                {
+                    if (line.Length == 0)
+                    {
+                        break;
+                    }
+
+                    headers.AppendLine(line);
+                }
+
+                requestHeaders.TrySetResult(headers.ToString());
+                var body = Encoding.UTF8.GetBytes(responseBody);
+                var head = Encoding.ASCII.GetBytes(
+                    $"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {body.Length}\r\nConnection: close\r\n\r\n");
+                await stream.WriteAsync(head);
+                for (var offset = 0; offset < body.Length; offset += 7)
+                {
+                    await stream.WriteAsync(
+                        body.AsMemory(offset, Math.Min(7, body.Length - offset)));
+                }
+            }
+            catch (Exception exception)
+            {
+                requestHeaders.TrySetException(exception);
+                throw;
+            }
+        }
+    }
+}
