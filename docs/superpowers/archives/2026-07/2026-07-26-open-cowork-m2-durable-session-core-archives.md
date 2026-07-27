@@ -60,13 +60,28 @@ Thread-Turn-Item Session Core，并把它作为独立 `session` 模块接入
 - `win-x64` 发布目录真实运行提交 `a99f8aa` 的 `--version`、`init` 和
   `doctor --json`，Doctor 七项全部 Passed，Schema v2 与 `win-x64` 平台识别正确。
 - `dotnet format --verify-no-changes` 与 `git diff --check` 通过。
+- 2026-07-27 在 Apple Silicon macOS 26.5.2、`osx-arm64`、.NET SDK
+  `10.0.302`、Runtime `10.0.10` 上补验提交
+  `7ae53f2de59f4959b2097f1837e28a95d6db81ae` 加 Source Patch SHA-256
+  `c2d3a54e9455d16f90db1f5fb21f8923dbb2a120101e773ed54f54335b761010`。
+- macOS Release build 为 `0` warning / `0` error；完整测试仍为
+  Core `107`、Integration `15`、Generators `14`、Architecture `3`，合计
+  `139` passed / `0` failed / `0` skipped。
+- 同一完整测试集先在默认 APFS 运行，再将 `TMPDIR` 切到临时 Case-sensitive
+  APFS sparse image 重跑；两次均为 `139` passed / `0` failed / `0` skipped，
+  镜像验证后已卸载。
+- 真机完整回归覆盖 Journal Flush、半行尾部修复、Checksum/Sequence、中段损坏
+  隔离、真实子进程中断、active/archived/deleting 恢复矩阵、Symlink 根外逃逸、
+  SQLite WAL/FULL、同 Thread 串行、不同 Thread 并行、慢订阅者隔离、投影重建/
+  追平、Waiting Checkpoint、Resolution/Cancel 竞态和 Delete Reconciler。
+- `osx-arm64` framework-dependent 发布物为 Mach-O arm64；发布目录实跑
+  `doctor --json` 正确识别 Schema v2 和 `osx-arm64`，七项检查全部 `Passed`。
 
 ## Out of Scope
 
 - 真实 Provider、AgentFactory、工具执行和 Worktree Fork。
 - Protocol/AppServer/Gateway 业务入口；进入后续里程碑。
-- macOS M4 真机证据；`AGENTS.md` 中 M2 台账保持 `Pending`，在 M10 / 1.0 发布前
-  使用发布候选提交统一回填。
+- M10 最终发布候选的安装、升级、卸载、签名、公证和真实模型冒烟。
 
 ## Source Documents
 
@@ -83,3 +98,5 @@ None.
 - M2 作为一个整体任务关闭，只生成本归档；Outcome 1-8 仅作为依赖与提交边界。
 - 普通 solution restore 不生成 RID-specific assets；正式发布命令按 RID 自行还原，
   未为此增加 `RuntimeIdentifiers` 或改变项目框架契约。
+- 2026-07-27 M2 当前开发基线的 macOS 真机台账已清零；M10 仍须对最终发布候选
+  重新执行完整 `osx-arm64` 发布验收。

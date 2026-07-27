@@ -255,7 +255,7 @@ public static class WorkspacePathGuard
                 var target = info.ResolveLinkTarget(returnFinalTarget: true)
                     ?? throw new IOException(
                         $"Reparse point cannot be resolved safely: {candidate}");
-                current = Path.GetFullPath(target.FullName);
+                current = ResolvePhysical(target.FullName);
             }
             else
             {

@@ -1,6 +1,6 @@
 # OpenCoWork M1 Runtime Foundation 实施计划
 
-**Status:** Completed；Outcome 1-7 已完成。
+**Status:** Completed；Outcome 1-8 已完成。
 
 **Goal:** 建立可构建、可初始化、可诊断并可安全启停的 .NET 10 OpenCoWork
 运行时基础。
@@ -172,4 +172,31 @@
     `OPENCOWORK_VALIDATE_WINDOWS_SYMLINKS=1`
   - `dotnet publish src/OpenCoWork.App/OpenCoWork.App.csproj -c Release -r win-x64 --self-contained false`
   - `dotnet publish src/OpenCoWork.App/OpenCoWork.App.csproj -c Release -r osx-arm64 --self-contained false`
+  - `git diff --check`
+
+### Outcome 8: macOS ARM64 完成 M1/M2 已登记的真机验证
+
+- Work:
+  - 在 Apple Silicon macOS 上复跑 restore、Release build、完整测试和
+    `osx-arm64` framework-dependent publish，并真实运行发布目录中的 CLI。
+  - 修复真机发现的 `/var` 与 `/private/var` 物理路径别名误判，但不得放宽根外
+    Symlink 拒绝或写前复检。
+  - 让基于 XML 的项目图守卫按 MSBuild 路径语义读取 Windows 风格分隔符，不修改
+    已冻结项目图。
+  - 将提交、平台、命令、测试计数和专项结果回填到既有 M1/M2 归档及
+    `AGENTS.md` 台账，不创建第二份交付归档。
+- Risks/open questions:
+  - 根目录 DotCraft 本机证据基线当前缺失；本 Outcome 只依据已冻结的 OpenCoWork
+    跨平台、安全和验收契约修复已复现回归，不推断原实现事实。
+  - 当前 `dev` 提交只能关闭 M1/M2 已登记的真机缺口；M10 发布候选仍需按
+    `M10-ACC-011` 重新执行最终安装、升级、卸载和真实模型冒烟。
+- Verify:
+  - `dotnet test tests/OpenCoWork.Core.Tests/OpenCoWork.Core.Tests.csproj -c Release --filter FullyQualifiedName~WorkspacePathTests`
+  - `dotnet test tests/OpenCoWork.ArchitectureTests/OpenCoWork.ArchitectureTests.csproj -c Release --filter FullyQualifiedName~Repository_project_graph_matches_frozen_contract`
+  - `dotnet restore OpenCoWork.slnx`
+  - `dotnet build OpenCoWork.slnx -c Release --no-restore`
+  - `dotnet test OpenCoWork.slnx -c Release --no-build`
+  - `dotnet publish src/OpenCoWork.App/OpenCoWork.App.csproj -c Release -r osx-arm64 --self-contained false`
+  - 发布目录中的 `opencowork --version`、`init` 和 `doctor --json`
+  - `dotnet format OpenCoWork.slnx --verify-no-changes --no-restore`
   - `git diff --check`

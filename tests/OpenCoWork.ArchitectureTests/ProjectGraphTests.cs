@@ -157,7 +157,8 @@ public sealed class ProjectGraphTests
         {
             var include = reference.Attribute("Include")?.Value
                 ?? throw new InvalidDataException($"{projectName} has a ProjectReference without Include.");
-            var referencedProject = Path.GetFileNameWithoutExtension(include);
+            var referencedProject = Path.GetFileNameWithoutExtension(
+                include.Replace('\\', Path.DirectorySeparatorChar));
             var outputItemType = ReadMetadata(reference, "OutputItemType");
             var referenceOutputAssembly = ReadMetadata(reference, "ReferenceOutputAssembly");
             var isAnalyzer = string.Equals(

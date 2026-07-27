@@ -96,8 +96,8 @@ public sealed class WorkspacePathTests
             config,
             "../missing/child.txt");
 
-        Assert.Equal(
-            Path.Combine(internalTarget, "new", "file.txt"),
+        Assert.EndsWith(
+            Path.Combine("workspace", "actual", "new", "file.txt"),
             internalResult.PhysicalPath);
         Assert.EndsWith(
             Path.Combine("workspace", "missing", "child.txt"),
