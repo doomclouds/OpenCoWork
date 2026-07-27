@@ -358,6 +358,15 @@ stdout、stderr 或测试产物；最终只生成一份 M3 交付归档。
     和发布目录 CLI 实跑；解释所有 skipped/explicit/not-run 项及临时资源清理结果。
   - 用实际测试类、命令和结果把 `M3-ACC-001` 至 `M3-ACC-008` 从 Planned 更新为
     Passed；随后同步里程碑 CHECKLIST/INDEX，并生成唯一 M3 交付归档。
+- Partial real-provider evidence（2026-07-27）:
+
+  | Commit SHA | RID | Provider 路径 | 精确 Model ID | UTC 时间 | Usage（Prompt / Completion / Total） | Finish Reason | 结果 |
+  | --- | --- | --- | --- | --- | --- | --- | --- |
+  | `93011bcde17d4c1c08d162634bea21e0a1ce64d6` | `osx-arm64` | `deepseek-official` | `deepseek-v4-pro` | `2026-07-27T15:11:20.983288+00:00` | `141 / 40 / 181` | `stop` | Pass |
+  | `93011bcde17d4c1c08d162634bea21e0a1ce64d6` | `osx-arm64` | `deepseek-official` | `deepseek-v4-flash` | `2026-07-27T15:11:22.694074+00:00` | `140 / 29 / 169` | `stop` | Pass |
+
+  千问 Token Plan 的四条 `osx-arm64` 路径仍为 `NotRun`，`win-x64` 六条路径
+  尚无真机证据；因此 Outcome 8、`M3-ACC-002` 和 M3 Completion Gate 均保持未完成。
 - Risks/open questions:
   - 真实 Provider 请求属于显式发布操作；只有操作者提供对应凭据和执行授权时运行。
   - 任一 Secret Canary 命中、真实路径 NotRun、Tokenizer 对账失败或双平台证据
