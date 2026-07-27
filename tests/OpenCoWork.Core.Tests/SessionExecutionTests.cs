@@ -27,14 +27,26 @@ public sealed class SessionExecutionTests
         var cancellationToken = TestContext.Current.CancellationToken;
         using var files = new TempWorkspace();
         var invocationId = Guid.CreateVersion7();
-        var summary = "compact history";
+        var summary =
+            """
+            ## 目标与上下文
+            - Preserve the earlier goal.
+            ## 已确认的决策与约束
+            - Keep the durable session contract.
+            ## 已完成结果
+            - The earlier turn completed.
+            ## 关键标识、路径与错误
+            - None.
+            ## 待办与下一步
+            - Continue.
+            """;
         var checkpoint = new CompactionCheckpointSnapshot(
             SchemaVersion: 1,
             Summary: summary,
             SummarySha256: Sha256(summary),
             SourceStartSequence: 1,
             SourceEndSequence: 1,
-            SourceMessagesSha256: new string('d', 64),
+            SourceMessagesSha256: Sha256(string.Empty),
             SummaryPromptVersion: "compaction-v1",
             TokenizerProfileId: "qwen-tokenizer",
             TokenizerProfileVersion: "1",

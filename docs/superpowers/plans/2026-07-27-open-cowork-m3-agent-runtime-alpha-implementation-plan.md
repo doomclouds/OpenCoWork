@@ -1,6 +1,6 @@
 # OpenCoWork M3 Agent Runtime Alpha 实施计划
 
-**Status:** In Progress；Outcome 1-5 已完成，正在推进 Outcome 6。
+**Status:** In Progress；Outcome 1-6 已完成，正在推进 Outcome 7。
 
 **Goal:** 在 M2 Durable Session Core 上交付 Provider 中立、无真实工具、支持
 真实多轮对话、流式响应、重试、Token 预算和可恢复压缩的 Agent Runtime。
@@ -270,7 +270,7 @@ stdout、stderr 或测试产物；最终只生成一份 M3 交付归档。
   - `M3-ACC-004`
   - `M3-ACC-007`
 
-### Outcome 6: Micro/Partial Compaction 与响应式压缩在重启后保持相同历史（进行中）
+### Outcome 6: Micro/Partial Compaction 与响应式压缩在重启后保持相同历史（已完成）
 
 - Work:
   - 在本地预算达到 80% 时先执行确定性 Micro Compaction，只清理已冻结的安全
@@ -301,7 +301,7 @@ stdout、stderr 或测试产物；最终只生成一份 M3 交付归档。
   - `M3-ACC-006`
   - `M3-ACC-007`
 
-### Outcome 7: `opencowork chat` 只经 ISessionService 完成多轮、恢复和模式切换
+### Outcome 7: `opencowork chat` 只经 ISessionService 完成多轮、恢复和模式切换（进行中）
 
 - Work:
   - 在 `Program.cs` 增加 `chat` 命令及

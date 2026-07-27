@@ -214,6 +214,18 @@ internal sealed class AgentFactory(
             provider.Tokenizer);
         var compactionPrompt =
             AgentPrompts.CreateCompaction(provider.Tokenizer);
+        if (session.CompactionCheckpoint is { } checkpoint &&
+            !IsValidCheckpoint(
+                checkpoint,
+                session,
+                provider,
+                compactionPrompt))
+        {
+            throw new AgentPreparationException(
+                AgentErrorCodes.ContextInputInvalid,
+                "The compaction checkpoint is invalid.");
+        }
+
         var messages = BuildMessages(
             session,
             responsePrompt.SystemMessage);
@@ -322,7 +334,45 @@ internal sealed class AgentFactory(
         return [.. messages];
     }
 
-    private static int CountPromptTokens(
+    private static bool IsValidCheckpoint(
+        CompactionCheckpointSnapshot checkpoint,
+        AgentSession session,
+        ProviderModelRegistration provider,
+        AgentPromptMaterialization compactionPrompt) =>
+        checkpoint.SchemaVersion == 1 &&
+        !string.IsNullOrWhiteSpace(checkpoint.Summary) &&
+        checkpoint.SourceStartSequence > 0 &&
+        checkpoint.SourceEndSequence >= checkpoint.SourceStartSequence &&
+        checkpoint.SummaryTokenCount ==
+        provider.Tokenizer.CountTokens(checkpoint.Summary) &&
+        string.Equals(
+            checkpoint.SummarySha256,
+            CompactionCheckpointIntegrity.Sha256(checkpoint.Summary),
+            StringComparison.Ordinal) &&
+        CompactionCheckpointIntegrity.IsLowerSha256(
+            checkpoint.SourceMessagesSha256) &&
+        string.Equals(
+            checkpoint.SourceMessagesSha256,
+            CompactionCheckpointIntegrity.SourceMessagesSha256(
+                session.ModelHistory,
+                checkpoint.SourceStartSequence,
+                checkpoint.SourceEndSequence),
+            StringComparison.Ordinal) &&
+        CompactionCheckpointIntegrity.IsValidSummary(checkpoint.Summary) &&
+        string.Equals(
+            checkpoint.SummaryPromptVersion,
+            compactionPrompt.Snapshot.Version,
+            StringComparison.Ordinal) &&
+        string.Equals(
+            checkpoint.TokenizerProfileId,
+            provider.TokenizerProfileId,
+            StringComparison.Ordinal) &&
+        string.Equals(
+            checkpoint.TokenizerProfileVersion,
+            provider.TokenizerProfileVersion,
+            StringComparison.Ordinal);
+
+    internal static int CountPromptTokens(
         ModelTokenizer tokenizer,
         IReadOnlyList<ChatCompletionMessage> messages)
     {
@@ -392,10 +442,11 @@ internal sealed class AgentRuntimeExecutor : ISessionExecutor
                 cancellationToken,
                 deadline.Token);
         var invocationToken = invocationCancellation.Token;
+        WorkspaceInstructionDocument? instructions;
         AgentInvocationDraft draft;
         try
         {
-            var instructions = WorkspaceInstructionDocument.Read(_paths);
+            instructions = WorkspaceInstructionDocument.Read(_paths);
             draft = _factory.Create(
                 context,
                 Guid.CreateVersion7(_timeProvider.GetUtcNow()),
@@ -403,16 +454,6 @@ internal sealed class AgentRuntimeExecutor : ISessionExecutor
             await sink.EmitAsync(
                 new RecordAgentInvocationSnapshotIntent(draft.Snapshot),
                 cancellationToken);
-            if (draft.Disposition == AgentInvocationDraftDisposition.CompactionRequired)
-            {
-                await sink.EmitAsync(
-                    new FailTurnIntent(new SessionError(
-                        AgentErrorCodes.ContextCompactionFailed,
-                        "Conversation compaction is required.",
-                        IsRetryable: false)),
-                    cancellationToken);
-                return;
-            }
         }
         catch (AgentPreparationException exception)
         {
@@ -444,8 +485,39 @@ internal sealed class AgentRuntimeExecutor : ISessionExecutor
         var reasoning = new StringBuilder();
         try
         {
-            for (var attempt = 1; attempt <= 3; attempt++)
+            var session = context;
+            var nextAttempt = 1;
+            if (draft.Disposition == AgentInvocationDraftDisposition.CompactionRequired)
             {
+                var compacted = await CompactAsync(
+                    session,
+                    draft,
+                    instructions,
+                    sink,
+                    nextAttempt,
+                    targetPercent: 60,
+                    invocationToken,
+                    cancellationToken);
+                if (compacted is null)
+                {
+                    await FailCompactionAsync(sink, cancellationToken);
+                    return;
+                }
+
+                session = compacted.Session;
+                draft = compacted.Draft;
+                nextAttempt = compacted.NextAttempt;
+                if (nextAttempt > 3)
+                {
+                    await FailCompactionAsync(sink, cancellationToken);
+                    return;
+                }
+            }
+
+            var reactiveCompactionUsed = false;
+            while (nextAttempt <= 3)
+            {
+                var attempt = nextAttempt++;
                 var usageRecorded = false;
                 ChatCompletionFinishReason? finishReason = null;
                 try
@@ -596,19 +668,53 @@ internal sealed class AgentRuntimeExecutor : ISessionExecutor
                 }
                 catch (ChatCompletionException exception)
                 {
-                    if (!visible && exception.IsTransient && attempt < 3)
+                    if (!visible &&
+                        exception.IsPromptTooLong &&
+                        !reactiveCompactionUsed)
                     {
-                        var delay = exception.RetryAfter ??
-                                    (attempt == 1
-                                        ? TimeSpan.FromMilliseconds(250)
-                                        : TimeSpan.FromSeconds(1));
-                        await Task.Delay(
-                            delay > TimeSpan.FromSeconds(30)
-                                ? TimeSpan.FromSeconds(30)
-                                : delay,
-                            _timeProvider,
+                        reactiveCompactionUsed = true;
+                        var compacted = await CompactAsync(
+                            session,
+                            draft,
+                            instructions,
+                            sink,
+                            nextAttempt,
+                            targetPercent: 50,
+                            invocationToken,
+                            cancellationToken);
+                        if (compacted is null)
+                        {
+                            await FailCompactionAsync(sink, cancellationToken);
+                            return;
+                        }
+
+                        session = compacted.Session;
+                        draft = compacted.Draft;
+                        nextAttempt = compacted.NextAttempt;
+                        if (nextAttempt > 3)
+                        {
+                            await FailCompactionAsync(sink, cancellationToken);
+                            return;
+                        }
+
+                        continue;
+                    }
+
+                    if (!visible &&
+                        exception.IsTransient &&
+                        nextAttempt <= 3)
+                    {
+                        await DelayRetryAsync(
+                            exception,
+                            attempt,
                             invocationToken);
                         continue;
+                    }
+
+                    if (!visible && exception.IsPromptTooLong)
+                    {
+                        await FailCompactionAsync(sink, cancellationToken);
+                        return;
                     }
 
                     await FailAsync(
@@ -639,6 +745,348 @@ internal sealed class AgentRuntimeExecutor : ISessionExecutor
                 cancellationToken);
         }
     }
+
+    private async ValueTask<CompactionResult?> CompactAsync(
+        AgentSession session,
+        AgentInvocationDraft draft,
+        WorkspaceInstructionDocument? instructions,
+        ISessionExecutionSink sink,
+        int nextAttempt,
+        int targetPercent,
+        CancellationToken invocationToken,
+        CancellationToken cancellationToken)
+    {
+        var selection = SelectCompaction(session, draft, targetPercent);
+        if (selection is null)
+        {
+            return null;
+        }
+
+        var messages = new[]
+        {
+            new ChatCompletionMessage(
+                ChatCompletionMessageRole.System,
+                draft.CompactionPrompt.SystemMessage),
+            new ChatCompletionMessage(
+                ChatCompletionMessageRole.User,
+                CompactionInput(session.CompactionCheckpoint, selection.Items)),
+        };
+        var promptTokens = AgentFactory.CountPromptTokens(
+            draft.Provider.Tokenizer,
+            messages);
+        var maxSummaryTokens = Math.Min(
+            8192,
+            checked((draft.UsableInputBudgetTokens + 9) / 10));
+        if (promptTokens >
+            draft.Provider.ContextWindowTokens - maxSummaryTokens)
+        {
+            return null;
+        }
+
+        while (nextAttempt <= 3)
+        {
+            var attempt = nextAttempt++;
+            var summary = new StringBuilder();
+            var usageRecorded = false;
+            ChatCompletionFinishReason? finishReason = null;
+            try
+            {
+                var request = new ChatCompletionRequest(
+                    draft.Provider.ModelId,
+                    messages,
+                    maxSummaryTokens,
+                    draft.Snapshot.InvocationId,
+                    attempt,
+                    ChatCompletionInvocationPurpose.Compaction);
+                await foreach (var item in _clients(draft.Provider)
+                                   .StreamAsync(request, invocationToken)
+                                   .WithCancellation(invocationToken))
+                {
+                    switch (item)
+                    {
+                        case ChatCompletionContentDeltaEvent delta:
+                            summary.Append(delta.Delta);
+                            break;
+                        case ChatCompletionUsageEvent usage:
+                            await RecordUsageAsync(
+                                sink,
+                                draft.Snapshot.InvocationId,
+                                attempt,
+                                ChatCompletionInvocationPurpose.Compaction,
+                                usage.Usage,
+                                cancellationToken);
+                            usageRecorded = true;
+                            break;
+                        case ChatCompletionCompletedEvent completed:
+                            finishReason = completed.FinishReason;
+                            break;
+                    }
+                }
+
+                var normalizedSummary = NormalizeLf(summary.ToString());
+                var summaryTokens =
+                    draft.Provider.Tokenizer.CountTokens(normalizedSummary);
+                if (!usageRecorded)
+                {
+                    await RecordEstimatedUsageAsync(
+                        sink,
+                        draft.Snapshot.InvocationId,
+                        attempt,
+                        ChatCompletionInvocationPurpose.Compaction,
+                        promptTokens,
+                        summaryTokens,
+                        cancellationToken);
+                }
+
+                if (finishReason != ChatCompletionFinishReason.Stop ||
+                    summaryTokens > maxSummaryTokens ||
+                    !CompactionCheckpointIntegrity.IsValidSummary(
+                        normalizedSummary))
+                {
+                    return null;
+                }
+
+                var checkpoint = new CompactionCheckpointSnapshot(
+                    SchemaVersion: 1,
+                    normalizedSummary,
+                    CompactionCheckpointIntegrity.Sha256(normalizedSummary),
+                    session.CompactionCheckpoint?.SourceStartSequence ??
+                    selection.Items[0].Sequence,
+                    selection.SourceEndSequence,
+                    CompactionCheckpointIntegrity.SourceMessagesSha256(
+                        session.ModelHistory,
+                        session.CompactionCheckpoint?.SourceStartSequence ??
+                        selection.Items[0].Sequence,
+                        selection.SourceEndSequence),
+                    draft.CompactionPrompt.Snapshot.Version,
+                    draft.Provider.TokenizerProfileId,
+                    draft.Provider.TokenizerProfileVersion,
+                    summaryTokens);
+                var compactedSession = new AgentSession(
+                    session.Thread,
+                    session.Turn,
+                    session.ModelHistory,
+                    session.Checkpoint,
+                    checkpoint);
+                var compactedDraft = _factory.Create(
+                    compactedSession,
+                    draft.Snapshot.InvocationId,
+                    instructions);
+                if (compactedDraft.InputTokenCount >
+                    compactedDraft.UsableInputBudgetTokens * (long)targetPercent / 100)
+                {
+                    return null;
+                }
+
+                await sink.EmitAsync(
+                    new RecordCompactionCheckpointIntent(checkpoint),
+                    cancellationToken);
+                return new CompactionResult(
+                    compactedSession,
+                    compactedDraft,
+                    nextAttempt);
+            }
+            catch (ChatCompletionException exception)
+            {
+                if (!exception.IsTransient || nextAttempt > 3)
+                {
+                    return null;
+                }
+
+                await DelayRetryAsync(exception, attempt, invocationToken);
+            }
+        }
+
+        return null;
+    }
+
+    private static CompactionSelection? SelectCompaction(
+        AgentSession session,
+        AgentInvocationDraft draft,
+        int targetPercent)
+    {
+        var sourceEnd =
+            session.CompactionCheckpoint?.SourceEndSequence ?? long.MinValue;
+        var turns = session.ModelHistory
+            .Where(item =>
+                item.Status == SessionItemStatus.Completed &&
+                item.TurnId != session.Turn.TurnId &&
+                item.Sequence > sourceEnd &&
+                item.Type is SessionItemType.UserMessage or
+                    SessionItemType.AgentMessage)
+            .OrderBy(item => item.Sequence)
+            .ThenBy(item => item.ItemId)
+            .GroupBy(item => item.TurnId)
+            .Select(group => group.ToArray())
+            .ToArray();
+        var selected = new List<SessionItemSnapshot>();
+        foreach (var turn in turns)
+        {
+            selected.AddRange(turn);
+            var sourceEndSequence = session.ModelHistory
+                .Where(item =>
+                    item.Status == SessionItemStatus.Completed &&
+                    item.Sequence > selected[^1].Sequence &&
+                    item.Type is SessionItemType.UserMessage or
+                        SessionItemType.AgentMessage)
+                .Min(item => item.Sequence) - 1;
+            if (ProjectedResponseTokens(
+                    session,
+                    draft,
+                    sourceEndSequence) <=
+                draft.UsableInputBudgetTokens * (long)targetPercent / 100)
+            {
+                return new CompactionSelection(
+                    selected.ToArray(),
+                    sourceEndSequence);
+            }
+        }
+
+        return null;
+    }
+
+    private static int ProjectedResponseTokens(
+        AgentSession session,
+        AgentInvocationDraft draft,
+        long sourceEndSequence)
+    {
+        const string summaryPrefix =
+            "Conversation summary of earlier turns:\n";
+        var messages = new List<ChatCompletionMessage>
+        {
+            new(
+                ChatCompletionMessageRole.System,
+                draft.ResponsePrompt.SystemMessage),
+            new(
+                ChatCompletionMessageRole.Assistant,
+                summaryPrefix),
+        };
+        messages.AddRange(
+            session.ModelHistory
+                .Where(item =>
+                    item.Status == SessionItemStatus.Completed &&
+                    item.Sequence > sourceEndSequence &&
+                    item.Type is SessionItemType.UserMessage or
+                        SessionItemType.AgentMessage)
+                .OrderBy(item => item.Sequence)
+                .ThenBy(item => item.ItemId)
+                .Select(item => new ChatCompletionMessage(
+                    item.Type == SessionItemType.UserMessage
+                        ? ChatCompletionMessageRole.User
+                        : ChatCompletionMessageRole.Assistant,
+                    ((TextItemContent)item.Content).Text)));
+        return checked(
+            AgentFactory.CountPromptTokens(draft.Provider.Tokenizer, messages) +
+            Math.Min(
+                8192,
+                (draft.UsableInputBudgetTokens + 9) / 10));
+    }
+
+    private static string CompactionInput(
+        CompactionCheckpointSnapshot? checkpoint,
+        IReadOnlyList<SessionItemSnapshot> items)
+    {
+        var result = new StringBuilder();
+        if (checkpoint is not null)
+        {
+            result.Append("Previous authoritative summary:\n");
+            result.Append(checkpoint.Summary);
+            result.Append("\n\n");
+        }
+
+        foreach (var item in items)
+        {
+            result.Append(
+                item.Type == SessionItemType.UserMessage
+                    ? "User:\n"
+                    : "Assistant:\n");
+            result.Append(NormalizeLf(((TextItemContent)item.Content).Text));
+            result.Append("\n\n");
+        }
+
+        return result.ToString().TrimEnd('\n');
+    }
+
+    private async ValueTask DelayRetryAsync(
+        ChatCompletionException exception,
+        int attempt,
+        CancellationToken cancellationToken)
+    {
+        var delay = exception.RetryAfter ??
+                    (attempt == 1
+                        ? TimeSpan.FromMilliseconds(250)
+                        : TimeSpan.FromSeconds(1));
+        await Task.Delay(
+            delay > TimeSpan.FromSeconds(30)
+                ? TimeSpan.FromSeconds(30)
+                : delay,
+            _timeProvider,
+            cancellationToken);
+    }
+
+    private static ValueTask RecordUsageAsync(
+        ISessionExecutionSink sink,
+        Guid invocationId,
+        int attempt,
+        ChatCompletionInvocationPurpose purpose,
+        ChatCompletionUsage usage,
+        CancellationToken cancellationToken) =>
+        sink.EmitAsync(
+            new RecordProviderUsageIntent(
+                new ProviderUsageSnapshot(
+                    invocationId,
+                    attempt,
+                    purpose,
+                    usage.PromptTokens,
+                    usage.CompletionTokens,
+                    usage.TotalTokens,
+                    ProviderUsageSource.Provider,
+                    IsEstimate: false)),
+            cancellationToken);
+
+    private static ValueTask RecordEstimatedUsageAsync(
+        ISessionExecutionSink sink,
+        Guid invocationId,
+        int attempt,
+        ChatCompletionInvocationPurpose purpose,
+        int promptTokens,
+        int completionTokens,
+        CancellationToken cancellationToken) =>
+        sink.EmitAsync(
+            new RecordProviderUsageIntent(
+                new ProviderUsageSnapshot(
+                    invocationId,
+                    attempt,
+                    purpose,
+                    promptTokens,
+                    completionTokens,
+                    checked(promptTokens + completionTokens),
+                    ProviderUsageSource.LocalEstimate,
+                    IsEstimate: true)),
+            cancellationToken);
+
+    private static ValueTask FailCompactionAsync(
+        ISessionExecutionSink sink,
+        CancellationToken cancellationToken) =>
+        sink.EmitAsync(
+            new FailTurnIntent(new SessionError(
+                AgentErrorCodes.ContextCompactionFailed,
+                "Conversation compaction failed.",
+                IsRetryable: false)),
+            cancellationToken);
+
+    private static string NormalizeLf(string value) =>
+        value.Replace("\r\n", "\n", StringComparison.Ordinal)
+            .Replace('\r', '\n');
+
+    private sealed record CompactionSelection(
+        SessionItemSnapshot[] Items,
+        long SourceEndSequence);
+
+    private sealed record CompactionResult(
+        AgentSession Session,
+        AgentInvocationDraft Draft,
+        int NextAttempt);
 
     private static SessionError? FinishError(
         ChatCompletionFinishReason? finishReason,

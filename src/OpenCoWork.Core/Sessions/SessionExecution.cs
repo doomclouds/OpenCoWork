@@ -3,6 +3,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using OpenCoWork.Abstractions;
+using OpenCoWork.Core.Agents;
 using OpenCoWork.Core.Configuration;
 
 namespace OpenCoWork.Core.Sessions;
@@ -1307,9 +1308,14 @@ internal sealed partial class SessionService
         var checkpoint = intent.Checkpoint;
         if (!_agentInvocations.TryGetValue(turn.TurnId, out var invocation) ||
             turn.Status != TurnStatus.Running ||
-            checkpoint.SchemaVersion <= 0 ||
+            checkpoint.SchemaVersion != 1 ||
+            string.IsNullOrWhiteSpace(checkpoint.Summary) ||
             checkpoint.SourceStartSequence <= 0 ||
             checkpoint.SourceEndSequence < checkpoint.SourceStartSequence ||
+            !CompactionCheckpointIntegrity.IsLowerSha256(
+                checkpoint.SourceMessagesSha256) ||
+            checkpoint.SummaryTokenCount <= 0 ||
+            !CompactionCheckpointIntegrity.IsValidSummary(checkpoint.Summary) ||
             !string.Equals(
                 checkpoint.SummaryPromptVersion,
                 invocation.Snapshot.CompactionPrompt.Version,
@@ -1324,7 +1330,14 @@ internal sealed partial class SessionService
                 StringComparison.Ordinal) ||
             !string.Equals(
                 checkpoint.SummarySha256,
-                Hash(Encoding.UTF8.GetBytes(checkpoint.Summary)),
+                CompactionCheckpointIntegrity.Sha256(checkpoint.Summary),
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                checkpoint.SourceMessagesSha256,
+                CompactionCheckpointIntegrity.SourceMessagesSha256(
+                    _items.Values,
+                    checkpoint.SourceStartSequence,
+                    checkpoint.SourceEndSequence),
                 StringComparison.Ordinal))
         {
             throw ExecutionError(
@@ -2029,6 +2042,60 @@ internal sealed partial class SessionService
                     break;
                 case SessionEventType.CompactionCheckpointRecorded:
                     var compaction = ReadFact<CompactionCheckpointRecordedFact>(entry);
+                    if (!_agentInvocations.TryGetValue(
+                            compaction.TurnId,
+                            out var compactionInvocation) ||
+                        compaction.Checkpoint.SchemaVersion != 1 ||
+                        string.IsNullOrWhiteSpace(compaction.Checkpoint.Summary) ||
+                        compaction.Checkpoint.SourceStartSequence <= 0 ||
+                        compaction.Checkpoint.SourceEndSequence <
+                        compaction.Checkpoint.SourceStartSequence ||
+                        !CompactionCheckpointIntegrity.IsLowerSha256(
+                            compaction.Checkpoint.SourceMessagesSha256) ||
+                        compaction.Checkpoint.SummaryTokenCount <= 0 ||
+                        !CompactionCheckpointIntegrity.IsValidSummary(
+                            compaction.Checkpoint.Summary) ||
+                        !string.Equals(
+                            compaction.Checkpoint.SummaryPromptVersion,
+                            compactionInvocation.Snapshot.CompactionPrompt.Version,
+                            StringComparison.Ordinal) ||
+                        !string.Equals(
+                            compaction.Checkpoint.TokenizerProfileId,
+                            compactionInvocation.Snapshot.TokenizerProfileId,
+                            StringComparison.Ordinal) ||
+                        !string.Equals(
+                            compaction.Checkpoint.TokenizerProfileVersion,
+                            compactionInvocation.Snapshot.TokenizerProfileVersion,
+                            StringComparison.Ordinal) ||
+                        !string.Equals(
+                            compaction.Checkpoint.SummarySha256,
+                            CompactionCheckpointIntegrity.Sha256(
+                                compaction.Checkpoint.Summary),
+                            StringComparison.Ordinal) ||
+                        !string.Equals(
+                            compaction.Checkpoint.SourceMessagesSha256,
+                            CompactionCheckpointIntegrity.SourceMessagesSha256(
+                                _items.Values,
+                                compaction.Checkpoint.SourceStartSequence,
+                                compaction.Checkpoint.SourceEndSequence),
+                            StringComparison.Ordinal))
+                    {
+                        throw new InvalidDataException(
+                            "Journal contains an invalid compaction checkpoint.");
+                    }
+
+                    if (_compactionCheckpoints.TryGetValue(
+                            entry.ThreadId,
+                            out var existingCompaction) &&
+                        (compaction.Checkpoint.SourceStartSequence !=
+                         existingCompaction.Checkpoint.SourceStartSequence ||
+                         compaction.Checkpoint.SourceEndSequence <=
+                         existingCompaction.Checkpoint.SourceEndSequence))
+                    {
+                        throw new InvalidDataException(
+                            "Journal contains a non-extending compaction checkpoint.");
+                    }
+
                     _compactionCheckpoints[entry.ThreadId] =
                         new CompactionRecord(compaction.Checkpoint, entry.Sequence);
                     break;
