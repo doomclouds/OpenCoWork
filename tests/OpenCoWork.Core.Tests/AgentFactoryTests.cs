@@ -1,7 +1,12 @@
 using System.IO.Compression;
+using System.Runtime.CompilerServices;
 using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json;
+using OpenCoWork.Abstractions;
 using OpenCoWork.Core.Agents;
 using OpenCoWork.Core.Configuration;
+using OpenCoWork.Core.Workspaces;
 using Xunit;
 
 namespace OpenCoWork.Core.Tests;
@@ -157,5 +162,277 @@ public sealed class AgentFactoryTests
         {
             Directory.Delete(directory, recursive: true);
         }
+    }
+
+    [Fact]
+    public void Response_and_compaction_prompts_are_byte_stable_and_normalize_workspace_instructions()
+    {
+        var directory = Path.Combine(
+            Path.GetTempPath(),
+            $"opencowork-prompts-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        try
+        {
+            File.WriteAllBytes(
+                Path.Combine(directory, "AGENTS.md"),
+                [0xEF, 0xBB, 0xBF, .. Encoding.UTF8.GetBytes("Use C#.\r\nBe exact.\r\n\r\n")]);
+            var instructions = WorkspaceInstructionDocument.Read(
+                new OpenCoWorkPaths(directory));
+            var tokenizer = TokenizerProfiles
+                .GetRequiredForModel("qwen3.8-max-preview")
+                .CreateTokenizer(TokenizerBaseDirectory);
+
+            var agent = AgentPrompts.CreateResponse(
+                AgentMode.Agent,
+                "golden-workspace",
+                instructions,
+                tokenizer);
+            var plan = AgentPrompts.CreateResponse(
+                AgentMode.Plan,
+                "golden-workspace",
+                instructions,
+                tokenizer);
+            var agentWithoutInstructions = AgentPrompts.CreateResponse(
+                AgentMode.Agent,
+                "golden-workspace",
+                instructions: null,
+                tokenizer);
+            var planWithoutInstructions = AgentPrompts.CreateResponse(
+                AgentMode.Plan,
+                "golden-workspace",
+                instructions: null,
+                tokenizer);
+            var compaction = AgentPrompts.CreateCompaction(tokenizer);
+
+            Assert.Equal(
+                ReadSnapshot("agent-with-instructions.txt"),
+                agent.SystemMessage);
+            Assert.Equal(
+                ReadSnapshot("plan-with-instructions.txt"),
+                plan.SystemMessage);
+            Assert.Equal(
+                ReadSnapshot("agent-no-instructions.txt"),
+                agentWithoutInstructions.SystemMessage);
+            Assert.Equal(
+                ReadSnapshot("plan-no-instructions.txt"),
+                planWithoutInstructions.SystemMessage);
+            Assert.Equal(
+                ReadSnapshot("compaction.txt"),
+                compaction.SystemMessage);
+            Assert.Equal("Use C#.\nBe exact.\n", instructions!.Content);
+            Assert.Equal(25, instructions.RawByteCount);
+            Assert.Equal(
+                ["builtin:opencowork.response.v1", "mode:agent", "workspace:AGENTS.md", "runtime:workspaceName"],
+                agent.Snapshot.Sources);
+            Assert.Equal(
+                Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(agent.SystemMessage)))
+                    .ToLowerInvariant(),
+                agent.Snapshot.SystemMessageSha256);
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Agent_factory_produces_a_deterministic_secret_free_ready_draft()
+    {
+        const string secret = "factory-secret-9127af";
+        var directory = Path.Combine(
+            Path.GetTempPath(),
+            $"opencowork-factory-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        try
+        {
+            var models = new ModelsConfig
+            {
+                Providers = new Dictionary<string, ProviderConfig>(StringComparer.Ordinal)
+                {
+                    ["token-plan"] = new()
+                    {
+                        BaseUrl = "https://example.test/v1",
+                        ApiKey = new ProviderApiKeyConfig
+                        {
+                            Environment = "TOKEN_PLAN_KEY",
+                        },
+                        Models = new Dictionary<string, ModelConfig>(StringComparer.Ordinal)
+                        {
+                            ["qwen3.8-max-preview"] = new()
+                            {
+                                TokenizerProfileId = "qwen-o200k",
+                                TokenizerProfileVersion = "1",
+                                ContextWindowTokens = 983_616,
+                                MaxOutputTokens = 131_072,
+                            },
+                        },
+                    },
+                },
+            };
+            var credentials = FrozenProviderCredentials.Capture(
+                models,
+                name => name == "TOKEN_PLAN_KEY" ? secret : null);
+            var paths = new OpenCoWorkPaths(directory);
+            var factory = new AgentFactory(
+                new ProviderRegistry(
+                    models,
+                    credentials,
+                    TokenizerBaseDirectory,
+                    directory),
+                paths);
+            var currentTurnId = Guid.Parse("019f2f95-7b3f-7b5f-8f39-8398ffb2bd85");
+            var priorTurnId = Guid.Parse("019f2f95-7b3f-78aa-88e6-817282335c72");
+            var timestamp = new DateTimeOffset(
+                2026,
+                7,
+                27,
+                12,
+                0,
+                0,
+                TimeSpan.Zero);
+            var session = new AgentSession(
+                new ThreadSnapshot(
+                    Guid.Parse("019f2f95-7b3f-75e9-b71a-ed15bcf17054"),
+                    "Deterministic thread",
+                    ThreadStatus.Active,
+                    ThreadAvailability.Available,
+                    HistoryMode.Server,
+                    20,
+                    currentTurnId,
+                    [],
+                    timestamp,
+                    timestamp,
+                    SessionProjectionState.Ready,
+                    diagnostic: null,
+                    "token-plan",
+                    "qwen3.8-max-preview",
+                    AgentMode.Agent),
+                new TurnSnapshot(
+                    currentTurnId,
+                    Guid.Parse("019f2f95-7b3f-75e9-b71a-ed15bcf17054"),
+                    TurnStatus.Running,
+                    timestamp,
+                    timestamp,
+                    CompletedAt: null,
+                    Error: null,
+                    AgentMode.Agent),
+                [
+                    Item(priorTurnId, SessionItemType.UserMessage, "Earlier question", 2),
+                    Item(priorTurnId, SessionItemType.Reasoning, "private reasoning", 4),
+                    Item(priorTurnId, SessionItemType.AgentMessage, "Earlier answer", 6),
+                    Item(currentTurnId, SessionItemType.UserMessage, "Current question", 19),
+                ]);
+            var invocationId =
+                Guid.Parse("019f2f95-7b3f-7d80-bd45-a7727cb2aabd");
+
+            var first = factory.Create(session, invocationId, instructions: null);
+            var second = factory.Create(session, invocationId, instructions: null);
+            var firstJson = JsonSerializer.Serialize(first.Snapshot);
+            var secondJson = JsonSerializer.Serialize(second.Snapshot);
+
+            Assert.Equal(AgentInvocationDraftDisposition.Ready, first.Disposition);
+            Assert.Equal(firstJson, secondJson);
+            Assert.Equal(
+                [
+                    ChatCompletionMessageRole.System,
+                    ChatCompletionMessageRole.User,
+                    ChatCompletionMessageRole.Assistant,
+                    ChatCompletionMessageRole.User,
+                ],
+                first.Messages.Select(message => message.Role));
+            Assert.Single(
+                first.Messages,
+                message => message.Content == "Current question");
+            Assert.Empty(first.ToolIds);
+            Assert.DoesNotContain(secret, firstJson, StringComparison.Ordinal);
+            Assert.DoesNotContain(secret, first.ResponsePrompt.SystemMessage, StringComparison.Ordinal);
+            Assert.Equal(64, first.Snapshot.ConfigurationSha256.Length);
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Workspace_instruction_reader_enforces_utf8_size_nul_and_physical_boundary()
+    {
+        var directory = Path.Combine(
+            Path.GetTempPath(),
+            $"opencowork-instructions-{Guid.NewGuid():N}");
+        var outside = Path.Combine(
+            Path.GetTempPath(),
+            $"opencowork-instructions-outside-{Guid.NewGuid():N}.md");
+        Directory.CreateDirectory(directory);
+        try
+        {
+            var paths = new OpenCoWorkPaths(directory);
+            var instructionsPath = Path.Combine(directory, "AGENTS.md");
+            Assert.Null(WorkspaceInstructionDocument.Read(paths));
+
+            File.WriteAllBytes(instructionsPath, [0xC3, 0x28]);
+            AssertInstructionsInvalid(paths);
+            File.WriteAllBytes(instructionsPath, [0x61, 0x00, 0x62]);
+            AssertInstructionsInvalid(paths);
+            File.WriteAllBytes(instructionsPath, new byte[(64 * 1024) + 1]);
+            AssertInstructionsInvalid(paths);
+            File.WriteAllBytes(instructionsPath, Enumerable.Repeat((byte)'a', 64 * 1024).ToArray());
+            Assert.Equal(
+                64 * 1024,
+                WorkspaceInstructionDocument.Read(paths)!.RawByteCount);
+
+            if (!OperatingSystem.IsWindows())
+            {
+                File.Delete(instructionsPath);
+                File.WriteAllText(outside, "outside");
+                File.CreateSymbolicLink(instructionsPath, outside);
+                AssertInstructionsInvalid(paths);
+            }
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+            File.Delete(outside);
+        }
+    }
+
+    private static SessionItemSnapshot Item(
+        Guid turnId,
+        SessionItemType type,
+        string text,
+        long sequence)
+    {
+        var timestamp = new DateTimeOffset(
+            2026,
+            7,
+            27,
+            12,
+            0,
+            0,
+            TimeSpan.Zero);
+        return new SessionItemSnapshot(
+            Guid.CreateVersion7(timestamp),
+            turnId,
+            type,
+            SessionItemStatus.Completed,
+            new TextItemContent(text),
+            sequence,
+            timestamp,
+            timestamp);
+    }
+
+    private static string ReadSnapshot(
+        string name,
+        [CallerFilePath] string sourceFile = "") =>
+        File.ReadAllText(Path.Combine(
+            Path.GetDirectoryName(sourceFile)!,
+            "Snapshots",
+            name));
+
+    private static void AssertInstructionsInvalid(OpenCoWorkPaths paths)
+    {
+        var exception = Assert.Throws<AgentPreparationException>(
+            () => WorkspaceInstructionDocument.Read(paths));
+        Assert.Equal(AgentErrorCodes.ContextInstructionsInvalid, exception.Code);
     }
 }

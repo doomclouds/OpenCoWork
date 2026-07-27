@@ -2712,8 +2712,12 @@ internal sealed partial class SessionService
 
     private IReadOnlyList<SessionItemSnapshot> ModelHistory(Guid threadId)
     {
+        var activeTurnId = _snapshots[threadId].ActiveTurnId;
         var turnIds = _turns.Values
-            .Where(turn => turn.ThreadId == threadId)
+            .Where(turn =>
+                turn.ThreadId == threadId &&
+                (turn.Status == TurnStatus.Completed ||
+                 turn.TurnId == activeTurnId))
             .Select(turn => turn.TurnId)
             .ToHashSet();
         return Array.AsReadOnly(

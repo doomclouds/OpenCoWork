@@ -161,7 +161,8 @@ public interface IChatCompletionClient
 public sealed record AgentPromptSnapshot(
     string Version,
     string SystemMessageSha256,
-    int TokenCount);
+    int TokenCount,
+    IReadOnlyList<string>? Sources = null);
 
 public sealed record WorkspaceInstructionSnapshot(
     string RelativePath,
