@@ -10,8 +10,11 @@ public sealed class StateRuntimeTests
 {
     private static readonly string[] SessionSchemaTables =
     [
+        "agent_invocations",
+        "compaction_checkpoints",
         "items",
         "pending_interactions",
+        "provider_usage",
         "session_idempotency",
         "session_operation_receipts",
         "state_info",
@@ -22,9 +25,11 @@ public sealed class StateRuntimeTests
 
     private static readonly string[] SessionSchemaIndexes =
     [
+        "ix_agent_invocations_thread",
         "ix_items_thread_sequence",
         "ix_items_turn_sequence",
         "ix_pending_interactions_thread",
+        "ix_provider_usage_thread",
         "ix_session_idempotency_thread",
         "ix_session_operation_receipts_expiry",
         "ix_threads_status",
@@ -62,7 +67,7 @@ public sealed class StateRuntimeTests
                 """,
                 cancellationToken));
         Assert.Equal(
-            2L,
+            3L,
             await ScalarAsync<long>(
                 write,
                 "SELECT schema_version FROM state_info WHERE id = 1;",
@@ -252,7 +257,7 @@ public sealed class StateRuntimeTests
                 """,
                 cancellationToken));
         Assert.Equal(
-            2L,
+            3L,
             await ScalarAsync<long>(
                 migrated,
                 "SELECT schema_version FROM state_info WHERE id = 1;",
@@ -262,6 +267,63 @@ public sealed class StateRuntimeTests
             await ScalarAsync<string>(
                 migrated,
                 "SELECT migration_status FROM state_info WHERE id = 1;",
+                cancellationToken));
+    }
+
+    [Fact]
+    public async Task Version_two_database_migrates_to_version_three_without_losing_session_rows()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        using var files = new TempWorkspace();
+        var versionTwo = new StateRuntime(
+            files.Paths,
+            TimeSpan.FromSeconds(2),
+            StateMigrations.VersionTwoOnly,
+            faultInjector: null);
+        await versionTwo.InitializeAsync(cancellationToken);
+
+        await using (var connection =
+                     await versionTwo.OpenReadWriteConnectionAsync(cancellationToken))
+        {
+            await ExecuteAsync(
+                connection,
+                """
+                INSERT INTO threads (
+                    thread_id, display_name, display_name_search,
+                    status, availability, history_mode,
+                    current_sequence, last_applied_sequence,
+                    created_utc, updated_utc)
+                VALUES (
+                    '0197f8b1-0000-7000-8000-000000000001',
+                    'existing', 'EXISTING',
+                    'active', 'available', 'server',
+                    0, 0, 1, 1);
+                """,
+                cancellationToken);
+        }
+
+        var current = new StateRuntime(files.Paths, TimeSpan.FromSeconds(2));
+        await current.InitializeAsync(cancellationToken);
+
+        await using var migrated =
+            await current.OpenReadWriteConnectionAsync(cancellationToken);
+        Assert.Equal(
+            3L,
+            await ScalarAsync<long>(
+                migrated,
+                "SELECT schema_version FROM state_info WHERE id = 1;",
+                cancellationToken));
+        Assert.Equal(
+            "agent",
+            await ScalarAsync<string>(
+                migrated,
+                "SELECT agent_mode FROM threads WHERE display_name = 'existing';",
+                cancellationToken));
+        Assert.Equal(
+            1L,
+            await ScalarAsync<long>(
+                migrated,
+                "SELECT count(*) FROM threads WHERE display_name = 'existing';",
                 cancellationToken));
     }
 

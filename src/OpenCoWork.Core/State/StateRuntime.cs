@@ -15,21 +15,32 @@ internal enum StateMigrationFaultPoint
 
 internal static class StateMigrations
 {
-    internal const int CurrentVersion = 2;
-    internal const string CurrentTables =
+    internal const int CurrentVersion = 3;
+    internal const string VersionTwoTables =
         "items,pending_interactions,session_idempotency," +
         "session_operation_receipts,state_info,threads,turn_queue,turns";
+    internal const string CurrentTables =
+        "agent_invocations,compaction_checkpoints,items,pending_interactions," +
+        "provider_usage,session_idempotency,session_operation_receipts," +
+        "state_info,threads,turn_queue,turns";
     internal const string CurrentIndexes =
-        "ix_items_thread_sequence,ix_items_turn_sequence," +
-        "ix_pending_interactions_thread,ix_session_idempotency_thread," +
+        "ix_agent_invocations_thread,ix_items_thread_sequence,ix_items_turn_sequence," +
+        "ix_pending_interactions_thread,ix_provider_usage_thread," +
+        "ix_session_idempotency_thread," +
         "ix_session_operation_receipts_expiry,ix_threads_status," +
         "ix_threads_updated,ix_turns_thread";
     internal const string CurrentForeignKeys =
+        "agent_invocations:thread_id->threads.thread_id:cascade," +
+        "agent_invocations:turn_id->turns.turn_id:cascade," +
+        "compaction_checkpoints:thread_id->threads.thread_id:cascade," +
+        "compaction_checkpoints:turn_id->turns.turn_id:cascade," +
         "items:thread_id->threads.thread_id:cascade," +
         "items:turn_id->turns.turn_id:cascade," +
         "pending_interactions:item_id->items.item_id:cascade," +
         "pending_interactions:thread_id->threads.thread_id:cascade," +
         "pending_interactions:turn_id->turns.turn_id:cascade," +
+        "provider_usage:thread_id->threads.thread_id:cascade," +
+        "provider_usage:turn_id->turns.turn_id:cascade," +
         "session_idempotency:thread_id->threads.thread_id:cascade," +
         "threads:active_turn_id->turns.turn_id:set null," +
         "turn_queue:thread_id->threads.thread_id:cascade," +
@@ -199,15 +210,80 @@ internal static class StateMigrations
             ON session_operation_receipts (expires_utc);
         """;
 
+    private const string VersionThreeSql =
+        """
+        ALTER TABLE threads
+            ADD COLUMN provider_id TEXT NULL;
+        ALTER TABLE threads
+            ADD COLUMN model_id TEXT NULL;
+        ALTER TABLE threads
+            ADD COLUMN agent_mode TEXT NOT NULL DEFAULT 'agent'
+                CHECK (agent_mode IN ('agent', 'plan'));
+
+        ALTER TABLE turns
+            ADD COLUMN effective_agent_mode TEXT NOT NULL DEFAULT 'agent'
+                CHECK (effective_agent_mode IN ('agent', 'plan'));
+
+        ALTER TABLE turn_queue
+            ADD COLUMN effective_agent_mode TEXT NOT NULL DEFAULT 'agent'
+                CHECK (effective_agent_mode IN ('agent', 'plan'));
+
+        CREATE TABLE agent_invocations (
+            invocation_id TEXT NOT NULL PRIMARY KEY,
+            thread_id TEXT NOT NULL,
+            turn_id TEXT NOT NULL UNIQUE,
+            snapshot_json TEXT NOT NULL,
+            recorded_sequence INTEGER NOT NULL CHECK (recorded_sequence > 0),
+            created_utc INTEGER NOT NULL,
+            FOREIGN KEY (thread_id) REFERENCES threads (thread_id) ON DELETE CASCADE,
+            FOREIGN KEY (turn_id) REFERENCES turns (turn_id) ON DELETE CASCADE
+        );
+        CREATE INDEX ix_agent_invocations_thread
+            ON agent_invocations (thread_id, recorded_sequence);
+
+        CREATE TABLE provider_usage (
+            invocation_id TEXT NOT NULL,
+            attempt_number INTEGER NOT NULL CHECK (attempt_number > 0),
+            purpose TEXT NOT NULL CHECK (purpose IN ('response', 'compaction')),
+            thread_id TEXT NOT NULL,
+            turn_id TEXT NOT NULL,
+            usage_json TEXT NOT NULL,
+            recorded_sequence INTEGER NOT NULL CHECK (recorded_sequence > 0),
+            created_utc INTEGER NOT NULL,
+            PRIMARY KEY (invocation_id, attempt_number, purpose),
+            FOREIGN KEY (thread_id) REFERENCES threads (thread_id) ON DELETE CASCADE,
+            FOREIGN KEY (turn_id) REFERENCES turns (turn_id) ON DELETE CASCADE
+        );
+        CREATE INDEX ix_provider_usage_thread
+            ON provider_usage (thread_id, recorded_sequence);
+
+        CREATE TABLE compaction_checkpoints (
+            thread_id TEXT NOT NULL PRIMARY KEY,
+            turn_id TEXT NOT NULL,
+            checkpoint_json TEXT NOT NULL,
+            recorded_sequence INTEGER NOT NULL CHECK (recorded_sequence > 0),
+            created_utc INTEGER NOT NULL,
+            FOREIGN KEY (thread_id) REFERENCES threads (thread_id) ON DELETE CASCADE,
+            FOREIGN KEY (turn_id) REFERENCES turns (turn_id) ON DELETE CASCADE
+        );
+        """;
+
     internal static readonly IReadOnlyList<StateMigration> VersionOneOnly =
     [
         new(1, VersionOneSql),
+    ];
+
+    internal static readonly IReadOnlyList<StateMigration> VersionTwoOnly =
+    [
+        new(1, VersionOneSql),
+        new(2, VersionTwoSql),
     ];
 
     internal static readonly IReadOnlyList<StateMigration> Current =
     [
         new(1, VersionOneSql),
         new(2, VersionTwoSql),
+        new(3, VersionThreeSql),
     ];
 }
 
@@ -883,6 +959,7 @@ public sealed class StateRuntime
             var expected = expectedVersion switch
             {
                 1 => "state_info",
+                2 => StateMigrations.VersionTwoTables,
                 StateMigrations.CurrentVersion => StateMigrations.CurrentTables,
                 _ => throw new StateMigrationException(
                     $"State schema version {expectedVersion} has no validation contract."),
@@ -950,6 +1027,12 @@ public sealed class StateRuntime
                         SELECT 'pending_interactions' AS source, * FROM pragma_foreign_key_list('pending_interactions')
                         UNION ALL
                         SELECT 'session_idempotency' AS source, * FROM pragma_foreign_key_list('session_idempotency')
+                        UNION ALL
+                        SELECT 'agent_invocations' AS source, * FROM pragma_foreign_key_list('agent_invocations')
+                        UNION ALL
+                        SELECT 'provider_usage' AS source, * FROM pragma_foreign_key_list('provider_usage')
+                        UNION ALL
+                        SELECT 'compaction_checkpoints' AS source, * FROM pragma_foreign_key_list('compaction_checkpoints')
                     )
                     ORDER BY signature
                 );

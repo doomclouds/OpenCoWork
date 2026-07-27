@@ -384,6 +384,9 @@ internal sealed partial class SessionService
     private readonly ConcurrentDictionary<Guid, SessionExecutionRun> _executionRuns = [];
     private readonly ConcurrentDictionary<Guid, Task> _executionTasks = [];
     private readonly ConcurrentDictionary<Guid, ExecutionIdempotency> _executionIdempotency = [];
+    private readonly ConcurrentDictionary<Guid, InvocationRecord> _agentInvocations = [];
+    private readonly ConcurrentDictionary<ProviderUsageKey, UsageRecord> _providerUsage = [];
+    private readonly ConcurrentDictionary<Guid, CompactionRecord> _compactionCheckpoints = [];
     private readonly ConcurrentDictionary<Guid, byte> _loadedExecutionThreads = [];
 
     internal async Task<SessionCommandResult<TurnSnapshot>> StartTurnAsync(
@@ -447,6 +450,8 @@ internal sealed partial class SessionService
             }
 
             var timestamp = _timeProvider.GetUtcNow();
+            var effectiveAgentMode =
+                queuedInput?.EffectiveAgentMode ?? thread.AgentMode;
             var turn = new TurnSnapshot(
                 turnId,
                 threadId,
@@ -454,7 +459,8 @@ internal sealed partial class SessionService
                 timestamp,
                 timestamp,
                 CompletedAt: null,
-                Error: null);
+                Error: null,
+                effectiveAgentMode);
             var requestSha256 = RequestHash(
                 Wire(SessionEventType.TurnStarted),
                 new
@@ -466,6 +472,7 @@ internal sealed partial class SessionService
                         ? null
                         : Wire(queuedInput.QueueItemId),
                     queuedInput?.Text,
+                    EffectiveAgentMode = effectiveAgentMode,
                 });
             var userItem = queuedInput is null
                 ? null
@@ -500,7 +507,8 @@ internal sealed partial class SessionService
                     queuedInput?.QueueItemId,
                     userItem?.ItemId,
                     queuedInput?.Text,
-                    RequestSha256: requestSha256),
+                    RequestSha256: requestSha256,
+                    effectiveAgentMode),
                 SessionEventType.TurnStarted,
                 cancellationToken,
                 new SessionEventPayload(
@@ -973,7 +981,8 @@ internal sealed partial class SessionService
             thread,
             contextTurn,
             ModelHistory(turn.ThreadId),
-            checkpoint);
+            checkpoint,
+            _compactionCheckpoints.GetValueOrDefault(turn.ThreadId)?.Checkpoint);
         var execution = new SessionExecution(
             _executor,
             _sessionConfig,
@@ -1131,6 +1140,24 @@ internal sealed partial class SessionService
                     await CompleteItemAsync(thread, turn, complete, cancellationToken),
                 FailItemIntent failed =>
                     await FailItemAsync(thread, turn, failed, cancellationToken),
+                RecordAgentInvocationSnapshotIntent invocation =>
+                    await RecordAgentInvocationAsync(
+                        thread,
+                        turn,
+                        invocation,
+                        cancellationToken),
+                RecordProviderUsageIntent usage =>
+                    await RecordProviderUsageAsync(
+                        thread,
+                        turn,
+                        usage,
+                        cancellationToken),
+                RecordCompactionCheckpointIntent compaction =>
+                    await RecordCompactionCheckpointAsync(
+                        thread,
+                        turn,
+                        compaction,
+                        cancellationToken),
                 WaitForInteractionIntent waiting =>
                     await WaitForInteractionAsync(
                         thread,
@@ -1154,6 +1181,190 @@ internal sealed partial class SessionService
         {
             threadGate.Release();
         }
+    }
+
+    private async ValueTask<long> RecordAgentInvocationAsync(
+        ThreadSnapshot thread,
+        TurnSnapshot turn,
+        RecordAgentInvocationSnapshotIntent intent,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(intent.Snapshot);
+        var snapshot = intent.Snapshot;
+        RequireId(snapshot.InvocationId, nameof(snapshot.InvocationId), "Invocation ID");
+        if (turn.Status != TurnStatus.Running ||
+            snapshot.EffectiveAgentMode != turn.EffectiveAgentMode ||
+            !string.Equals(snapshot.ProviderId, thread.ProviderId, StringComparison.Ordinal) ||
+            !string.Equals(snapshot.ModelId, thread.ModelId, StringComparison.Ordinal) ||
+            string.IsNullOrWhiteSpace(snapshot.TokenizerProfileId) ||
+            string.IsNullOrWhiteSpace(snapshot.TokenizerProfileVersion) ||
+            string.IsNullOrWhiteSpace(snapshot.ResponsePrompt.Version) ||
+            string.IsNullOrWhiteSpace(snapshot.CompactionPrompt.Version) ||
+            !IsLowerSha256(snapshot.ResponsePrompt.SystemMessageSha256) ||
+            !IsLowerSha256(snapshot.CompactionPrompt.SystemMessageSha256) ||
+            !IsLowerSha256(snapshot.ConfigurationSha256) ||
+            snapshot.ResponsePrompt.TokenCount < 0 ||
+            snapshot.CompactionPrompt.TokenCount < 0 ||
+            snapshot.ContextWindowTokens <= 0 ||
+            snapshot.MaxOutputTokens <= 0)
+        {
+            throw ExecutionError(
+                SessionErrorCodes.InvalidState,
+                "Agent invocation snapshot does not match the active turn.");
+        }
+
+        if (_agentInvocations.TryGetValue(turn.TurnId, out var existing))
+        {
+            if (existing.Snapshot == snapshot)
+            {
+                return existing.Sequence;
+            }
+
+            throw ExecutionError(
+                SessionErrorCodes.InvalidState,
+                "The active turn already has a different invocation snapshot.");
+        }
+
+        var hash = InternalRequestHash(
+            SessionEventType.AgentInvocationSnapshotRecorded,
+            new { turn.TurnId, Snapshot = snapshot });
+        var sequence = await CommitExecutionFactAsync(
+            thread,
+            new AgentInvocationSnapshotRecordedFact(
+                turn.TurnId,
+                snapshot,
+                hash.RequestSha256),
+            SessionEventType.AgentInvocationSnapshotRecorded,
+            new SessionEventPayload(Turn: turn, Invocation: snapshot),
+            hash,
+            cancellationToken);
+        _agentInvocations[turn.TurnId] = new InvocationRecord(snapshot, sequence);
+        return sequence;
+    }
+
+    private async ValueTask<long> RecordProviderUsageAsync(
+        ThreadSnapshot thread,
+        TurnSnapshot turn,
+        RecordProviderUsageIntent intent,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(intent.Usage);
+        var usage = intent.Usage;
+        var key = new ProviderUsageKey(
+            usage.InvocationId,
+            usage.AttemptNumber,
+            usage.Purpose);
+        if (!_agentInvocations.TryGetValue(turn.TurnId, out var invocation) ||
+            invocation.Snapshot.InvocationId != usage.InvocationId ||
+            usage.AttemptNumber <= 0 ||
+            usage.PromptTokens < 0 ||
+            usage.CompletionTokens < 0 ||
+            usage.TotalTokens < usage.PromptTokens + usage.CompletionTokens ||
+            usage.IsEstimate != (usage.Source == ProviderUsageSource.LocalEstimate))
+        {
+            throw ExecutionError(
+                SessionErrorCodes.InvalidState,
+                "Provider usage does not match the active invocation.");
+        }
+
+        if (_providerUsage.TryGetValue(key, out var existing))
+        {
+            if (existing.Usage == usage)
+            {
+                return existing.Sequence;
+            }
+
+            throw ExecutionError(
+                AgentErrorCodes.ProviderInvalidStream,
+                "Provider returned conflicting usage for one call.");
+        }
+
+        var hash = InternalRequestHash(
+            SessionEventType.ProviderUsageRecorded,
+            new { turn.TurnId, Usage = usage });
+        var sequence = await CommitExecutionFactAsync(
+            thread,
+            new ProviderUsageRecordedFact(
+                turn.TurnId,
+                usage,
+                hash.RequestSha256),
+            SessionEventType.ProviderUsageRecorded,
+            new SessionEventPayload(Turn: turn, Usage: usage),
+            hash,
+            cancellationToken);
+        _providerUsage[key] = new UsageRecord(usage, sequence);
+        return sequence;
+    }
+
+    private async ValueTask<long> RecordCompactionCheckpointAsync(
+        ThreadSnapshot thread,
+        TurnSnapshot turn,
+        RecordCompactionCheckpointIntent intent,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(intent.Checkpoint);
+        var checkpoint = intent.Checkpoint;
+        if (!_agentInvocations.TryGetValue(turn.TurnId, out var invocation) ||
+            turn.Status != TurnStatus.Running ||
+            checkpoint.SchemaVersion <= 0 ||
+            checkpoint.SourceStartSequence <= 0 ||
+            checkpoint.SourceEndSequence < checkpoint.SourceStartSequence ||
+            !string.Equals(
+                checkpoint.SummaryPromptVersion,
+                invocation.Snapshot.CompactionPrompt.Version,
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                checkpoint.TokenizerProfileId,
+                invocation.Snapshot.TokenizerProfileId,
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                checkpoint.TokenizerProfileVersion,
+                invocation.Snapshot.TokenizerProfileVersion,
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                checkpoint.SummarySha256,
+                Hash(Encoding.UTF8.GetBytes(checkpoint.Summary)),
+                StringComparison.Ordinal))
+        {
+            throw ExecutionError(
+                SessionErrorCodes.InvalidState,
+                "Compaction checkpoint does not match the active invocation.");
+        }
+
+        if (_compactionCheckpoints.TryGetValue(thread.ThreadId, out var existing))
+        {
+            if (existing.Checkpoint == checkpoint)
+            {
+                return existing.Sequence;
+            }
+
+            if (checkpoint.SourceStartSequence !=
+                    existing.Checkpoint.SourceStartSequence ||
+                checkpoint.SourceEndSequence <=
+                    existing.Checkpoint.SourceEndSequence)
+            {
+                throw ExecutionError(
+                    SessionErrorCodes.InvalidState,
+                    "Compaction checkpoint does not extend the authoritative range.");
+            }
+        }
+
+        var hash = InternalRequestHash(
+            SessionEventType.CompactionCheckpointRecorded,
+            new { turn.TurnId, Checkpoint = checkpoint });
+        var sequence = await CommitExecutionFactAsync(
+            thread,
+            new CompactionCheckpointRecordedFact(
+                turn.TurnId,
+                checkpoint,
+                hash.RequestSha256),
+            SessionEventType.CompactionCheckpointRecorded,
+            new SessionEventPayload(Turn: turn, Compaction: checkpoint),
+            hash,
+            cancellationToken);
+        _compactionCheckpoints[thread.ThreadId] =
+            new CompactionRecord(checkpoint, sequence);
+        return sequence;
     }
 
     private async ValueTask<long> StartItemAsync(
@@ -1748,7 +1959,8 @@ internal sealed partial class SessionService
                         entry.Timestamp,
                         entry.Timestamp,
                         CompletedAt: null,
-                        Error: null);
+                        Error: null,
+                        started.EffectiveAgentMode);
                     if (started.UserItemId is { } userItemId &&
                         started.Text is { } userText)
                     {
@@ -1793,6 +2005,32 @@ internal sealed partial class SessionService
                 case SessionEventType.ItemCancelled:
                     RestoreItemTerminal(entry, SessionItemStatus.Cancelled);
                     break;
+                case SessionEventType.AgentInvocationSnapshotRecorded:
+                    var invocation = ReadFact<AgentInvocationSnapshotRecordedFact>(entry);
+                    _agentInvocations[invocation.TurnId] =
+                        new InvocationRecord(invocation.Snapshot, entry.Sequence);
+                    break;
+                case SessionEventType.ProviderUsageRecorded:
+                    var usage = ReadFact<ProviderUsageRecordedFact>(entry);
+                    var usageKey = new ProviderUsageKey(
+                        usage.Usage.InvocationId,
+                        usage.Usage.AttemptNumber,
+                        usage.Usage.Purpose);
+                    if (_providerUsage.TryGetValue(usageKey, out var existingUsage) &&
+                        existingUsage.Usage != usage.Usage)
+                    {
+                        throw new InvalidDataException(
+                            "Journal contains conflicting provider usage.");
+                    }
+
+                    _providerUsage[usageKey] =
+                        new UsageRecord(usage.Usage, entry.Sequence);
+                    break;
+                case SessionEventType.CompactionCheckpointRecorded:
+                    var compaction = ReadFact<CompactionCheckpointRecordedFact>(entry);
+                    _compactionCheckpoints[entry.ThreadId] =
+                        new CompactionRecord(compaction.Checkpoint, entry.Sequence);
+                    break;
                 case SessionEventType.TurnWaitingApproval:
                 case SessionEventType.TurnWaitingInput:
                     RestoreWaiting(entry);
@@ -1833,6 +2071,9 @@ internal sealed partial class SessionService
             QueuedTurnInputSnapshot? queueItem = null;
             PendingInteractionSnapshot? interaction = null;
             SessionError? error = null;
+            AgentInvocationSnapshot? invocation = null;
+            ProviderUsageSnapshot? usage = null;
+            CompactionCheckpointSnapshot? compaction = null;
             switch (entry.EntryType)
             {
                 case SessionEventType.ThreadForked:
@@ -1858,7 +2099,8 @@ internal sealed partial class SessionService
                         entry.ThreadId,
                         queued.Text,
                         queued.Position,
-                        entry.Timestamp);
+                        entry.Timestamp,
+                        queued.EffectiveAgentMode);
                     queueItems[queued.QueueItemId] = queuedItem;
                     events.Add(new SessionEvent(
                         entry.ThreadId,
@@ -1891,7 +2133,8 @@ internal sealed partial class SessionService
                         entry.Timestamp,
                         entry.Timestamp,
                         CompletedAt: null,
-                        Error: null);
+                        Error: null,
+                        started.EffectiveAgentMode);
                     turns[started.TurnId] = turn;
                     if (started.QueueItemId is { } scheduledQueueItemId &&
                         started.UserItemId is { } userItemId &&
@@ -2006,6 +2249,23 @@ internal sealed partial class SessionService
                     turn = turns.GetValueOrDefault(item.TurnId);
                     error = itemTerminal.Error;
                     break;
+                case SessionEventType.AgentInvocationSnapshotRecorded:
+                    var invocationFact =
+                        ReadFact<AgentInvocationSnapshotRecordedFact>(entry);
+                    invocation = invocationFact.Snapshot;
+                    turn = turns.GetValueOrDefault(invocationFact.TurnId);
+                    break;
+                case SessionEventType.ProviderUsageRecorded:
+                    var usageFact = ReadFact<ProviderUsageRecordedFact>(entry);
+                    usage = usageFact.Usage;
+                    turn = turns.GetValueOrDefault(usageFact.TurnId);
+                    break;
+                case SessionEventType.CompactionCheckpointRecorded:
+                    var compactionFact =
+                        ReadFact<CompactionCheckpointRecordedFact>(entry);
+                    compaction = compactionFact.Checkpoint;
+                    turn = turns.GetValueOrDefault(compactionFact.TurnId);
+                    break;
                 case SessionEventType.TurnWaitingApproval:
                 case SessionEventType.TurnWaitingInput:
                     var waiting = ReadFact<TurnWaitingFact>(entry);
@@ -2097,7 +2357,10 @@ internal sealed partial class SessionService
                     Item: item,
                     QueueItem: queueItem,
                     Interaction: interaction,
-                    Error: error)));
+                    Error: error,
+                    Invocation: invocation,
+                    Usage: usage,
+                    Compaction: compaction)));
         }
 
         return events.ToArray();
@@ -2479,7 +2742,10 @@ internal sealed partial class SessionService
             thread.CreatedAt,
             timestamp,
             thread.ProjectionState,
-            thread.Diagnostic);
+            thread.Diagnostic,
+            thread.ProviderId,
+            thread.ModelId,
+            thread.AgentMode);
 
     private InternalOperation InternalRequestHash(
         SessionEventType eventType,
@@ -2610,6 +2876,11 @@ internal sealed partial class SessionService
     private static string Hash(ReadOnlySpan<byte> bytes) =>
         Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
 
+    private static bool IsLowerSha256(string? value) =>
+        value is { Length: 64 } &&
+        value.All(character =>
+            character is >= '0' and <= '9' or >= 'a' and <= 'f');
+
     private sealed record InteractionRuntime(
         PendingInteractionSnapshot Snapshot,
         Guid RequestItemId,
@@ -2621,6 +2892,23 @@ internal sealed partial class SessionService
         string Operation,
         string RequestSha256,
         object Result);
+
+    private sealed record InvocationRecord(
+        AgentInvocationSnapshot Snapshot,
+        long Sequence);
+
+    private sealed record ProviderUsageKey(
+        Guid InvocationId,
+        int AttemptNumber,
+        ChatCompletionInvocationPurpose Purpose);
+
+    private sealed record UsageRecord(
+        ProviderUsageSnapshot Usage,
+        long Sequence);
+
+    private sealed record CompactionRecord(
+        CompactionCheckpointSnapshot Checkpoint,
+        long Sequence);
 
     private sealed record InternalOperation(
         Guid IdempotencyKey,

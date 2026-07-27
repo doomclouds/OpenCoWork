@@ -7,10 +7,22 @@ internal sealed record ThreadCreatedFact(
     string DisplayName,
     HistoryMode HistoryMode,
     string? FirstUserMessage,
-    string RequestSha256);
+    string RequestSha256,
+    string? ProviderId = null,
+    string? ModelId = null,
+    AgentMode AgentMode = AgentMode.Agent);
 
 internal sealed record ThreadRenamedFact(
     string DisplayName,
+    string RequestSha256);
+
+internal sealed record ThreadModelChangedFact(
+    string ProviderId,
+    string ModelId,
+    string RequestSha256);
+
+internal sealed record ThreadModeChangedFact(
+    AgentMode AgentMode,
     string RequestSha256);
 
 internal sealed record ThreadStateFact(string RequestSha256);
@@ -42,7 +54,10 @@ internal sealed record ThreadForkedFact(
     string DisplayName,
     HistoryMode HistoryMode,
     HistoryCheckpointFact History,
-    string RequestSha256);
+    string RequestSha256,
+    string? ProviderId = null,
+    string? ModelId = null,
+    AgentMode AgentMode = AgentMode.Agent);
 
 internal sealed record ThreadRolledBackFact(
     long TargetSequence,
@@ -53,7 +68,8 @@ internal sealed record TurnQueuedFact(
     Guid QueueItemId,
     string Text,
     int Position,
-    string RequestSha256);
+    string RequestSha256,
+    AgentMode EffectiveAgentMode = AgentMode.Agent);
 
 internal sealed record TurnQueueChangedFact(
     IReadOnlyList<Guid> QueueItemIds,
@@ -65,7 +81,8 @@ internal sealed record TurnStartedFact(
     Guid? QueueItemId,
     Guid? UserItemId,
     string? Text,
-    string RequestSha256);
+    string RequestSha256,
+    AgentMode EffectiveAgentMode = AgentMode.Agent);
 
 internal sealed record TurnSteeredFact(
     Guid TurnId,
@@ -130,4 +147,19 @@ internal sealed record ItemCompletedFact(
 internal sealed record ItemTerminalFact(
     Guid ItemId,
     SessionError? Error,
+    string RequestSha256);
+
+internal sealed record AgentInvocationSnapshotRecordedFact(
+    Guid TurnId,
+    AgentInvocationSnapshot Snapshot,
+    string RequestSha256);
+
+internal sealed record ProviderUsageRecordedFact(
+    Guid TurnId,
+    ProviderUsageSnapshot Usage,
+    string RequestSha256);
+
+internal sealed record CompactionCheckpointRecordedFact(
+    Guid TurnId,
+    CompactionCheckpointSnapshot Checkpoint,
     string RequestSha256);

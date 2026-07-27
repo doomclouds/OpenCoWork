@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using Microsoft.Data.Sqlite;
 using OpenCoWork.Abstractions;
 using OpenCoWork.Core.Configuration;
@@ -14,6 +15,7 @@ public sealed class SessionQueueTests
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNameCaseInsensitive = true,
+        Converters = { new JsonStringEnumConverter(JsonNamingPolicy.CamelCase) },
     };
 
     [Fact]

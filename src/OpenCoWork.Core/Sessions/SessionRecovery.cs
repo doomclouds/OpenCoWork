@@ -437,7 +437,10 @@ internal sealed partial class SessionService
                 timestamp,
                 timestamp,
                 SessionProjectionState.Ready,
-                diagnostic: null);
+                diagnostic: null,
+                source.ProviderId,
+                source.ModelId,
+                source.AgentMode);
             var targetGate = GetThreadGate(targetThreadId);
             await targetGate.WaitAsync(cancellationToken);
             try
@@ -453,7 +456,10 @@ internal sealed partial class SessionService
                         target.DisplayName,
                         HistoryMode.Server,
                         checkpoint,
-                        requestSha256),
+                        requestSha256,
+                        source.ProviderId,
+                        source.ModelId,
+                        source.AgentMode),
                     SessionEventType.ThreadForked,
                     cancellationToken);
                 if (result.Status != SessionCommandStatus.Rejected)
@@ -1184,7 +1190,10 @@ internal sealed partial class SessionService
             snapshot.CreatedAt,
             snapshot.UpdatedAt,
             snapshot.ProjectionState,
-            diagnostic);
+            diagnostic,
+            snapshot.ProviderId,
+            snapshot.ModelId,
+            snapshot.AgentMode);
         _snapshots[snapshot.ThreadId] = unavailable;
         var result = new SessionCommandResult<ThreadSnapshot>(
             SessionCommandStatus.CommittedPendingProjection,

@@ -12,6 +12,70 @@ namespace OpenCoWork.Core.Tests;
 public sealed class SessionServiceTests
 {
     [Fact]
+    public async Task Model_and_mode_changes_persist_while_queued_inputs_keep_their_mode()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        using var files = new TempWorkspace();
+        var (runtime, journal, projection, service) =
+            await CreateServiceAsync(files, cancellationToken);
+        var thread = Assert.IsType<ThreadSnapshot>((await service.CreateThreadAsync(
+            new CreateThreadRequest(
+                Guid.CreateVersion7(),
+                ExpectedSequence: 0,
+                DisplayName: "configured",
+                ProviderId: "qwen",
+                ModelId: "qwen3.8",
+                AgentMode: AgentMode.Plan),
+            cancellationToken)).Value);
+        var modelChanged = await service.SetThreadModelAsync(
+            new SetThreadModelRequest(
+                thread.ThreadId,
+                Guid.CreateVersion7(),
+                ExpectedSequence: 1,
+                ProviderId: "deepseek",
+                ModelId: "deepseek-v4-pro"),
+            cancellationToken);
+        var paused = await service.PauseThreadAsync(
+            new ThreadMutationRequest(
+                thread.ThreadId,
+                Guid.CreateVersion7(),
+                ExpectedSequence: 2),
+            cancellationToken);
+        var queued = await service.EnqueueInputAsync(
+            new EnqueueInputRequest(
+                thread.ThreadId,
+                Guid.CreateVersion7(),
+                ExpectedSequence: 3,
+                Text: "keep plan"),
+            cancellationToken);
+        var modeChanged = await service.SetAgentModeAsync(
+            new SetAgentModeRequest(
+                thread.ThreadId,
+                Guid.CreateVersion7(),
+                ExpectedSequence: 4,
+                AgentMode.Agent),
+            cancellationToken);
+
+        Assert.Equal(SessionCommandStatus.Committed, modelChanged.Status);
+        Assert.Equal(SessionCommandStatus.Committed, paused.Status);
+        Assert.Equal(SessionCommandStatus.Committed, queued.Status);
+        Assert.Equal(SessionCommandStatus.Committed, modeChanged.Status);
+        var restarted = new SessionService(
+            runtime,
+            journal,
+            projection,
+            new SessionConfig());
+        var current = Assert.IsType<ThreadSnapshot>(
+            (await restarted.GetThreadAsync(thread.ThreadId, cancellationToken)).Value);
+        Assert.Equal("deepseek", current.ProviderId);
+        Assert.Equal("deepseek-v4-pro", current.ModelId);
+        Assert.Equal(AgentMode.Agent, current.AgentMode);
+        Assert.Equal(
+            AgentMode.Plan,
+            Assert.Single(current.Queue).EffectiveAgentMode);
+    }
+
+    [Fact]
     public async Task Thread_management_is_sequenced_globally_idempotent_and_restart_stable()
     {
         var cancellationToken = TestContext.Current.CancellationToken;

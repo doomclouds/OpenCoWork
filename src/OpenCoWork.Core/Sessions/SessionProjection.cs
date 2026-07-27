@@ -300,7 +300,9 @@ internal sealed class SessionProjection
                        quote(active_turn_id) || '|' || quote(first_user_message) || '|' ||
                        quote(first_user_message_search) || '|' || quote(fork_source_thread_id) || '|' ||
                        quote(fork_source_sequence) || '|' || quote(diagnostic) || '|' ||
-                       quote(created_utc) || '|' || quote(updated_utc)
+                       quote(created_utc) || '|' || quote(updated_utc) || '|' ||
+                       quote(provider_id) || '|' || quote(model_id) || '|' ||
+                       quote(agent_mode)
                 FROM threads ORDER BY thread_id;
                 """,
                 cancellationToken),
@@ -310,7 +312,8 @@ internal sealed class SessionProjection
                 SELECT quote(turn_id) || '|' || quote(thread_id) || '|' ||
                        quote(status) || '|' || quote(error_code) || '|' ||
                        quote(error_message) || '|' || quote(created_utc) || '|' ||
-                       quote(updated_utc) || '|' || quote(completed_utc)
+                       quote(updated_utc) || '|' || quote(completed_utc) || '|' ||
+                       quote(effective_agent_mode)
                 FROM turns ORDER BY turn_id;
                 """,
                 cancellationToken),
@@ -331,7 +334,7 @@ internal sealed class SessionProjection
                 """
                 SELECT quote(queue_item_id) || '|' || quote(thread_id) || '|' ||
                        quote(position) || '|' || quote(payload_json) || '|' ||
-                       quote(created_utc)
+                       quote(created_utc) || '|' || quote(effective_agent_mode)
                 FROM turn_queue ORDER BY thread_id, position, queue_item_id;
                 """,
                 cancellationToken),
@@ -356,6 +359,35 @@ internal sealed class SessionProjection
                        quote(committed_sequence) || '|' || quote(created_utc) || '|' ||
                        quote(updated_utc)
                 FROM session_idempotency ORDER BY idempotency_key;
+                """,
+                cancellationToken),
+            await ReadRowsAsync(
+                connection,
+                """
+                SELECT quote(invocation_id) || '|' || quote(thread_id) || '|' ||
+                       quote(turn_id) || '|' || quote(snapshot_json) || '|' ||
+                       quote(recorded_sequence) || '|' || quote(created_utc)
+                FROM agent_invocations ORDER BY invocation_id;
+                """,
+                cancellationToken),
+            await ReadRowsAsync(
+                connection,
+                """
+                SELECT quote(invocation_id) || '|' || quote(attempt_number) || '|' ||
+                       quote(purpose) || '|' || quote(thread_id) || '|' ||
+                       quote(turn_id) || '|' || quote(usage_json) || '|' ||
+                       quote(recorded_sequence) || '|' || quote(created_utc)
+                FROM provider_usage
+                ORDER BY invocation_id, attempt_number, purpose;
+                """,
+                cancellationToken),
+            await ReadRowsAsync(
+                connection,
+                """
+                SELECT quote(thread_id) || '|' || quote(turn_id) || '|' ||
+                       quote(checkpoint_json) || '|' || quote(recorded_sequence) || '|' ||
+                       quote(created_utc)
+                FROM compaction_checkpoints ORDER BY thread_id;
                 """,
                 cancellationToken),
         };
@@ -741,6 +773,42 @@ internal sealed class SessionProjection
                     ("$search", SearchText(renamed.DisplayName)),
                     ("$threadId", Wire(entry.ThreadId)));
                 return;
+            case SessionEventType.ThreadModelChanged:
+                var model = ReadFact<ThreadModelChangedFact>(entry);
+                ArgumentException.ThrowIfNullOrWhiteSpace(model.ProviderId);
+                ArgumentException.ThrowIfNullOrWhiteSpace(model.ModelId);
+                await ExecuteRequiredAsync(
+                    connection,
+                    transaction,
+                    """
+                    UPDATE threads
+                    SET provider_id = $providerId,
+                        model_id = $modelId
+                    WHERE thread_id = $threadId
+                      AND status <> 'archived'
+                      AND availability = 'available';
+                    """,
+                    cancellationToken,
+                    ("$providerId", model.ProviderId),
+                    ("$modelId", model.ModelId),
+                    ("$threadId", Wire(entry.ThreadId)));
+                return;
+            case SessionEventType.ThreadModeChanged:
+                var mode = ReadFact<ThreadModeChangedFact>(entry);
+                await ExecuteRequiredAsync(
+                    connection,
+                    transaction,
+                    """
+                    UPDATE threads
+                    SET agent_mode = $mode
+                    WHERE thread_id = $threadId
+                      AND status <> 'archived'
+                      AND availability = 'available';
+                    """,
+                    cancellationToken,
+                    ("$mode", Wire(mode.AgentMode)),
+                    ("$threadId", Wire(entry.ThreadId)));
+                return;
             case SessionEventType.ThreadPaused:
                 await ApplyThreadStatusAsync(
                     connection, transaction, entry, "active", "paused", cancellationToken);
@@ -808,6 +876,18 @@ internal sealed class SessionProjection
             case SessionEventType.ItemCancelled:
                 await ApplyItemTerminalAsync(connection, transaction, entry, cancellationToken);
                 return;
+            case SessionEventType.AgentInvocationSnapshotRecorded:
+                await ApplyAgentInvocationAsync(
+                    connection, transaction, entry, cancellationToken);
+                return;
+            case SessionEventType.ProviderUsageRecorded:
+                await ApplyProviderUsageAsync(
+                    connection, transaction, entry, cancellationToken);
+                return;
+            case SessionEventType.CompactionCheckpointRecorded:
+                await ApplyCompactionCheckpointAsync(
+                    connection, transaction, entry, cancellationToken);
+                return;
             case SessionEventType.ThreadJournalRecovered:
                 return;
             default:
@@ -831,6 +911,13 @@ internal sealed class SessionProjection
                 SessionErrorCodes.UnsupportedHistoryMode,
                 "M2 only supports server-managed history.");
         }
+        if (string.IsNullOrWhiteSpace(fact.ProviderId) !=
+            string.IsNullOrWhiteSpace(fact.ModelId))
+        {
+            throw ProjectionError(
+                SessionErrorCodes.InvalidState,
+                "Thread provider and model must be configured together.");
+        }
 
         await ExecuteRequiredAsync(
             connection,
@@ -842,14 +929,14 @@ internal sealed class SessionProjection
                 current_sequence, last_applied_sequence,
                 active_turn_id, first_user_message, first_user_message_search,
                 fork_source_thread_id, fork_source_sequence, diagnostic,
-                created_utc, updated_utc)
+                created_utc, updated_utc, provider_id, model_id, agent_mode)
             VALUES (
                 $threadId, $name, $search,
                 'active', 'available', 'server',
                 0, 0,
                 NULL, $firstMessage, $firstMessageSearch,
                 NULL, NULL, NULL,
-                $timestamp, $timestamp);
+                $timestamp, $timestamp, $providerId, $modelId, $agentMode);
             """,
             cancellationToken,
             ("$threadId", Wire(entry.ThreadId)),
@@ -857,6 +944,9 @@ internal sealed class SessionProjection
             ("$search", SearchText(fact.DisplayName)),
             ("$firstMessage", fact.FirstUserMessage),
             ("$firstMessageSearch", SearchText(fact.FirstUserMessage)),
+            ("$providerId", fact.ProviderId),
+            ("$modelId", fact.ModelId),
+            ("$agentMode", Wire(fact.AgentMode)),
             ("$timestamp", UnixMilliseconds(entry.Timestamp)));
     }
 
@@ -961,6 +1051,13 @@ internal sealed class SessionProjection
                 SessionErrorCodes.InvalidState,
                 "Thread fork fact is invalid.");
         }
+        if (string.IsNullOrWhiteSpace(fact.ProviderId) !=
+            string.IsNullOrWhiteSpace(fact.ModelId))
+        {
+            throw ProjectionError(
+                SessionErrorCodes.InvalidState,
+                "Forked thread provider and model must be configured together.");
+        }
 
         await ExecuteRequiredAsync(
             connection,
@@ -972,14 +1069,14 @@ internal sealed class SessionProjection
                 current_sequence, last_applied_sequence,
                 active_turn_id, first_user_message, first_user_message_search,
                 fork_source_thread_id, fork_source_sequence, diagnostic,
-                created_utc, updated_utc)
+                created_utc, updated_utc, provider_id, model_id, agent_mode)
             VALUES (
                 $threadId, $name, $search,
                 'active', 'available', 'server',
                 0, 0,
                 NULL, NULL, NULL,
                 $sourceThreadId, $sourceSequence, NULL,
-                $timestamp, $timestamp);
+                $timestamp, $timestamp, $providerId, $modelId, $agentMode);
             """,
             cancellationToken,
             ("$threadId", Wire(entry.ThreadId)),
@@ -987,6 +1084,9 @@ internal sealed class SessionProjection
             ("$search", SearchText(fact.DisplayName)),
             ("$sourceThreadId", Wire(fact.SourceThreadId)),
             ("$sourceSequence", fact.SourceSequence),
+            ("$providerId", fact.ProviderId),
+            ("$modelId", fact.ModelId),
+            ("$agentMode", Wire(fact.AgentMode)),
             ("$timestamp", UnixMilliseconds(entry.Timestamp)));
         await InsertHistoryCheckpointAsync(
             connection,
@@ -1070,11 +1170,12 @@ internal sealed class SessionProjection
                 INSERT INTO turns (
                     turn_id, thread_id, status,
                     error_code, error_message,
-                    created_utc, updated_utc, completed_utc)
+                    created_utc, updated_utc, completed_utc,
+                    effective_agent_mode)
                 VALUES (
                     $turnId, $threadId, $status,
                     $errorCode, $errorMessage,
-                    $created, $updated, $completed);
+                    $created, $updated, $completed, $agentMode);
                 """,
                 cancellationToken,
                 ("$turnId", Wire(turn.TurnId)),
@@ -1082,6 +1183,7 @@ internal sealed class SessionProjection
                 ("$status", Wire(turn.Status)),
                 ("$errorCode", turn.Error?.Code),
                 ("$errorMessage", turn.Error?.Message),
+                ("$agentMode", Wire(turn.EffectiveAgentMode)),
                 ("$created", UnixMilliseconds(turn.CreatedAt)),
                 ("$updated", UnixMilliseconds(turn.UpdatedAt)),
                 ("$completed", turn.CompletedAt is { } completed
@@ -1147,8 +1249,9 @@ internal sealed class SessionProjection
             transaction,
             """
             INSERT INTO turn_queue (
-                queue_item_id, thread_id, position, payload_json, created_utc)
-            SELECT $itemId, $threadId, $position, $payload, $timestamp
+                queue_item_id, thread_id, position, payload_json, created_utc,
+                effective_agent_mode)
+            SELECT $itemId, $threadId, $position, $payload, $timestamp, $agentMode
             WHERE EXISTS (
                 SELECT 1 FROM threads
                 WHERE thread_id = $threadId
@@ -1163,6 +1266,7 @@ internal sealed class SessionProjection
             ("$threadId", Wire(entry.ThreadId)),
             ("$position", fact.Position),
             ("$payload", entry.Payload.GetRawText()),
+            ("$agentMode", Wire(fact.EffectiveAgentMode)),
             ("$timestamp", UnixMilliseconds(entry.Timestamp)));
         await ExecuteAsync(
             connection,
@@ -1309,6 +1413,12 @@ internal sealed class SessionProjection
                     SessionErrorCodes.JournalCorrupt,
                     "Scheduled turn text does not match its queued input.");
             }
+            if (queuedInput.EffectiveAgentMode != fact.EffectiveAgentMode)
+            {
+                throw ProjectionError(
+                    SessionErrorCodes.JournalCorrupt,
+                    "Scheduled turn mode does not match its queued input.");
+            }
 
             await ExecuteRequiredAsync(
                 connection,
@@ -1342,20 +1452,23 @@ internal sealed class SessionProjection
             """
             INSERT INTO turns (
                 turn_id, thread_id, status, error_code, error_message,
-                created_utc, updated_utc, completed_utc)
+                created_utc, updated_utc, completed_utc, effective_agent_mode)
             SELECT
                 $turnId, $threadId, 'running', NULL, NULL,
-                $timestamp, $timestamp, NULL
+                $timestamp, $timestamp, NULL, $agentMode
             WHERE EXISTS (
                 SELECT 1 FROM threads
                 WHERE thread_id = $threadId
                   AND status = 'active'
                   AND availability = 'available'
-                  AND active_turn_id IS NULL);
+                  AND active_turn_id IS NULL
+                  AND ($scheduled = 1 OR agent_mode = $agentMode));
             """,
             cancellationToken,
             ("$turnId", Wire(fact.TurnId)),
             ("$threadId", Wire(entry.ThreadId)),
+            ("$agentMode", Wire(fact.EffectiveAgentMode)),
+            ("$scheduled", scheduled ? 1 : 0),
             ("$timestamp", timestamp));
         await ExecuteRequiredAsync(
             connection,
@@ -2027,6 +2140,204 @@ internal sealed class SessionProjection
             ("$threadId", Wire(entry.ThreadId)));
     }
 
+    private static Task ApplyAgentInvocationAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        ThreadJournalEntry entry,
+        CancellationToken cancellationToken)
+    {
+        var fact = ReadFact<AgentInvocationSnapshotRecordedFact>(entry);
+        var snapshot = fact.Snapshot;
+        SessionIds.RequireVersion7(fact.TurnId, nameof(fact.TurnId), "Turn ID");
+        SessionIds.RequireVersion7(
+            snapshot.InvocationId,
+            nameof(snapshot.InvocationId),
+            "Invocation ID");
+        if (string.IsNullOrWhiteSpace(snapshot.ProviderId) ||
+            string.IsNullOrWhiteSpace(snapshot.ModelId) ||
+            string.IsNullOrWhiteSpace(snapshot.TokenizerProfileId) ||
+            string.IsNullOrWhiteSpace(snapshot.TokenizerProfileVersion) ||
+            snapshot.ContextWindowTokens <= 0 ||
+            snapshot.MaxOutputTokens <= 0 ||
+            !IsLowerSha256(snapshot.ConfigurationSha256))
+        {
+            throw ProjectionError(
+                SessionErrorCodes.InvalidState,
+                "Agent invocation snapshot is invalid.");
+        }
+
+        return ExecuteRequiredAsync(
+            connection,
+            transaction,
+            """
+            INSERT INTO agent_invocations (
+                invocation_id, thread_id, turn_id, snapshot_json,
+                recorded_sequence, created_utc)
+            SELECT
+                $invocationId, $threadId, $turnId, $snapshot,
+                $sequence, $timestamp
+            WHERE EXISTS (
+                SELECT 1
+                FROM turns
+                JOIN threads USING (thread_id)
+                WHERE turns.turn_id = $turnId
+                  AND turns.thread_id = $threadId
+                  AND turns.status = 'running'
+                  AND turns.effective_agent_mode = $agentMode
+                  AND threads.active_turn_id = $turnId);
+            """,
+            cancellationToken,
+            ("$invocationId", Wire(snapshot.InvocationId)),
+            ("$threadId", Wire(entry.ThreadId)),
+            ("$turnId", Wire(fact.TurnId)),
+            ("$snapshot", JsonSerializer.Serialize(snapshot, JsonOptions)),
+            ("$sequence", entry.Sequence),
+            ("$timestamp", UnixMilliseconds(entry.Timestamp)),
+            ("$agentMode", Wire(snapshot.EffectiveAgentMode)));
+    }
+
+    private static Task ApplyProviderUsageAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        ThreadJournalEntry entry,
+        CancellationToken cancellationToken)
+    {
+        var fact = ReadFact<ProviderUsageRecordedFact>(entry);
+        var usage = fact.Usage;
+        SessionIds.RequireVersion7(fact.TurnId, nameof(fact.TurnId), "Turn ID");
+        SessionIds.RequireVersion7(
+            usage.InvocationId,
+            nameof(usage.InvocationId),
+            "Invocation ID");
+        if (usage.AttemptNumber <= 0 ||
+            usage.PromptTokens < 0 ||
+            usage.CompletionTokens < 0 ||
+            usage.TotalTokens < usage.PromptTokens + usage.CompletionTokens ||
+            usage.IsEstimate != (usage.Source == ProviderUsageSource.LocalEstimate))
+        {
+            throw ProjectionError(
+                SessionErrorCodes.InvalidState,
+                "Provider usage is invalid.");
+        }
+
+        return ExecuteRequiredAsync(
+            connection,
+            transaction,
+            """
+            INSERT INTO provider_usage (
+                invocation_id, attempt_number, purpose, thread_id, turn_id,
+                usage_json, recorded_sequence, created_utc)
+            SELECT
+                $invocationId, $attempt, $purpose, $threadId, $turnId,
+                $usage, $sequence, $timestamp
+            WHERE EXISTS (
+                SELECT 1
+                FROM agent_invocations
+                JOIN turns USING (turn_id)
+                JOIN threads ON threads.thread_id = turns.thread_id
+                WHERE agent_invocations.invocation_id = $invocationId
+                  AND agent_invocations.turn_id = $turnId
+                  AND agent_invocations.thread_id = $threadId
+                  AND turns.status = 'running'
+                  AND threads.active_turn_id = $turnId);
+            """,
+            cancellationToken,
+            ("$invocationId", Wire(usage.InvocationId)),
+            ("$attempt", usage.AttemptNumber),
+            ("$purpose", Wire(usage.Purpose)),
+            ("$threadId", Wire(entry.ThreadId)),
+            ("$turnId", Wire(fact.TurnId)),
+            ("$usage", JsonSerializer.Serialize(usage, JsonOptions)),
+            ("$sequence", entry.Sequence),
+            ("$timestamp", UnixMilliseconds(entry.Timestamp)));
+    }
+
+    private static async Task ApplyCompactionCheckpointAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        ThreadJournalEntry entry,
+        CancellationToken cancellationToken)
+    {
+        var fact = ReadFact<CompactionCheckpointRecordedFact>(entry);
+        var checkpoint = fact.Checkpoint;
+        SessionIds.RequireVersion7(fact.TurnId, nameof(fact.TurnId), "Turn ID");
+        if (checkpoint.SchemaVersion <= 0 ||
+            string.IsNullOrWhiteSpace(checkpoint.SummaryPromptVersion) ||
+            string.IsNullOrWhiteSpace(checkpoint.TokenizerProfileId) ||
+            string.IsNullOrWhiteSpace(checkpoint.TokenizerProfileVersion) ||
+            checkpoint.SourceStartSequence <= 0 ||
+            checkpoint.SourceEndSequence < checkpoint.SourceStartSequence ||
+            checkpoint.SummaryTokenCount < 0 ||
+            !IsLowerSha256(checkpoint.SourceMessagesSha256) ||
+            !string.Equals(
+                checkpoint.SummarySha256,
+                Hash(Encoding.UTF8.GetBytes(checkpoint.Summary)),
+                StringComparison.Ordinal))
+        {
+            throw ProjectionError(
+                SessionErrorCodes.InvalidState,
+                "Compaction checkpoint is invalid.");
+        }
+
+        await using (var command = connection.CreateCommand())
+        {
+            command.Transaction = transaction;
+            command.CommandText =
+                """
+                SELECT checkpoint_json
+                FROM compaction_checkpoints
+                WHERE thread_id = $threadId;
+                """;
+            command.Parameters.AddWithValue("$threadId", Wire(entry.ThreadId));
+            if (await command.ExecuteScalarAsync(cancellationToken) is string json)
+            {
+                var current = JsonSerializer.Deserialize<CompactionCheckpointSnapshot>(
+                    json,
+                    JsonOptions)
+                    ?? throw ProjectionError(
+                        SessionErrorCodes.JournalCorrupt,
+                        "Projected compaction checkpoint is invalid.");
+                if (checkpoint.SourceStartSequence != current.SourceStartSequence ||
+                    checkpoint.SourceEndSequence <= current.SourceEndSequence)
+                {
+                    throw ProjectionError(
+                        SessionErrorCodes.InvalidState,
+                        "Compaction checkpoint does not extend the authoritative range.");
+                }
+            }
+        }
+
+        await ExecuteRequiredAsync(
+            connection,
+            transaction,
+            """
+            INSERT INTO compaction_checkpoints (
+                thread_id, turn_id, checkpoint_json, recorded_sequence, created_utc)
+            SELECT
+                $threadId, $turnId, $checkpoint, $sequence, $timestamp
+            WHERE EXISTS (
+                SELECT 1
+                FROM agent_invocations
+                JOIN turns USING (turn_id)
+                JOIN threads ON threads.thread_id = turns.thread_id
+                WHERE agent_invocations.turn_id = $turnId
+                  AND agent_invocations.thread_id = $threadId
+                  AND turns.status = 'running'
+                  AND threads.active_turn_id = $turnId)
+            ON CONFLICT (thread_id) DO UPDATE SET
+                turn_id = excluded.turn_id,
+                checkpoint_json = excluded.checkpoint_json,
+                recorded_sequence = excluded.recorded_sequence,
+                created_utc = excluded.created_utc;
+            """,
+            cancellationToken,
+            ("$threadId", Wire(entry.ThreadId)),
+            ("$turnId", Wire(fact.TurnId)),
+            ("$checkpoint", JsonSerializer.Serialize(checkpoint, JsonOptions)),
+            ("$sequence", entry.Sequence),
+            ("$timestamp", UnixMilliseconds(entry.Timestamp)));
+    }
+
     private static async Task<(long CurrentSequence, long LastAppliedSequence)?> ReadWaterAsync(
         SqliteConnection connection,
         SqliteTransaction transaction,
@@ -2179,7 +2490,8 @@ internal sealed class SessionProjection
             """
             SELECT display_name, status, availability, history_mode,
                    current_sequence, active_turn_id,
-                   created_utc, updated_utc, diagnostic
+                   created_utc, updated_utc, diagnostic,
+                   provider_id, model_id, agent_mode
             FROM threads
             WHERE thread_id = $threadId;
             """;
@@ -2193,6 +2505,9 @@ internal sealed class SessionProjection
         DateTimeOffset createdAt;
         DateTimeOffset updatedAt;
         string? diagnostic;
+        string? providerId;
+        string? modelId;
+        AgentMode agentMode;
         await using (var reader = await command.ExecuteReaderAsync(cancellationToken))
         {
             if (!await reader.ReadAsync(cancellationToken))
@@ -2211,13 +2526,17 @@ internal sealed class SessionProjection
             createdAt = DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(6));
             updatedAt = DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(7));
             diagnostic = reader.IsDBNull(8) ? null : reader.GetString(8);
+            providerId = reader.IsDBNull(9) ? null : reader.GetString(9);
+            modelId = reader.IsDBNull(10) ? null : reader.GetString(10);
+            agentMode = ParseWire<AgentMode>(reader.GetString(11));
         }
 
         await using var queueCommand = connection.CreateCommand();
         queueCommand.Transaction = transaction;
         queueCommand.CommandText =
             """
-            SELECT queue_item_id, payload_json, position, created_utc
+            SELECT queue_item_id, payload_json, position, created_utc,
+                   effective_agent_mode
             FROM turn_queue
             WHERE thread_id = $threadId
             ORDER BY position, queue_item_id;
@@ -2239,7 +2558,8 @@ internal sealed class SessionProjection
                 threadId,
                 fact.Text,
                 queueReader.GetInt32(2),
-                DateTimeOffset.FromUnixTimeMilliseconds(queueReader.GetInt64(3))));
+                DateTimeOffset.FromUnixTimeMilliseconds(queueReader.GetInt64(3)),
+                ParseWire<AgentMode>(queueReader.GetString(4))));
         }
 
         return new ThreadSnapshot(
@@ -2254,7 +2574,10 @@ internal sealed class SessionProjection
             createdAt,
             updatedAt,
             projectionState,
-            diagnostic);
+            diagnostic,
+            providerId,
+            modelId,
+            agentMode);
     }
 
     private static async Task<IReadOnlyList<string>> ReadStringsAsync(
@@ -2439,8 +2762,8 @@ internal sealed class SessionProjection
     private static string Hash(ReadOnlySpan<byte> bytes) =>
         Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
 
-    private static bool IsLowerSha256(string value) =>
-        value.Length == 64 &&
+    private static bool IsLowerSha256(string? value) =>
+        value is { Length: 64 } &&
         value.All(character =>
             character is >= '0' and <= '9' or >= 'a' and <= 'f');
 
@@ -2483,7 +2806,10 @@ internal sealed class SessionProjection
         DateTimeOffset CreatedAt,
         DateTimeOffset UpdatedAt,
         SessionProjectionState ProjectionState,
-        string? Diagnostic)
+        string? Diagnostic,
+        string? ProviderId = null,
+        string? ModelId = null,
+        AgentMode AgentMode = AgentMode.Agent)
     {
         public static StoredThreadSnapshot From(ThreadSnapshot snapshot) =>
             new(
@@ -2498,7 +2824,10 @@ internal sealed class SessionProjection
                 snapshot.CreatedAt,
                 snapshot.UpdatedAt,
                 snapshot.ProjectionState,
-                snapshot.Diagnostic);
+                snapshot.Diagnostic,
+                snapshot.ProviderId,
+                snapshot.ModelId,
+                snapshot.AgentMode);
 
         public ThreadSnapshot ToSnapshot() =>
             new(
@@ -2513,6 +2842,9 @@ internal sealed class SessionProjection
                 CreatedAt,
                 UpdatedAt,
                 ProjectionState,
-                Diagnostic);
+                Diagnostic,
+                ProviderId,
+                ModelId,
+                AgentMode);
     }
 }

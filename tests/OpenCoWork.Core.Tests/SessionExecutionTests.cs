@@ -1,5 +1,8 @@
 using System.Collections.Concurrent;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using Microsoft.Data.Sqlite;
 using OpenCoWork.Abstractions;
 using OpenCoWork.Core.Configuration;
@@ -15,7 +18,124 @@ public sealed class SessionExecutionTests
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNameCaseInsensitive = true,
+        Converters = { new JsonStringEnumConverter(JsonNamingPolicy.CamelCase) },
     };
+
+    [Fact]
+    public async Task Agent_snapshots_usage_and_compaction_are_durable_across_restart()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        using var files = new TempWorkspace();
+        var invocationId = Guid.CreateVersion7();
+        var summary = "compact history";
+        var checkpoint = new CompactionCheckpointSnapshot(
+            SchemaVersion: 1,
+            Summary: summary,
+            SummarySha256: Sha256(summary),
+            SourceStartSequence: 1,
+            SourceEndSequence: 1,
+            SourceMessagesSha256: new string('d', 64),
+            SummaryPromptVersion: "compaction-v1",
+            TokenizerProfileId: "qwen-tokenizer",
+            TokenizerProfileVersion: "1",
+            SummaryTokenCount: 3);
+        var invocation = new AgentInvocationSnapshot(
+            invocationId,
+            "qwen",
+            "qwen3.8",
+            "qwen-tokenizer",
+            "1",
+            AgentMode.Plan,
+            new AgentPromptSnapshot("response-v1", new string('a', 64), 10),
+            new AgentPromptSnapshot("compaction-v1", new string('b', 64), 8),
+            WorkspaceInstructions: null,
+            ContextWindowTokens: 32_768,
+            MaxOutputTokens: 2_048,
+            ConfigurationSha256: new string('c', 64));
+        var firstExecutor = new ScriptedExecutor(
+            async (context, sink, token) =>
+            {
+                Assert.Equal(AgentMode.Plan, context.Turn.EffectiveAgentMode);
+                await sink.EmitAsync(
+                    new RecordAgentInvocationSnapshotIntent(invocation),
+                    token);
+                await sink.EmitAsync(
+                    new RecordProviderUsageIntent(
+                        new ProviderUsageSnapshot(
+                            invocationId,
+                            AttemptNumber: 1,
+                            ChatCompletionInvocationPurpose.Response,
+                            PromptTokens: 10,
+                            CompletionTokens: 4,
+                            TotalTokens: 14,
+                            ProviderUsageSource.Provider,
+                            IsEstimate: false)),
+                    token);
+                await sink.EmitAsync(
+                    new RecordCompactionCheckpointIntent(checkpoint),
+                    token);
+                await sink.EmitAsync(new CompleteTurnIntent(), token);
+            });
+        var (runtime, journal, firstService) = await CreateServiceAsync(
+            files,
+            cancellationToken,
+            firstExecutor);
+        var thread = Assert.IsType<ThreadSnapshot>((await firstService.CreateThreadAsync(
+            new CreateThreadRequest(
+                Guid.CreateVersion7(),
+                ExpectedSequence: 0,
+                DisplayName: "agent",
+                ProviderId: "qwen",
+                ModelId: "qwen3.8",
+                AgentMode: AgentMode.Plan),
+            cancellationToken)).Value);
+        var firstTurnId = Guid.CreateVersion7();
+        await firstService.StartTurnAsync(
+            thread.ThreadId,
+            firstTurnId,
+            Guid.CreateVersion7(),
+            thread.CurrentSequence,
+            cancellationToken);
+        await firstService.WaitForExecutionAsync(firstTurnId, cancellationToken);
+
+        var restartedExecutor = new ScriptedExecutor(
+            async (context, sink, token) =>
+            {
+                Assert.Equal(checkpoint, context.CompactionCheckpoint);
+                await sink.EmitAsync(new CompleteTurnIntent(), token);
+            });
+        var restarted = new SessionService(
+            runtime,
+            journal,
+            new SessionProjection(runtime),
+            new SessionConfig(),
+            executor: restartedExecutor,
+            executorKind: "scripted");
+        var current = Assert.IsType<ThreadSnapshot>(
+            (await restarted.GetThreadAsync(thread.ThreadId, cancellationToken)).Value);
+        var secondTurnId = Guid.CreateVersion7();
+        await restarted.StartTurnAsync(
+            thread.ThreadId,
+            secondTurnId,
+            Guid.CreateVersion7(),
+            current.CurrentSequence,
+            cancellationToken);
+        await restarted.WaitForExecutionAsync(secondTurnId, cancellationToken);
+
+        var history = Assert.IsType<SessionPage<SessionEvent>>(
+            (await restarted.ReadHistoryAsync(
+                new ReadHistoryRequest(thread.ThreadId),
+                cancellationToken)).Value);
+        Assert.Single(
+            history.Items,
+            item => item.Type == SessionEventType.AgentInvocationSnapshotRecorded);
+        Assert.Single(
+            history.Items,
+            item => item.Type == SessionEventType.ProviderUsageRecorded);
+        Assert.Single(
+            history.Items,
+            item => item.Type == SessionEventType.CompactionCheckpointRecorded);
+    }
 
     [Fact]
     public async Task Starting_a_turn_without_an_executor_is_rejected_without_a_journal_write()
@@ -610,6 +730,10 @@ public sealed class SessionExecutionTests
             cancellationToken);
         return Assert.IsType<ThreadSnapshot>(result.Value);
     }
+
+    private static string Sha256(string value) =>
+        Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value)))
+            .ToLowerInvariant();
 
     private static async Task WaitUntilAsync(
         Func<Task<bool>> condition,

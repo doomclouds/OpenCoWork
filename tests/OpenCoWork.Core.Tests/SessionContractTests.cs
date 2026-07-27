@@ -36,12 +36,17 @@ public sealed class SessionContractTests
             .ToArray();
         Assert.Contains(nameof(ISessionService.CreateThreadAsync), serviceMethods);
         Assert.Contains(nameof(ISessionService.GetThreadAsync), serviceMethods);
+        Assert.Contains(nameof(ISessionService.SetAgentModeAsync), serviceMethods);
+        Assert.Contains(nameof(ISessionService.SetThreadModelAsync), serviceMethods);
         Assert.Contains(nameof(ISessionService.SubscribeAsync), serviceMethods);
         Assert.Contains(nameof(ISessionService.RollbackThreadAsync), serviceMethods);
 
         Assert.All(
             typeof(ThreadSnapshot).GetProperties(),
             property => Assert.False(property.CanWrite));
+        Assert.Equal(
+            AgentMode.Agent,
+            new CreateThreadRequest(id, ExpectedSequence: 0).AgentMode);
     }
 
     [Fact]

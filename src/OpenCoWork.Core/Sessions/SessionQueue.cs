@@ -97,7 +97,8 @@ internal sealed partial class SessionService
                     request.ThreadId,
                     request.Text,
                     thread.Queue.Count,
-                    timestamp);
+                    timestamp,
+                    thread.AgentMode);
                 var queue = thread.Queue.Append(queueItem).ToArray();
                 var nextThread = ExecutionThread(
                     thread,
@@ -114,7 +115,8 @@ internal sealed partial class SessionService
                         queueItem.QueueItemId,
                         queueItem.Text,
                         queueItem.Position,
-                        requestSha256),
+                        requestSha256,
+                        queueItem.EffectiveAgentMode),
                     SessionEventType.TurnQueued,
                     cancellationToken,
                     new SessionEventPayload(QueueItem: queueItem));
@@ -647,7 +649,8 @@ internal sealed partial class SessionService
             match.Entry.ThreadId,
             fact.Text,
             fact.Position,
-            match.Entry.Timestamp);
+            match.Entry.Timestamp,
+            fact.EffectiveAgentMode);
         var result = new SessionCommandResult<QueuedTurnInputSnapshot>(
             SessionCommandStatus.Committed,
             queueItem,

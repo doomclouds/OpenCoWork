@@ -86,6 +86,8 @@ public enum SessionEventType
 {
     ThreadCreated,
     ThreadRenamed,
+    ThreadModelChanged,
+    ThreadModeChanged,
     ThreadPaused,
     ThreadResumed,
     ThreadArchived,
@@ -108,6 +110,9 @@ public enum SessionEventType
     ItemCompleted,
     ItemFailed,
     ItemCancelled,
+    AgentInvocationSnapshotRecorded,
+    ProviderUsageRecorded,
+    CompactionCheckpointRecorded,
     InteractionResolved,
     ThreadJournalRecovered,
 }
@@ -189,7 +194,8 @@ public sealed record TurnSnapshot(
     DateTimeOffset CreatedAt,
     DateTimeOffset UpdatedAt,
     DateTimeOffset? CompletedAt,
-    SessionError? Error);
+    SessionError? Error,
+    AgentMode EffectiveAgentMode = AgentMode.Agent);
 
 public sealed record SessionItemSnapshot(
     Guid ItemId,
@@ -206,7 +212,8 @@ public sealed record QueuedTurnInputSnapshot(
     Guid ThreadId,
     string Text,
     int Position,
-    DateTimeOffset CreatedAt);
+    DateTimeOffset CreatedAt,
+    AgentMode EffectiveAgentMode = AgentMode.Agent);
 
 public sealed record PendingInteractionSnapshot(
     Guid InteractionId,
@@ -231,7 +238,10 @@ public sealed record ThreadSnapshot
         DateTimeOffset createdAt,
         DateTimeOffset updatedAt,
         SessionProjectionState projectionState,
-        string? diagnostic)
+        string? diagnostic,
+        string? providerId = null,
+        string? modelId = null,
+        AgentMode agentMode = AgentMode.Agent)
     {
         ArgumentNullException.ThrowIfNull(displayName);
         ArgumentNullException.ThrowIfNull(queue);
@@ -247,6 +257,9 @@ public sealed record ThreadSnapshot
         UpdatedAt = updatedAt;
         ProjectionState = projectionState;
         Diagnostic = diagnostic;
+        ProviderId = providerId;
+        ModelId = modelId;
+        AgentMode = agentMode;
     }
 
     public Guid ThreadId { get; }
@@ -272,6 +285,12 @@ public sealed record ThreadSnapshot
     public SessionProjectionState ProjectionState { get; }
 
     public string? Diagnostic { get; }
+
+    public string? ProviderId { get; }
+
+    public string? ModelId { get; }
+
+    public AgentMode AgentMode { get; }
 }
 
 public sealed record SessionStatistics(
@@ -287,7 +306,10 @@ public sealed record SessionEventPayload(
     SessionItemSnapshot? Item = null,
     QueuedTurnInputSnapshot? QueueItem = null,
     PendingInteractionSnapshot? Interaction = null,
-    SessionError? Error = null);
+    SessionError? Error = null,
+    AgentInvocationSnapshot? Invocation = null,
+    ProviderUsageSnapshot? Usage = null,
+    CompactionCheckpointSnapshot? Compaction = null);
 
 public sealed record SessionEvent(
     Guid ThreadId,
@@ -331,7 +353,23 @@ public sealed record CreateThreadRequest(
     Guid IdempotencyKey,
     long ExpectedSequence,
     string? DisplayName = null,
-    HistoryMode HistoryMode = HistoryMode.Server);
+    HistoryMode HistoryMode = HistoryMode.Server,
+    string? ProviderId = null,
+    string? ModelId = null,
+    AgentMode AgentMode = AgentMode.Agent);
+
+public sealed record SetThreadModelRequest(
+    Guid ThreadId,
+    Guid IdempotencyKey,
+    long ExpectedSequence,
+    string ProviderId,
+    string ModelId);
+
+public sealed record SetAgentModeRequest(
+    Guid ThreadId,
+    Guid IdempotencyKey,
+    long ExpectedSequence,
+    AgentMode AgentMode);
 
 public sealed record RenameThreadRequest(
     Guid ThreadId,
@@ -464,6 +502,14 @@ public interface ISessionService
         RenameThreadRequest request,
         CancellationToken cancellationToken = default);
 
+    Task<SessionCommandResult<ThreadSnapshot>> SetThreadModelAsync(
+        SetThreadModelRequest request,
+        CancellationToken cancellationToken = default);
+
+    Task<SessionCommandResult<ThreadSnapshot>> SetAgentModeAsync(
+        SetAgentModeRequest request,
+        CancellationToken cancellationToken = default);
+
     Task<SessionCommandResult<ThreadSnapshot>> PauseThreadAsync(
         ThreadMutationRequest request,
         CancellationToken cancellationToken = default);
@@ -537,7 +583,8 @@ public sealed class AgentSession
         ThreadSnapshot thread,
         TurnSnapshot turn,
         IEnumerable<SessionItemSnapshot> modelHistory,
-        SessionExecutionCheckpoint? checkpoint = null)
+        SessionExecutionCheckpoint? checkpoint = null,
+        CompactionCheckpointSnapshot? compactionCheckpoint = null)
     {
         ArgumentNullException.ThrowIfNull(thread);
         ArgumentNullException.ThrowIfNull(turn);
@@ -546,6 +593,7 @@ public sealed class AgentSession
         Turn = turn;
         ModelHistory = Array.AsReadOnly(modelHistory.ToArray());
         Checkpoint = checkpoint;
+        CompactionCheckpoint = compactionCheckpoint;
     }
 
     public ThreadSnapshot Thread { get; }
@@ -555,6 +603,8 @@ public sealed class AgentSession
     public IReadOnlyList<SessionItemSnapshot> ModelHistory { get; }
 
     public SessionExecutionCheckpoint? Checkpoint { get; }
+
+    public CompactionCheckpointSnapshot? CompactionCheckpoint { get; }
 }
 
 public abstract record SessionExecutionIntent;
@@ -569,6 +619,15 @@ public sealed record AppendItemDeltaIntent(Guid ItemId, string Delta) : SessionE
 public sealed record CompleteItemIntent(Guid ItemId) : SessionExecutionIntent;
 
 public sealed record FailItemIntent(Guid ItemId, SessionError Error) : SessionExecutionIntent;
+
+public sealed record RecordAgentInvocationSnapshotIntent(
+    AgentInvocationSnapshot Snapshot) : SessionExecutionIntent;
+
+public sealed record RecordProviderUsageIntent(
+    ProviderUsageSnapshot Usage) : SessionExecutionIntent;
+
+public sealed record RecordCompactionCheckpointIntent(
+    CompactionCheckpointSnapshot Checkpoint) : SessionExecutionIntent;
 
 public sealed record WaitForInteractionIntent(
     Guid InteractionId,

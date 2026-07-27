@@ -76,6 +76,14 @@ internal sealed partial class SessionService : ISessionService
                 currentSequence: 0);
         }
 
+        if (string.IsNullOrWhiteSpace(request.ProviderId) !=
+            string.IsNullOrWhiteSpace(request.ModelId))
+        {
+            return Rejected<ThreadSnapshot>(
+                SessionErrorCodes.InvalidState,
+                "Provider and model must be specified together.");
+        }
+
         var operation = Wire(SessionEventType.ThreadCreated);
         var requestSha256 = RequestHash(
             operation,
@@ -84,6 +92,9 @@ internal sealed partial class SessionService : ISessionService
                 request.ExpectedSequence,
                 request.DisplayName,
                 request.HistoryMode,
+                request.ProviderId,
+                request.ModelId,
+                request.AgentMode,
             });
         var keyGate = GetIdempotencyGate(request.IdempotencyKey);
         await keyGate.WaitAsync(cancellationToken);
@@ -132,7 +143,10 @@ internal sealed partial class SessionService : ISessionService
                     timestamp,
                     timestamp,
                     SessionProjectionState.Ready,
-                    diagnostic: null);
+                    diagnostic: null,
+                    request.ProviderId,
+                    request.ModelId,
+                    request.AgentMode);
                 return await CommitAsync(
                     request.IdempotencyKey,
                     operation,
@@ -142,7 +156,10 @@ internal sealed partial class SessionService : ISessionService
                         displayName,
                         HistoryMode.Server,
                         FirstUserMessage: null,
-                        requestSha256),
+                        requestSha256,
+                        request.ProviderId,
+                        request.ModelId,
+                        request.AgentMode),
                     SessionEventType.ThreadCreated,
                     cancellationToken);
             }
@@ -318,6 +335,87 @@ internal sealed partial class SessionService : ISessionService
                 currentSequence: snapshot.CurrentSequence + 1,
                 updatedAt: timestamp),
             hash => new ThreadRenamedFact(request.DisplayName, hash),
+            cancellationToken);
+    }
+
+    public Task<SessionCommandResult<ThreadSnapshot>> SetThreadModelAsync(
+        SetThreadModelRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        ArgumentException.ThrowIfNullOrWhiteSpace(request.ProviderId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(request.ModelId);
+        var operation = Wire(SessionEventType.ThreadModelChanged);
+        var requestSha256 = RequestHash(
+            operation,
+            new
+            {
+                ThreadId = Wire(request.ThreadId),
+                IdempotencyKey = Wire(request.IdempotencyKey),
+                request.ExpectedSequence,
+                request.ProviderId,
+                request.ModelId,
+            });
+        return MutateThreadAsync(
+            request.ThreadId,
+            request.IdempotencyKey,
+            request.ExpectedSequence,
+            operation,
+            requestSha256,
+            SessionEventType.ThreadModelChanged,
+            (snapshot, _) => snapshot.Status == ThreadStatus.Archived
+                ? new SessionError(
+                    SessionErrorCodes.InvalidState,
+                    "An archived thread cannot change model.",
+                    IsRetryable: false)
+                : null,
+            (snapshot, timestamp) => CopySnapshot(
+                snapshot,
+                currentSequence: snapshot.CurrentSequence + 1,
+                updatedAt: timestamp,
+                providerId: request.ProviderId,
+                modelId: request.ModelId),
+            hash => new ThreadModelChangedFact(
+                request.ProviderId,
+                request.ModelId,
+                hash),
+            cancellationToken);
+    }
+
+    public Task<SessionCommandResult<ThreadSnapshot>> SetAgentModeAsync(
+        SetAgentModeRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        var operation = Wire(SessionEventType.ThreadModeChanged);
+        var requestSha256 = RequestHash(
+            operation,
+            new
+            {
+                ThreadId = Wire(request.ThreadId),
+                IdempotencyKey = Wire(request.IdempotencyKey),
+                request.ExpectedSequence,
+                request.AgentMode,
+            });
+        return MutateThreadAsync(
+            request.ThreadId,
+            request.IdempotencyKey,
+            request.ExpectedSequence,
+            operation,
+            requestSha256,
+            SessionEventType.ThreadModeChanged,
+            (snapshot, _) => snapshot.Status == ThreadStatus.Archived
+                ? new SessionError(
+                    SessionErrorCodes.InvalidState,
+                    "An archived thread cannot change agent mode.",
+                    IsRetryable: false)
+                : null,
+            (snapshot, timestamp) => CopySnapshot(
+                snapshot,
+                currentSequence: snapshot.CurrentSequence + 1,
+                updatedAt: timestamp,
+                agentMode: request.AgentMode),
+            hash => new ThreadModeChangedFact(request.AgentMode, hash),
             cancellationToken);
     }
 
@@ -987,7 +1085,10 @@ internal sealed partial class SessionService : ISessionService
             snapshot.CreatedAt,
             snapshot.UpdatedAt,
             WithProjectionState(snapshot, _projection.State).ProjectionState,
-            diagnostic ?? "Thread journal requires recovery.");
+            diagnostic ?? "Thread journal requires recovery.",
+            snapshot.ProviderId,
+            snapshot.ModelId,
+            snapshot.AgentMode);
     }
 
     private SemaphoreSlim GetThreadGate(Guid threadId) =>
@@ -1003,7 +1104,10 @@ internal sealed partial class SessionService : ISessionService
         string? displayName = null,
         ThreadStatus? status = null,
         long? currentSequence = null,
-        DateTimeOffset? updatedAt = null) =>
+        DateTimeOffset? updatedAt = null,
+        string? providerId = null,
+        string? modelId = null,
+        AgentMode? agentMode = null) =>
         new(
             snapshot.ThreadId,
             displayName ?? snapshot.DisplayName,
@@ -1016,7 +1120,10 @@ internal sealed partial class SessionService : ISessionService
             snapshot.CreatedAt,
             updatedAt ?? snapshot.UpdatedAt,
             snapshot.ProjectionState,
-            snapshot.Diagnostic);
+            snapshot.Diagnostic,
+            providerId ?? snapshot.ProviderId,
+            modelId ?? snapshot.ModelId,
+            agentMode ?? snapshot.AgentMode);
 
     private static ThreadSnapshot WithProjectionState(
         ThreadSnapshot snapshot,
@@ -1033,7 +1140,10 @@ internal sealed partial class SessionService : ISessionService
             snapshot.CreatedAt,
             snapshot.UpdatedAt,
             projectionState,
-            snapshot.Diagnostic);
+            snapshot.Diagnostic,
+            snapshot.ProviderId,
+            snapshot.ModelId,
+            snapshot.AgentMode);
 
     private static bool TryBuildHistoryEvents(
         IReadOnlyList<ThreadJournalEntry> entries,
@@ -1075,7 +1185,10 @@ internal sealed partial class SessionService : ISessionService
                 entry.Timestamp,
                 entry.Timestamp,
                 SessionProjectionState.Ready,
-                diagnostic: null);
+                diagnostic: null,
+                fact.ProviderId,
+                fact.ModelId,
+                fact.AgentMode);
         }
 
         if (entry.EntryType == SessionEventType.ThreadForked)
@@ -1094,7 +1207,10 @@ internal sealed partial class SessionService : ISessionService
                 entry.Timestamp,
                 entry.Timestamp,
                 SessionProjectionState.Ready,
-                diagnostic: null);
+                diagnostic: null,
+                fact.ProviderId,
+                fact.ModelId,
+                fact.AgentMode);
         }
 
         if (snapshot is null)
@@ -1105,12 +1221,27 @@ internal sealed partial class SessionService : ISessionService
         var displayName = snapshot.DisplayName;
         var status = snapshot.Status;
         var activeTurnId = snapshot.ActiveTurnId;
+        var providerId = snapshot.ProviderId;
+        var modelId = snapshot.ModelId;
+        var agentMode = snapshot.AgentMode;
         IReadOnlyList<QueuedTurnInputSnapshot> queue = snapshot.Queue;
         switch (entry.EntryType)
         {
             case SessionEventType.ThreadRenamed:
                 displayName = (entry.Payload.Deserialize<ThreadRenamedFact>(JsonOptions)
                     ?? throw new JsonException("Rename fact is missing.")).DisplayName;
+                break;
+            case SessionEventType.ThreadModelChanged:
+                var model = entry.Payload
+                    .Deserialize<ThreadModelChangedFact>(JsonOptions)
+                    ?? throw new JsonException("Model fact is missing.");
+                providerId = model.ProviderId;
+                modelId = model.ModelId;
+                break;
+            case SessionEventType.ThreadModeChanged:
+                agentMode = (entry.Payload
+                    .Deserialize<ThreadModeChangedFact>(JsonOptions)
+                    ?? throw new JsonException("Mode fact is missing.")).AgentMode;
                 break;
             case SessionEventType.ThreadPaused:
                 status = ThreadStatus.Paused;
@@ -1151,7 +1282,8 @@ internal sealed partial class SessionService : ISessionService
                         entry.ThreadId,
                         queued.Text,
                         queued.Position,
-                        entry.Timestamp)));
+                        entry.Timestamp,
+                        queued.EffectiveAgentMode)));
                 break;
             case SessionEventType.TurnQueueChanged:
                 var changed = entry.Payload
@@ -1189,7 +1321,10 @@ internal sealed partial class SessionService : ISessionService
             snapshot.CreatedAt,
             entry.Timestamp,
             snapshot.ProjectionState,
-            snapshot.Diagnostic);
+            snapshot.Diagnostic,
+            providerId,
+            modelId,
+            agentMode);
     }
 
     private static IReadOnlyList<QueuedTurnInputSnapshot> RepositionQueue(
