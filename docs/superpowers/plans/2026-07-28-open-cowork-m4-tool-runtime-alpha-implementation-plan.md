@@ -1,6 +1,6 @@
 # OpenCoWork M4 Tool Runtime Alpha 实施计划
 
-**Status:** Planned；Outcome 1-9 尚未开始。
+**Status:** In Progress；Outcome 1 已完成，Outcome 2-9 尚未开始。
 
 **Goal:** 在 M3 Agent Runtime 上交付 Provider 中立、可审计、可审批、可取消、
 可恢复且不会重复已提交副作用的最小 Tool Runtime。
@@ -119,7 +119,9 @@ AgentFactory/Provider/Compaction。不得新增项目、第二套 Session 状态
     RequireApproval/Deny；工作区配置不得放宽用户配置。
   - 在中央包管理和 Core 项目只加入 `JsonSchema.Net 9.4.0`。
   - 将 `StateMigrations` 推进到 v4，只新增 `tool_invocations` 表及冻结索引/外键；
-    新库直接到 v4，v3→v4 继续使用现有备份、事务 DDL、结构校验和恢复。
+    同一事务无损重建 `items.item_type` 闭集约束以加入 ToolCall/ToolResult，并
+    同步重建 `pending_interactions` 以保持其 Item 外键与既有行；新库直接到 v4，
+    v3→v4 继续使用现有备份、事务 DDL、结构校验和恢复。
   - 建立契约、配置、序列化、迁移和项目图测试，使其在没有 Tool Runtime 行为时先
     形成可编译基线。
 - Risks/open questions:

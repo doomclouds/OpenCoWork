@@ -23,6 +23,7 @@ public sealed class AgentContractTests
                 nameof(ChatCompletionRequest.Messages),
                 nameof(ChatCompletionRequest.ModelId),
                 nameof(ChatCompletionRequest.Purpose),
+                nameof(ChatCompletionRequest.Tools),
             ],
             requestProperties);
         Assert.Equal(
@@ -34,8 +35,7 @@ public sealed class AgentContractTests
             requestProperties,
             name => name.Contains("Provider", StringComparison.Ordinal) ||
                     name.Contains("Secret", StringComparison.Ordinal) ||
-                    name.Contains("Raw", StringComparison.Ordinal) ||
-                    name.Contains("Tool", StringComparison.Ordinal));
+                    name.Contains("Raw", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -54,6 +54,8 @@ public sealed class AgentContractTests
             [
                 typeof(ChatCompletionContentDeltaEvent),
                 typeof(ChatCompletionReasoningDeltaEvent),
+                typeof(ChatCompletionToolCallDeltaEvent),
+                typeof(ChatCompletionToolCallCompletedEvent),
                 typeof(ChatCompletionUsageEvent),
                 typeof(ChatCompletionCompletedEvent),
             ],
@@ -66,6 +68,8 @@ public sealed class AgentContractTests
                     {
                         nameof(ChatCompletionContentDeltaEvent),
                         nameof(ChatCompletionReasoningDeltaEvent),
+                        nameof(ChatCompletionToolCallDeltaEvent),
+                        nameof(ChatCompletionToolCallCompletedEvent),
                         nameof(ChatCompletionUsageEvent),
                         nameof(ChatCompletionCompletedEvent),
                     },
@@ -91,6 +95,9 @@ public sealed class AgentContractTests
                 .Count(field => field.IsLiteral && !field.IsInitOnly));
         Assert.Equal("provider.invalidStream", AgentErrorCodes.ProviderInvalidStream);
         Assert.Equal("context.compactionFailed", AgentErrorCodes.ContextCompactionFailed);
+        Assert.Contains(
+            ChatCompletionMessageRole.Tool,
+            Enum.GetValues<ChatCompletionMessageRole>());
     }
 
     [Fact]

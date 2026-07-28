@@ -17,6 +17,13 @@ public sealed class ConfigurationPipelineTests
     private static readonly ConfigSectionDescriptor[] Descriptors =
     [
         new(
+            "tools",
+            typeof(ToolsConfig),
+            static () => new ToolsConfig(),
+            """
+            {"type":"object","properties":{"effects":{"type":"object","properties":{"externalMutation":{"type":"string","enum":["allow","deny","requireApproval"]},"networkRead":{"type":"string","enum":["allow","deny","requireApproval"]},"processExecution":{"type":"string","enum":["allow","deny","requireApproval"]},"workspaceWrite":{"type":"string","enum":["allow","deny","requireApproval"]}},"required":["externalMutation","networkRead","processExecution","workspaceWrite"],"additionalProperties":false}},"required":["effects"],"additionalProperties":false}
+            """),
+        new(
             "runtime",
             typeof(RuntimeConfig),
             static () => new RuntimeConfig(),
@@ -45,6 +52,63 @@ public sealed class ConfigurationPipelineTests
             {"type":"object","properties":{"count":{"type":"integer","minimum":1,"maximum":10}},"required":["count"],"additionalProperties":false}
             """),
     ];
+
+    [Fact]
+    public void Tool_effect_policies_use_safe_defaults_and_workspace_can_only_narrow_user_policy()
+    {
+        var defaults = ConfigLoader.Load(new ConfigLoadRequest(Descriptors));
+
+        Assert.True(defaults.Validation.IsValid);
+        var effects = defaults.Snapshot!.GetRequiredSection<ToolsConfig>().Effects;
+        Assert.Equal(ToolAuthorityDecision.RequireApproval, effects.NetworkRead);
+        Assert.Equal(ToolAuthorityDecision.RequireApproval, effects.WorkspaceWrite);
+        Assert.Equal(ToolAuthorityDecision.RequireApproval, effects.ProcessExecution);
+        Assert.Equal(ToolAuthorityDecision.RequireApproval, effects.ExternalMutation);
+
+        using var files = new TempDirectory();
+        var user = files.Write(
+            "user-tools.jsonc",
+            """{"tools":{"effects":{"networkRead":"allow"}}}""");
+        var workspace = files.Write(
+            "workspace-tools.jsonc",
+            """{"tools":{"effects":{"networkRead":"requireApproval"}}}""");
+        var narrowed = ConfigLoader.Load(new ConfigLoadRequest(Descriptors)
+        {
+            UserConfigPath = user,
+            WorkspaceConfigPath = workspace,
+        });
+
+        Assert.True(narrowed.Validation.IsValid);
+        Assert.Equal(
+            ToolAuthorityDecision.RequireApproval,
+            narrowed.Snapshot!.GetRequiredSection<ToolsConfig>().Effects.NetworkRead);
+
+        var deniedUser = files.Write(
+            "denied-user-tools.jsonc",
+            """{"tools":{"effects":{"networkRead":"deny"}}}""");
+        var widenedWorkspace = files.Write(
+            "widened-workspace-tools.jsonc",
+            """{"tools":{"effects":{"networkRead":"allow"}}}""");
+        var widened = ConfigLoader.Load(new ConfigLoadRequest(Descriptors)
+        {
+            UserConfigPath = deniedUser,
+            WorkspaceConfigPath = widenedWorkspace,
+        });
+
+        Assert.False(widened.Validation.IsValid);
+        Assert.Contains(
+            widened.Validation.Diagnostics,
+            item => item.Path == "tools.effects.networkRead");
+
+        var invalidExternal = ConfigLoader.Load(new ConfigLoadRequest(Descriptors)
+        {
+            SetOverrides = ["tools.effects.externalMutation=allow"],
+        });
+        Assert.False(invalidExternal.Validation.IsValid);
+        Assert.Contains(
+            invalidExternal.Validation.Diagnostics,
+            item => item.Message.Contains("ExternalMutation", StringComparison.Ordinal));
+    }
 
     [Fact]
     public void Models_configuration_uses_exact_named_ids_and_rejects_unsafe_endpoints()

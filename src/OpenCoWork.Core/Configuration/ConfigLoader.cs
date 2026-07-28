@@ -109,7 +109,11 @@ public static class ConfigLoader
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
         PropertyNameCaseInsensitive = false,
         WriteIndented = false,
-        Converters = { new DurationJsonConverter() },
+        Converters =
+        {
+            new JsonStringEnumConverter<ToolAuthorityDecision>(JsonNamingPolicy.CamelCase),
+            new DurationJsonConverter(),
+        },
     };
 
     public static ConfigLoadResult Load(ConfigLoadRequest request)
@@ -129,6 +133,7 @@ public static class ConfigLoader
             required: false,
             sources,
             diagnostics);
+        var userPolicyRoot = root.DeepClone().AsObject();
         MergeFile(
             root,
             request.WorkspaceConfigPath,
@@ -136,6 +141,7 @@ public static class ConfigLoader
             required: false,
             sources,
             diagnostics);
+        ValidateToolWorkspaceNarrowing(userPolicyRoot, root, diagnostics);
         MergeFile(
             root,
             request.LocalConfigPath,
@@ -143,6 +149,7 @@ public static class ConfigLoader
             required: false,
             sources,
             diagnostics);
+        ValidateToolWorkspaceNarrowing(userPolicyRoot, root, diagnostics);
         MergeFile(
             root,
             request.ExplicitConfigPath,
@@ -257,6 +264,54 @@ public static class ConfigLoader
         }
 
         return schemas;
+    }
+
+    private static void ValidateToolWorkspaceNarrowing(
+        JsonObject userRoot,
+        JsonObject workspaceRoot,
+        List<OpenCoWorkDiagnostic> diagnostics)
+    {
+        foreach (var property in new[]
+                 {
+                     "networkRead",
+                     "workspaceWrite",
+                     "processExecution",
+                     "externalMutation",
+                 })
+        {
+            if (!TryReadToolDecision(userRoot, property, out var userDecision) ||
+                !TryReadToolDecision(workspaceRoot, property, out var workspaceDecision) ||
+                workspaceDecision <= userDecision)
+            {
+                continue;
+            }
+
+            var path = $"tools.effects.{property}";
+            if (diagnostics.Any(item =>
+                    item.Code == "OCWCFG009" &&
+                    string.Equals(item.Path, path, StringComparison.Ordinal)))
+            {
+                continue;
+            }
+
+            diagnostics.Add(Error(
+                "OCWCFG009",
+                $"工作区工具策略 '{path}' 不能放宽用户级策略。",
+                path));
+        }
+    }
+
+    private static bool TryReadToolDecision(
+        JsonObject root,
+        string property,
+        out ToolAuthorityDecision decision)
+    {
+        decision = default;
+        return root["tools"] is JsonObject tools &&
+               tools["effects"] is JsonObject effects &&
+               effects[property] is JsonValue value &&
+               value.TryGetValue<string>(out var text) &&
+               Enum.TryParse(text, ignoreCase: true, out decision);
     }
 
     private static JsonObject BuildDefaults(

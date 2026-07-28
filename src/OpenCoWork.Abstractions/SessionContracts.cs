@@ -34,6 +34,8 @@ public enum SessionItemType
     UserInputResponse,
     Error,
     SystemNotice,
+    ToolCall,
+    ToolResult,
 }
 
 public enum SessionItemStatus
@@ -115,6 +117,10 @@ public enum SessionEventType
     CompactionCheckpointRecorded,
     InteractionResolved,
     ThreadJournalRecovered,
+    ToolCallRecorded,
+    ToolInvocationStarted,
+    ToolInvocationAttemptStarted,
+    ToolInvocationTerminal,
 }
 
 public static class SessionErrorCodes
@@ -187,6 +193,66 @@ public sealed record ErrorItemContent(string Code, string Message) : SessionItem
 
 public sealed record SystemNoticeContent(string Message) : SessionItemContent;
 
+public sealed record ToolApprovalRequestContent(
+    Guid ToolInvocationId,
+    ToolDefinitionId ToolDefinitionId,
+    string SnapshotSha256,
+    string ArgumentsSha256,
+    string Prompt) : SessionItemContent;
+
+public sealed record ToolCallItemEntry
+{
+    public ToolCallItemEntry(
+        string providerToolCallId,
+        string providerToolName,
+        System.Text.Json.JsonElement arguments,
+        string argumentsSha256,
+        bool sensitiveInputDetected)
+    {
+        ArgumentNullException.ThrowIfNull(providerToolCallId);
+        ArgumentNullException.ThrowIfNull(providerToolName);
+        ArgumentException.ThrowIfNullOrWhiteSpace(argumentsSha256);
+        ProviderToolCallId = providerToolCallId;
+        ProviderToolName = providerToolName;
+        Arguments = arguments.Clone();
+        ArgumentsSha256 = argumentsSha256;
+        SensitiveInputDetected = sensitiveInputDetected;
+    }
+
+    public string ProviderToolCallId { get; }
+
+    public string ProviderToolName { get; }
+
+    public System.Text.Json.JsonElement Arguments { get; }
+
+    public string ArgumentsSha256 { get; }
+
+    public bool SensitiveInputDetected { get; }
+}
+
+public sealed record ToolCallItemContent : SessionItemContent
+{
+    public ToolCallItemContent(
+        int providerRound,
+        Guid? agentMessageItemId,
+        IEnumerable<ToolCallItemEntry> calls)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(providerRound);
+        ArgumentNullException.ThrowIfNull(calls);
+        ProviderRound = providerRound;
+        AgentMessageItemId = agentMessageItemId;
+        Calls = Array.AsReadOnly(calls.ToArray());
+    }
+
+    public int ProviderRound { get; }
+
+    public Guid? AgentMessageItemId { get; }
+
+    public IReadOnlyList<ToolCallItemEntry> Calls { get; }
+}
+
+public sealed record ToolResultItemContent(ToolResultSnapshot Result) : SessionItemContent;
+
 public sealed record TurnSnapshot(
     Guid TurnId,
     Guid ThreadId,
@@ -222,7 +288,8 @@ public sealed record PendingInteractionSnapshot(
     SessionInteractionType Type,
     bool IsResolved,
     DateTimeOffset CreatedAt,
-    DateTimeOffset? TimeoutAt);
+    DateTimeOffset? TimeoutAt,
+    Guid? ToolInvocationId = null);
 
 public sealed record ThreadSnapshot
 {
@@ -309,7 +376,9 @@ public sealed record SessionEventPayload(
     SessionError? Error = null,
     AgentInvocationSnapshot? Invocation = null,
     ProviderUsageSnapshot? Usage = null,
-    CompactionCheckpointSnapshot? Compaction = null);
+    CompactionCheckpointSnapshot? Compaction = null,
+    ToolInvocationSnapshot? ToolInvocation = null,
+    ToolResultSnapshot? ToolResult = null);
 
 public sealed record SessionEvent(
     Guid ThreadId,
@@ -632,12 +701,36 @@ public sealed record RecordProviderUsageIntent(
 public sealed record RecordCompactionCheckpointIntent(
     CompactionCheckpointSnapshot Checkpoint) : SessionExecutionIntent;
 
+public sealed record RecordToolCallIntent(
+    Guid ItemId,
+    ToolCallItemContent Content) : SessionExecutionIntent;
+
+public sealed record RecordToolInvocationStartedIntent(
+    Guid ToolInvocationId,
+    Guid ToolCallItemId,
+    int CallIndex,
+    string ProviderToolCallId,
+    string ProviderToolName,
+    ToolDefinitionId? ToolDefinitionId,
+    RuntimeBindingId? RuntimeBindingId,
+    string SnapshotSha256,
+    string ArgumentsSha256) : SessionExecutionIntent;
+
+public sealed record RecordToolInvocationAttemptStartedIntent(
+    Guid ToolInvocationId,
+    int AttemptNumber) : SessionExecutionIntent;
+
+public sealed record RecordToolInvocationTerminalIntent(
+    Guid ResultItemId,
+    ToolResultSnapshot Result) : SessionExecutionIntent;
+
 public sealed record WaitForInteractionIntent(
     Guid InteractionId,
     SessionInteractionType Type,
     SessionItemContent Request,
     SessionExecutionCheckpoint Checkpoint,
-    DateTimeOffset? TimeoutAt) : SessionExecutionIntent;
+    DateTimeOffset? TimeoutAt,
+    Guid? ToolInvocationId = null) : SessionExecutionIntent;
 
 public sealed record CompleteTurnIntent : SessionExecutionIntent;
 

@@ -816,10 +816,14 @@ M4 不创建 `tool_definitions`、`tool_registrations`、`tool_attempts`、
 AgentInvocationSnapshot Journal Fact，Attempt 明细继续由 Journal 回放。
 
 Migration v4 沿用现有 Checkpoint、Backup、事务 DDL、Schema Validation 和失败恢复
-流程。旧 Thread 不回填工具记录；Projection Rebuild 删除并从所有 Journal 重建
-`tool_invocations`。Fork / Rollback 的完成历史从 ToolCall 与 ToolResult Item
-恢复 Provider 消息和终态查询投影，不复制 WaitingApproval、未终态 Invocation 或
-独立 Attempt 历史。
+流程。由于 M2 的 `items.item_type` 使用闭集 `CHECK`，v4 必须在同一事务内无损
+重建 `items` 表约束以加入 `toolCall` 与 `toolResult`，并同步重建唯一引用它的
+`pending_interactions` 表，避免 SQLite 表重命名把外键永久改指向临时表；两表既有
+行和索引必须原样保留。最终 Schema 仍只新增 `tool_invocations` 一张业务表。旧
+Thread 不回填工具记录；
+Projection Rebuild 删除并从所有 Journal 重建 `tool_invocations`。Fork / Rollback
+的完成历史从 ToolCall 与 ToolResult Item 恢复 Provider 消息和终态查询投影，不
+复制 WaitingApproval、未终态 Invocation 或独立 Attempt 历史。
 
 ### 2.16 Provider 消息历史、Token 预算与 Compaction
 

@@ -19,6 +19,7 @@ public sealed class StateRuntimeTests
         "session_operation_receipts",
         "state_info",
         "threads",
+        "tool_invocations",
         "turn_queue",
         "turns",
     ];
@@ -34,6 +35,8 @@ public sealed class StateRuntimeTests
         "ix_session_operation_receipts_expiry",
         "ix_threads_status",
         "ix_threads_updated",
+        "ix_tool_invocations_thread_call",
+        "ix_tool_invocations_thread_status",
         "ix_turns_thread",
     ];
 
@@ -67,7 +70,7 @@ public sealed class StateRuntimeTests
                 """,
                 cancellationToken));
         Assert.Equal(
-            3L,
+            4L,
             await ScalarAsync<long>(
                 write,
                 "SELECT schema_version FROM state_info WHERE id = 1;",
@@ -111,10 +114,87 @@ public sealed class StateRuntimeTests
                 "SELECT count(*) FROM pragma_foreign_key_list('threads');",
                 cancellationToken));
         Assert.Equal(
-            1L,
+            2L,
             await ScalarAsync<long>(
                 connection,
-                "SELECT count(*) FROM pragma_foreign_key_list('session_idempotency');",
+                "SELECT count(*) FROM pragma_foreign_key_list('tool_invocations');",
+                cancellationToken));
+        Assert.Equal(
+            [
+                "arguments_sha256",
+                "attempt_count",
+                "completed_at",
+                "error_code",
+                "provider_tool_call_id",
+                "provider_tool_name",
+                "result_item_id",
+                "runtime_binding_id",
+                "snapshot_sha256",
+                "started_at",
+                "status",
+                "thread_id",
+                "tool_definition_id",
+                "tool_invocation_id",
+                "turn_id",
+                "updated_at",
+            ],
+            await ReadStringsAsync(
+                connection,
+                "SELECT name FROM pragma_table_info('tool_invocations') ORDER BY name;",
+            cancellationToken));
+    }
+
+    [Fact]
+    public async Task Version_four_items_accept_tool_call_and_tool_result_types()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        using var files = new TempWorkspace();
+        var runtime = new StateRuntime(files.Paths, TimeSpan.FromSeconds(2));
+        await runtime.InitializeAsync(cancellationToken);
+        await using var connection =
+            await runtime.OpenReadWriteConnectionAsync(cancellationToken);
+
+        await ExecuteAsync(
+            connection,
+            """
+            INSERT INTO threads (
+                thread_id, display_name, display_name_search,
+                status, availability, history_mode,
+                current_sequence, last_applied_sequence,
+                created_utc, updated_utc, agent_mode)
+            VALUES (
+                '0197f8b1-0000-7000-8000-000000000001',
+                'tool-items', 'TOOL-ITEMS',
+                'active', 'available', 'server',
+                2, 2, 1, 1, 'agent');
+            INSERT INTO turns (
+                turn_id, thread_id, status, created_utc, updated_utc, effective_agent_mode)
+            VALUES (
+                '0197f8b1-0000-7000-8000-000000000002',
+                '0197f8b1-0000-7000-8000-000000000001',
+                'completed', 1, 1, 'agent');
+            INSERT INTO items (
+                item_id, thread_id, turn_id, sequence, item_type, status,
+                payload_json, created_utc, updated_utc)
+            VALUES
+                (
+                    '0197f8b1-0000-7000-8000-000000000003',
+                    '0197f8b1-0000-7000-8000-000000000001',
+                    '0197f8b1-0000-7000-8000-000000000002',
+                    1, 'toolCall', 'completed', '{}', 1, 1),
+                (
+                    '0197f8b1-0000-7000-8000-000000000004',
+                    '0197f8b1-0000-7000-8000-000000000001',
+                    '0197f8b1-0000-7000-8000-000000000002',
+                    2, 'toolResult', 'completed', '{}', 1, 1);
+            """,
+            cancellationToken);
+
+        Assert.Equal(
+            2L,
+            await ScalarAsync<long>(
+                connection,
+                "SELECT count(*) FROM items WHERE item_type IN ('toolCall', 'toolResult');",
                 cancellationToken));
     }
 
@@ -257,7 +337,7 @@ public sealed class StateRuntimeTests
                 """,
                 cancellationToken));
         Assert.Equal(
-            3L,
+            4L,
             await ScalarAsync<long>(
                 migrated,
                 "SELECT schema_version FROM state_info WHERE id = 1;",
@@ -271,19 +351,19 @@ public sealed class StateRuntimeTests
     }
 
     [Fact]
-    public async Task Version_two_database_migrates_to_version_three_without_losing_session_rows()
+    public async Task Version_three_database_migrates_to_version_four_without_losing_session_rows()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         using var files = new TempWorkspace();
-        var versionTwo = new StateRuntime(
+        var versionThree = new StateRuntime(
             files.Paths,
             TimeSpan.FromSeconds(2),
-            StateMigrations.VersionTwoOnly,
+            StateMigrations.VersionThreeOnly,
             faultInjector: null);
-        await versionTwo.InitializeAsync(cancellationToken);
+        await versionThree.InitializeAsync(cancellationToken);
 
         await using (var connection =
-                     await versionTwo.OpenReadWriteConnectionAsync(cancellationToken))
+                     await versionThree.OpenReadWriteConnectionAsync(cancellationToken))
         {
             await ExecuteAsync(
                 connection,
@@ -298,6 +378,34 @@ public sealed class StateRuntimeTests
                     'existing', 'EXISTING',
                     'active', 'available', 'server',
                     0, 0, 1, 1);
+                INSERT INTO turns (
+                    turn_id, thread_id, status, created_utc, updated_utc, effective_agent_mode)
+                VALUES (
+                    '0197f8b1-0000-7000-8000-000000000002',
+                    '0197f8b1-0000-7000-8000-000000000001',
+                    'completed', 1, 1, 'agent');
+                INSERT INTO items (
+                    item_id, thread_id, turn_id, sequence, item_type, status,
+                    payload_json, content_text, content_length, content_sha256,
+                    created_utc, updated_utc)
+                VALUES (
+                    '0197f8b1-0000-7000-8000-000000000003',
+                    '0197f8b1-0000-7000-8000-000000000001',
+                    '0197f8b1-0000-7000-8000-000000000002',
+                    1, 'userMessage', 'completed',
+                    '{"text":"existing"}', 'existing', 8,
+                    'ea9f91b2cda019730f2891bd12a7a4d500f42bd097fc0d61b0ff2363337be2ab',
+                    1, 1);
+                INSERT INTO pending_interactions (
+                    interaction_id, thread_id, turn_id, item_id,
+                    interaction_type, status, request_json, checkpoint_json,
+                    created_utc, updated_utc)
+                VALUES (
+                    '0197f8b1-0000-7000-8000-000000000004',
+                    '0197f8b1-0000-7000-8000-000000000001',
+                    '0197f8b1-0000-7000-8000-000000000002',
+                    '0197f8b1-0000-7000-8000-000000000003',
+                    'approval', 'pending', '{}', '{}', 1, 1);
                 """,
                 cancellationToken);
         }
@@ -308,7 +416,7 @@ public sealed class StateRuntimeTests
         await using var migrated =
             await current.OpenReadWriteConnectionAsync(cancellationToken);
         Assert.Equal(
-            3L,
+            4L,
             await ScalarAsync<long>(
                 migrated,
                 "SELECT schema_version FROM state_info WHERE id = 1;",
@@ -324,6 +432,26 @@ public sealed class StateRuntimeTests
             await ScalarAsync<long>(
                 migrated,
                 "SELECT count(*) FROM threads WHERE display_name = 'existing';",
+                cancellationToken));
+        Assert.Equal(
+            "existing",
+            await ScalarAsync<string>(
+                migrated,
+                """
+                SELECT content_text
+                FROM items
+                WHERE item_id = '0197f8b1-0000-7000-8000-000000000003';
+                """,
+                cancellationToken));
+        Assert.Equal(
+            "0197f8b1-0000-7000-8000-000000000003",
+            await ScalarAsync<string>(
+                migrated,
+                """
+                SELECT item_id
+                FROM pending_interactions
+                WHERE interaction_id = '0197f8b1-0000-7000-8000-000000000004';
+                """,
                 cancellationToken));
     }
 

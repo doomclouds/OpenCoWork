@@ -162,6 +162,41 @@ public sealed class ProjectGraphTests
         Assert.Equal(["3.1.5"], packageVersions);
     }
 
+    [Fact]
+    public void JsonSchemaNet_is_the_only_M4_dependency_and_is_referenced_only_by_core()
+    {
+        var repositoryRoot = FindRepositoryRoot();
+        var references = Directory
+            .EnumerateFiles(
+                Path.Combine(repositoryRoot, "src"),
+                "*.csproj",
+                SearchOption.AllDirectories)
+            .Where(path => XDocument.Load(path)
+                .Descendants()
+                .Any(element =>
+                    element.Name.LocalName == "PackageReference" &&
+                    string.Equals(
+                        element.Attribute("Include")?.Value,
+                        "JsonSchema.Net",
+                        StringComparison.Ordinal)))
+            .Select(path => Path.GetFileNameWithoutExtension(path)!)
+            .ToArray();
+        var packageVersions = XDocument
+            .Load(Path.Combine(repositoryRoot, "Directory.Packages.props"))
+            .Descendants()
+            .Where(element =>
+                element.Name.LocalName == "PackageVersion" &&
+                string.Equals(
+                    element.Attribute("Include")?.Value,
+                    "JsonSchema.Net",
+                    StringComparison.Ordinal))
+            .Select(element => element.Attribute("Version")!.Value)
+            .ToArray();
+
+        Assert.Equal(["OpenCoWork.Core"], references);
+        Assert.Equal(["9.4.0"], packageVersions);
+    }
+
     private static Dictionary<string, ProjectModel> LoadProjects(string repositoryRoot)
     {
         return new[] { "src", "tests" }

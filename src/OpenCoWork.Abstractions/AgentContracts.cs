@@ -1,4 +1,5 @@
 using System.Net;
+using System.Text.Json;
 
 namespace OpenCoWork.Abstractions;
 
@@ -13,6 +14,7 @@ public enum ChatCompletionMessageRole
     System,
     User,
     Assistant,
+    Tool,
 }
 
 public enum ChatCompletionFinishReason
@@ -59,9 +61,37 @@ public static class AgentErrorCodes
     public const string ContextCompactionFailed = "context.compactionFailed";
 }
 
+public sealed record ChatCompletionToolCall(
+    string Id,
+    string Name,
+    string Arguments);
+
 public sealed record ChatCompletionMessage(
     ChatCompletionMessageRole Role,
-    string Content);
+    string Content,
+    IReadOnlyList<ChatCompletionToolCall>? ToolCalls = null,
+    string? ToolCallId = null);
+
+public sealed record ChatCompletionToolDefinition
+{
+    public ChatCompletionToolDefinition(
+        string providerName,
+        string description,
+        JsonElement inputSchema)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(providerName);
+        ArgumentNullException.ThrowIfNull(description);
+        ProviderName = providerName;
+        Description = description;
+        InputSchema = inputSchema.Clone();
+    }
+
+    public string ProviderName { get; }
+
+    public string Description { get; }
+
+    public JsonElement InputSchema { get; }
+}
 
 public sealed class ChatCompletionRequest
 {
@@ -71,7 +101,8 @@ public sealed class ChatCompletionRequest
         int maxOutputTokens,
         Guid invocationId,
         int attemptNumber,
-        ChatCompletionInvocationPurpose purpose)
+        ChatCompletionInvocationPurpose purpose,
+        IEnumerable<ChatCompletionToolDefinition>? tools = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(modelId);
         ArgumentNullException.ThrowIfNull(messages);
@@ -84,6 +115,7 @@ public sealed class ChatCompletionRequest
         InvocationId = invocationId;
         AttemptNumber = attemptNumber;
         Purpose = purpose;
+        Tools = Array.AsReadOnly((tools ?? []).ToArray());
     }
 
     public string ModelId { get; }
@@ -97,6 +129,8 @@ public sealed class ChatCompletionRequest
     public int AttemptNumber { get; }
 
     public ChatCompletionInvocationPurpose Purpose { get; }
+
+    public IReadOnlyList<ChatCompletionToolDefinition> Tools { get; }
 }
 
 public abstract record ChatCompletionEvent;
@@ -106,6 +140,18 @@ public sealed record ChatCompletionContentDeltaEvent(string Delta)
 
 public sealed record ChatCompletionReasoningDeltaEvent(string Delta)
     : ChatCompletionEvent;
+
+public sealed record ChatCompletionToolCallDeltaEvent(
+    int Index,
+    string? Id,
+    string? Name,
+    string ArgumentsDelta) : ChatCompletionEvent;
+
+public sealed record ChatCompletionToolCallCompletedEvent(
+    int Index,
+    string Id,
+    string Name,
+    string Arguments) : ChatCompletionEvent;
 
 public sealed record ChatCompletionUsage(
     int PromptTokens,
@@ -182,7 +228,8 @@ public sealed record AgentInvocationSnapshot(
     WorkspaceInstructionSnapshot? WorkspaceInstructions,
     int ContextWindowTokens,
     int MaxOutputTokens,
-    string ConfigurationSha256);
+    string ConfigurationSha256,
+    EffectiveToolSnapshot? Tools = null);
 
 public sealed record ProviderUsageSnapshot(
     Guid InvocationId,

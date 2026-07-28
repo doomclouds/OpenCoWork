@@ -80,6 +80,8 @@ public sealed class SessionContractTests
                 SessionItemType.UserInputResponse,
                 SessionItemType.Error,
                 SessionItemType.SystemNotice,
+                SessionItemType.ToolCall,
+                SessionItemType.ToolResult,
             ],
             Enum.GetValues<SessionItemType>());
         Assert.Equal(
@@ -91,5 +93,40 @@ public sealed class SessionContractTests
                 SessionItemStatus.Cancelled,
             ],
             Enum.GetValues<SessionItemStatus>());
+    }
+
+    [Fact]
+    public void M4_session_contracts_add_tool_items_events_intents_and_approval_correlation()
+    {
+        Assert.Contains(SessionEventType.ToolCallRecorded, Enum.GetValues<SessionEventType>());
+        Assert.Contains(SessionEventType.ToolInvocationStarted, Enum.GetValues<SessionEventType>());
+        Assert.Contains(
+            SessionEventType.ToolInvocationAttemptStarted,
+            Enum.GetValues<SessionEventType>());
+        Assert.Contains(SessionEventType.ToolInvocationTerminal, Enum.GetValues<SessionEventType>());
+
+        Assert.True(typeof(RecordToolCallIntent).IsSubclassOf(typeof(SessionExecutionIntent)));
+        Assert.True(
+            typeof(RecordToolInvocationStartedIntent)
+                .IsSubclassOf(typeof(SessionExecutionIntent)));
+        Assert.True(
+            typeof(RecordToolInvocationAttemptStartedIntent)
+                .IsSubclassOf(typeof(SessionExecutionIntent)));
+        Assert.True(
+            typeof(RecordToolInvocationTerminalIntent)
+                .IsSubclassOf(typeof(SessionExecutionIntent)));
+
+        var interaction = new PendingInteractionSnapshot(
+            Guid.CreateVersion7(),
+            Guid.CreateVersion7(),
+            Guid.CreateVersion7(),
+            SessionInteractionType.Approval,
+            IsResolved: false,
+            DateTimeOffset.UtcNow,
+            TimeoutAt: null);
+        Assert.Null(interaction.ToolInvocationId);
+        Assert.Contains(
+            typeof(ToolInvocationSnapshot),
+            typeof(SessionEventPayload).GetProperties().Select(property => property.PropertyType));
     }
 }
