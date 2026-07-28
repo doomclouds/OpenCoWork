@@ -22,6 +22,10 @@ Provider Tool Message、日志、stdout、stderr 或测试产物；最终只生�
 `Deferred`，Windows 平台行为仍为 `Pending`，不得解释为已通过；该决定只调整 M4
 关闭时点，不改变工具安全契约，并且不豁免 M10 的双平台发布候选验收。
 
+**Supplemental validation（2026-07-29）:** Windows 11 x64 真机补验已完成，
+`M4-ACC-006`、`M4-ACC-009` 和平台行均改为 `Passed`；M10 最终发布候选复验
+仍保留。
+
 ## Source Documents
 
 - [M4 Tool Runtime Alpha 设计规格](../specs/2026-07-28-open-cowork-m4-tool-runtime-alpha-design.md)
@@ -417,6 +421,17 @@ AgentFactory/Provider/Compaction。不得新增项目、第二套 Session 状态
     目录 File/Shell/Web Smoke 尚未执行；用户已接受将 `M4-ACC-006`、
     `M4-ACC-009` 标记为 `Deferred` 并保留平台行 `Pending`，因此 M4 功能需求关闭，
     但不得宣称 Windows 真机通过。
+- Supplemental validation（2026-07-29）:
+  - Windows 11 Home `10.0.26200` x64、.NET SDK `10.0.302`、Runtime
+    `10.0.10`；基线
+    `9cf7e1e366d04fd63ac55906924ea0dde630321d`，Source/Test Patch SHA-256
+    `848ec5c02b1ef9be5afc7d9e1ffeccfa74539d3d2978b09fa9aa6f96438b1725`。
+  - Release 全量回归 `280` passed / `0` failed / `0` skipped，build
+    `0` warning / `0` error；Shell/进程树专项 `4` passed，CLI
+    Approval/Resume 专项 `1` passed。
+  - `win-x64` 发布目录真实 PTY 审批链完成 File、`powershell.exe` Shell、Web 私网
+    拒绝、Credential 移除、Secret Canary 和进程残留检查。
+  - `M4-ACC-006`、`M4-ACC-009` 与 Windows 平台行已改为 `Passed`。
 - Risks/open questions:
   - 单一平台通过、Fake Provider 通过或 cross-publish 成功都不能替代双平台真实工具
     证据。
@@ -451,9 +466,13 @@ AgentFactory/Provider/Compaction。不得新增项目、第二套 Session 状态
 - Outcome 1-9 全部完成，默认测试、架构测试和 Release Build 全绿；
 - `M4-ACC-001` 至 `M4-ACC-010` 均有可定位证据或明确延期结论；
 - `osx-arm64` 真机 File/Shell/Web 验证和进程树残留检查通过；
-- `win-x64` 真机缺口以 `Deferred` / `Pending` 保存在双平台台账，未被误报为通过；
+- `win-x64` 真机 File/Shell/Web、进程树与 Secret 证据在双平台台账标记为
+  `Passed`；
 - v3→v4、Journal 重放、Projection Rebuild、Approval/Checkpoint、重复 Call ID 和
   Unsafe OutcomeUnknown 故障注入通过；
 - Secret Canary 在所有持久化、事件、Provider、日志、进程输出和测试产物表面为零；
 - 没有未归档的 M4 内部交付分支、临时 Tool Store、公共 Hook 或延期能力；
 - 单一 M4 交付归档已创建，里程碑 CHECKLIST/INDEX 已同步，工作区无意外改动。
+
+2026-07-29 补验后，上述 Windows 延期条件已由双平台台账中的 `Passed` 结果替代；
+本 Gate 的其他条件及 M10 复验要求不变。

@@ -29,10 +29,6 @@ Runtime：每个 Turn 冻结工具身份与权限快照，Provider Tool Call 经
 
 - MCP、Plugin、动态或延迟工具、公共 Hook API、后台工具、Sandbox、Node REPL、
   AppServer、ACP、SourceControl 和独立 Tool Store。
-- `win-x64` 真机 PowerShell、发布目录 File/Shell/Web、进程树残留和 Secret
-  Canary；按用户确认的关闭边界保留在
-  [双平台真机发布验证台账](../../../platform-release-validation-ledger.md)，状态为
-  `Pending`，对应 `M4-ACC-006`、`M4-ACC-009` 为 `Deferred`。
 - M10 最终双平台安装、升级、迁移、恢复、安全、性能和发布候选验收。
 
 ## Acceptance Evidence
@@ -44,10 +40,10 @@ Runtime：每个 Turn 冻结工具身份与权限快照，Provider Tool Call 经
 | `M4-ACC-003` | `ToolInvocationPipelineTests` 的逐阶段 Trace、顺序和旁路防护。 |
 | `M4-ACC-004` | Audience、Exposure、Mode、Lease、Authority、Schema、Policy 拒绝矩阵和稳定错误测试。 |
 | `M4-ACC-005` | Authority 交集、恶意 Hook、重复审批及 CLI Approval/Resume 测试。 |
-| `M4-ACC-006` | 自动化超时/取消矩阵与 `osx-arm64` 进程树残留通过；`win-x64` 真机部分 `Deferred`。 |
+| `M4-ACC-006` | 自动化超时/取消矩阵与双平台真实进程树残留通过；Windows 输出超限/取消专项无残留。 |
 | `M4-ACC-007` | Safe/Unsafe 恢复、提交窗口、`tool.outcomeUnknown` 和副作用计数测试。 |
 | `M4-ACC-008` | Agent/Plan、Effect、Authority 和 Provider 名称组合矩阵。 |
-| `M4-ACC-009` | `osx-arm64` 发布目录 File/zsh/Web 实跑通过；Windows PowerShell 真机部分 `Deferred`。 |
+| `M4-ACC-009` | `osx-arm64` File/zsh/Web 与 `win-x64` File/PowerShell/Web 发布目录真实 CLI 审批链通过。 |
 | `M4-ACC-010` | 重复 Call ID、Journal 重放、Checkpoint 恢复和副作用唯一性故障注入。 |
 
 ## Verification Snapshot
@@ -63,7 +59,18 @@ Runtime：每个 Turn 冻结工具身份与权限快照，Provider Tool Call 经
   `web.fetch` 私网拒绝和 Tool Result 回注。
 - Shell 实际宿主为 `/bin/zsh`，取消后进程树无残留；Secret Canary 未命中
   Journal、SQLite、Session Event、Provider 请求、日志、stdout/stderr 或测试目录。
-- `win-x64` 仅完成交叉发布，不能作为 Windows 真机证据；后续清单以双平台台账为准。
+- 2026-07-29 在 Windows 11 Home `10.0.26200` x64、.NET SDK `10.0.302`、
+  Runtime `10.0.10` 补验；基线为
+  `9cf7e1e366d04fd63ac55906924ea0dde630321d`，Source/Test Patch SHA-256 为
+  `848ec5c02b1ef9be5afc7d9e1ffeccfa74539d3d2978b09fa9aa6f96438b1725`。
+- Windows 完整 Release 回归 `280` passed / `0` failed / `0` skipped，
+  Release build `0` warning / `0` error；Shell/进程树专项 `4` passed，
+  CLI Approval/Resume 专项 `1` passed。
+- `win-x64` 发布目录真实 PTY 审批链在 31.333 秒内完成 File 写入、
+  `powershell.exe` 回退、Credential 移除和 Web 私网拒绝；Secret Canary 零命中，
+  退出后无 `opencowork`/PowerShell 残留。
+- 双平台详情与 M10 复验边界见
+  [真机发布验证台账](../../../platform-release-validation-ledger.md)。
 
 ## Source Documents
 
@@ -74,9 +81,11 @@ Runtime：每个 Turn 冻结工具身份与权限快照，Provider Tool Call 经
 
 ## Related Problems
 
-None.
+- [Windows 验证暴露隐藏的平台测试假设](../../problems/2026-07/2026-07-29-windows-cross-platform-test-assumptions-problem.md)
 
 ## Notes
 
 - 2026-07-28 用户确认关闭 M4 功能需求，并将 Windows 真机验证留在统一台账后续
   集中处理；延期不等于通过，也不豁免 M10 双平台发布门禁。
+- 2026-07-29 Windows 补验完成，`M4-ACC-006`、`M4-ACC-009` 已改为
+  `Passed`；M10 最终发布候选复验仍保留。

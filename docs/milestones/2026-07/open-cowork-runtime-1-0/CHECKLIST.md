@@ -7,9 +7,9 @@ Milestone standard: [README.md](README.md)
 ## Progress Summary
 
 - Status: In Progress
-- Progress: 5/11
-- Done: 5
-- In progress: 1
+- Progress: 6/11
+- Done: 6
+- In progress: 0
 - Not started: 5
 - Deferred: 0
 - Split: 0
@@ -45,14 +45,13 @@ Milestone standard: [README.md](README.md)
   - Related spec: docs/superpowers/specs/2026-07-28-open-cowork-m4-tool-runtime-alpha-design.md
   - Related plan: docs/superpowers/plans/2026-07-28-open-cowork-m4-tool-runtime-alpha-implementation-plan.md
   - Related archive: docs/superpowers/archives/2026-07/2026-07-28-open-cowork-m4-tool-runtime-alpha-archives.md
-  - Completion signal: 固定工具管线、稳定错误、审批恢复、模式限制和副作用保护已完成；Windows 真机证据按用户确认保留在双平台台账后续补验。
-- [ ] 6. M5 - OpenCoWork Wire Alpha
-  - Status: In Progress
-  - Acceptance: `8 Passed / 1 Planned`；`M5-ACC-002` 等待 `win-x64` 真机。
+  - Completion signal: 固定工具管线、稳定错误、审批恢复、模式限制和副作用保护已完成；win-x64、osx-arm64 真机 File/Shell/Web 与进程树证据均已通过，M10 仍须重跑最终发布候选。
+- [x] 6. M5 - OpenCoWork Wire Alpha
+  - Status: Done
   - Related spec: docs/superpowers/specs/2026-07-28-open-cowork-m5-wire-alpha-design.md
   - Related plan: docs/superpowers/plans/2026-07-28-open-cowork-m5-wire-alpha-implementation-plan.md
-  - Related archive: None yet.
-  - Completion signal: Desktop-first stdio/loopback WebSocket Wire、核心会话流与稳定 ACP v1 已通过全量回归和 `osx-arm64` 发布目录真机验收；`win-x64` 只完成交叉发布，待真机 TestClient 通过后关闭。
+  - Related archive: docs/superpowers/archives/2026-07/2026-07-28-open-cowork-m5-wire-alpha-archives.md
+  - Completion signal: Desktop-first stdio/loopback WebSocket Wire、核心会话流与稳定 ACP v1 已通过 win-x64、osx-arm64 发布目录 TestClient 真机验收；M5-ACC-001 至 M5-ACC-009 全部 Passed，M10 仍须重跑最终发布候选。
 - [ ] 7. M6 - Capability Ecosystem
   - Status: Not Started
   - Related spec: docs/superpowers/specs/2026-07-25-open-cowork-runtime-1-0-roadmap.md

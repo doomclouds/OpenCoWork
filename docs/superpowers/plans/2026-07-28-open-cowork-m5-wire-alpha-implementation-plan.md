@@ -1,5 +1,8 @@
 # OpenCoWork M5 Wire Alpha 实施计划
 
+**Status:** Completed；Outcome 1-6 已完成，`M5-ACC-001` 至
+`M5-ACC-009` 全部 `Passed`。
+
 **Goal:** 交付以 OpenCoWork Desktop 为第一客户端的原生 Wire 和共享 Session
 Core 的 ACP 稳定 v1 Bridge。
 
@@ -92,6 +95,20 @@ win-x64 与 osx-arm64 真机证据进入平台台账。
   因此平台状态保持 `Pending`，`M5-ACC-002` 保持 `Planned`；
 - 其余八项 M5 Acceptance 已回填为 `Passed`；能力台账契约无需修订，M5
   保持 `In Progress`，不创建完成归档。
+
+**Windows 补验（2026-07-29）：**
+
+- Windows 11 Home `10.0.26200` x64、.NET SDK `10.0.302`、Runtime
+  `10.0.10`；验证基线
+  `9cf7e1e366d04fd63ac55906924ea0dde630321d`，Source/Test Patch SHA-256
+  `848ec5c02b1ef9be5afc7d9e1ffeccfa74539d3d2978b09fa9aa6f96438b1725`；
+- Release 全量回归 `280` passed / `0` failed / `0` skipped，build
+  `0` warning / `0` error；
+- App/TestClient `win-x64` framework-dependent 发布成功；发布目录 TestClient
+  在 5.202 秒内通过 Wire stdio、ACP v1、loopback WebSocket Bearer Header、
+  重连去重、慢读端、业务取消、Secret Canary 和子进程回收；
+- `M5-ACC-002` 已改为 `Passed`，M5 为 `9 Passed / 0 Planned`，交付归档和
+  里程碑 Slice 已关闭；能力台账契约无需修订。
 
 - Work:
   - 完成 `OpenCoWork.Protocol.TestClient` 的 stdio、WebSocket、ACP、重连、慢连接、

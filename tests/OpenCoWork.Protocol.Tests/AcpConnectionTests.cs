@@ -37,7 +37,8 @@ public sealed class AcpConnectionTests
             cancellationToken);
         await ProcessAsync(
             connection,
-            """{"jsonrpc":"2.0","id":2,"method":"session/new","params":{"cwd":"/workspace","mcpServers":[]}}""",
+            WithPlatformWorkspace(
+                """{"jsonrpc":"2.0","id":2,"method":"session/new","params":{"cwd":"/workspace","mcpServers":[]}}"""),
             cancellationToken);
         await ProcessAsync(
             connection,
@@ -170,7 +171,10 @@ public sealed class AcpConnectionTests
     [Fact]
     public async Task Acp_approval_uses_permission_request_and_resolves_core_interaction()
     {
-        var cancellationToken = TestContext.Current.CancellationToken;
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(
+            TestContext.Current.CancellationToken);
+        timeout.CancelAfter(TimeSpan.FromSeconds(5));
+        var cancellationToken = timeout.Token;
         var (sessions, proxy) = CreateProxy();
         var thread = Thread(currentSequence: 1);
         var turnId = Guid.CreateVersion7();
@@ -250,11 +254,17 @@ public sealed class AcpConnectionTests
                         TimeoutAt: null))),
             cancellationToken);
 
-        var permission = await WaitForAsync(
+        var permissionTask = WaitForAsync(
             output,
             item => item.TryGetProperty("method", out var method) &&
                     method.GetString() == "session/request_permission",
             cancellationToken);
+        if (await Task.WhenAny(permissionTask, prompt) == prompt)
+        {
+            await prompt;
+        }
+
+        var permission = await permissionTask;
         var requestId = permission.GetProperty("id").GetString();
         await ProcessAsync(
             connection,
@@ -328,7 +338,8 @@ public sealed class AcpConnectionTests
 
         await ProcessAsync(
             connection,
-            $$$"""{"jsonrpc":"2.0","id":2,"method":"session/load","params":{"sessionId":"{{{thread.ThreadId:D}}}","cwd":"/workspace","mcpServers":[]}}""",
+            WithPlatformWorkspace(
+                $$$"""{"jsonrpc":"2.0","id":2,"method":"session/load","params":{"sessionId":"{{{thread.ThreadId:D}}}","cwd":"/workspace","mcpServers":[]}}"""),
             cancellationToken);
 
         Assert.Single(
@@ -453,11 +464,13 @@ public sealed class AcpConnectionTests
             cancellationToken);
         await ProcessAsync(
             connection,
-            """{"jsonrpc":"2.0","id":2,"method":"session/new","params":{"cwd":"/workspace","mcpServers":[{}]}}""",
+            WithPlatformWorkspace(
+                """{"jsonrpc":"2.0","id":2,"method":"session/new","params":{"cwd":"/workspace","mcpServers":[{}]}}"""),
             cancellationToken);
         await ProcessAsync(
             connection,
-            """{"jsonrpc":"2.0","id":3,"method":"session/new","params":{"cwd":"/workspace","mcpServers":[]}}""",
+            WithPlatformWorkspace(
+                """{"jsonrpc":"2.0","id":3,"method":"session/new","params":{"cwd":"/workspace","mcpServers":[]}}"""),
             cancellationToken);
         await ProcessAsync(
             connection,
@@ -485,7 +498,7 @@ public sealed class AcpConnectionTests
         ConcurrentQueue<JsonElement> output) =>
         new(
             sessions,
-            "/workspace",
+            WorkspacePath,
             "provider",
             "model",
             (message, _) =>
@@ -505,9 +518,19 @@ public sealed class AcpConnectionTests
             cancellationToken);
         await ProcessAsync(
             connection,
-            """{"jsonrpc":"2.0","id":2,"method":"session/new","params":{"cwd":"/workspace","mcpServers":[]}}""",
+            WithPlatformWorkspace(
+                """{"jsonrpc":"2.0","id":2,"method":"session/new","params":{"cwd":"/workspace","mcpServers":[]}}"""),
             cancellationToken);
     }
+
+    private static string WorkspacePath { get; } =
+        Path.Combine(Path.GetTempPath(), "opencowork-acp-tests");
+
+    private static string WithPlatformWorkspace(string message) =>
+        message.Replace(
+            "\"/workspace\"",
+            JsonSerializer.Serialize(WorkspacePath),
+            StringComparison.Ordinal);
 
     private static Task ProcessAsync(
         OpenCoWorkAcpConnection connection,
@@ -613,9 +636,18 @@ public sealed class AcpConnectionTests
         Func<JsonElement, bool> predicate,
         CancellationToken cancellationToken)
     {
-        while (!output.Any(predicate))
+        try
         {
-            await Task.Delay(10, cancellationToken);
+            while (!output.Any(predicate))
+            {
+                await Task.Delay(10, cancellationToken);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            throw new TimeoutException(
+                "Timed out waiting for ACP output. Observed: " +
+                string.Join(Environment.NewLine, output.Select(item => item.GetRawText())));
         }
 
         return output.First(predicate);

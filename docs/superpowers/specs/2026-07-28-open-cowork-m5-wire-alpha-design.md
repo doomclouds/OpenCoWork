@@ -2,12 +2,14 @@
 
 ## 文档状态
 
-- 状态：已确认，待实现
+- 状态：已完成并归档
 - 日期：2026-07-28
 - 所属里程碑：OpenCoWork Runtime 1.0 / M5
 - 第一真实客户端：OpenCoWork Desktop
 - 对应计划：
   [M5 Wire Alpha 实施计划](../plans/2026-07-28-open-cowork-m5-wire-alpha-implementation-plan.md)
+- 对应归档：
+  [M5 Wire Alpha 交付归档](../archives/2026-07/2026-07-28-open-cowork-m5-wire-alpha-archives.md)
 - 官方 ACP 基线：
   [ACP v1 Overview](https://github.com/agentclientprotocol/agent-client-protocol/blob/main/docs/protocol/v1/overview.mdx)
 
@@ -350,8 +352,9 @@ host。进程关闭时：
 `OpenCoWork.Protocol.TestClient` 作为进程级黑盒工具覆盖 stdio、WebSocket、ACP、
 重连、慢客户端、取消和脱敏 transcript。它不是生产 Desktop SDK。
 
-M5-ACC-002 需要 `osx-arm64` 与 `win-x64` 真机证据。交叉 publish 只证明产物可
-生成；缺少对应平台真机运行时，M5 必须保持 Pending/Deferred。
+M5-ACC-002 需要 `osx-arm64` 与 `win-x64` 真机证据。两端发布目录 TestClient
+均已真实运行通过，状态为 `Passed`；交叉 publish 仍不能替代后续 M10 最终发布
+候选复验。
 
 ## 10. 冻结结论
 

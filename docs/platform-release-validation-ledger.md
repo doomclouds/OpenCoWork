@@ -46,51 +46,56 @@ Passed`，不得把目标平台状态改为 `Passed`。M10 必须在最终发布
 | M2 Durable Session Core | `osx-arm64` | Passed | `7ae53f2de59f4959b2097f1837e28a95d6db81ae` + Source Patch SHA-256 `c2d3a54e9455d16f90db1f5fb21f8923dbb2a120101e773ed54f54335b761010` | Apple Silicon macOS 26.5.2；.NET SDK `10.0.302`；Runtime `10.0.10` | 默认与大小写敏感 APFS 各 139 项测试、Journal/SQLite/并发/恢复/Symlink、Mach-O arm64 发布目录 `doctor --json` | [M2 交付归档](superpowers/archives/2026-07/2026-07-26-open-cowork-m2-durable-session-core-archives.md) |
 | M3 Agent Runtime Alpha | `win-x64` | Not Required | — | — | M3 冻结边界只要求首个真实 Provider；Windows Provider 兼容性进入独立待验证清单 | [M3 交付归档](superpowers/archives/2026-07/2026-07-27-open-cowork-m3-agent-runtime-alpha-archives.md) |
 | M3 Agent Runtime Alpha | `osx-arm64` | Passed | `3da2e47f1a917529e3264535b7f9efed66d1b2bb` | Apple Silicon macOS；.NET SDK `10.0.302`；Runtime `10.0.10` | 183 项离线测试、`osx-arm64` publish、DeepSeek Pro/Flash 真实冒烟、Usage 对账与 Secret Canary | [M3 交付归档](superpowers/archives/2026-07/2026-07-27-open-cowork-m3-agent-runtime-alpha-archives.md) |
-| M4 Tool Runtime Alpha | `win-x64` | Pending | 产品基线 `d236f29`；交叉发布已通过 | 真实环境待登记 | M4 已按用户确认的延期边界归档；仍待完整离线回归、PowerShell Host、File/Shell/Web 发布目录 Smoke、输出超限/取消后的进程树残留和 Secret Canary，交叉发布不计真机通过 | [M4 交付归档](superpowers/archives/2026-07/2026-07-28-open-cowork-m4-tool-runtime-alpha-archives.md) |
+| M4 Tool Runtime Alpha | `win-x64` | Passed | `9cf7e1e366d04fd63ac55906924ea0dde630321d` + Source/Test Patch SHA-256 `848ec5c02b1ef9be5afc7d9e1ffeccfa74539d3d2978b09fa9aa6f96438b1725` | Windows 11 Home `10.0.26200` x64；.NET SDK `10.0.302`；Runtime `10.0.10` | 280 项离线测试、Release build 0/0、App `win-x64` publish、发布目录真实 PTY 审批链、File 原子写、`powershell.exe` 回退、Web 私网拒绝、输出超限/取消进程树清理与全表面 Secret Canary | [M4 交付归档](superpowers/archives/2026-07/2026-07-28-open-cowork-m4-tool-runtime-alpha-archives.md) |
 | M4 Tool Runtime Alpha | `osx-arm64` | Passed | 产品基线 `d236f29` | Apple Silicon macOS 26.5.2；.NET SDK `10.0.302`；Runtime `10.0.10` | 259 项离线测试、Release build 0/0、Mach-O arm64 发布目录真实 CLI 审批链、File 原子写、`/bin/zsh`、Web 私网拒绝、进程树清理与全表面 Secret Canary | [M4 交付归档](superpowers/archives/2026-07/2026-07-28-open-cowork-m4-tool-runtime-alpha-archives.md) |
-| M5 OpenCoWork Wire Alpha | `win-x64` | Pending | 产品基线 `882efd9c22e2323060d23938501191dcc409b981`；App/TestClient 交叉发布已通过 | 真实环境待登记 | App 与 Protocol TestClient 已生成 PE32+ x86-64 产物；仍待 Windows 真机 Release 回归、stdio/ACP/WebSocket、Bearer Header、重连、慢读端、取消、Secret Canary 与进程残留验证，交叉发布不计真机通过 | [M5 实施计划 Outcome 6](superpowers/plans/2026-07-28-open-cowork-m5-wire-alpha-implementation-plan.md) |
+| M5 OpenCoWork Wire Alpha | `win-x64` | Passed | `9cf7e1e366d04fd63ac55906924ea0dde630321d` + Source/Test Patch SHA-256 `848ec5c02b1ef9be5afc7d9e1ffeccfa74539d3d2978b09fa9aa6f96438b1725` | Windows 11 Home `10.0.26200` x64；.NET SDK `10.0.302`；Runtime `10.0.10` | 280 项离线测试、Release build 0/0、App/TestClient `win-x64` 发布目录真实运行；Wire stdio、ACP v1、loopback WebSocket Bearer Header、重连去重、慢读端、业务取消、Secret Canary 与子进程回收全部通过 | [M5 交付归档](superpowers/archives/2026-07/2026-07-28-open-cowork-m5-wire-alpha-archives.md) |
 | M5 OpenCoWork Wire Alpha | `osx-arm64` | Passed | 产品基线 `882efd9c22e2323060d23938501191dcc409b981` | Apple Silicon macOS 26.5.2 (`25F84`)；.NET SDK `10.0.302`；Runtime `10.0.10` | 280 项离线测试、Release build 0/0、App/TestClient Mach-O arm64 发布目录真实运行；Wire stdio、ACP v1、loopback WebSocket Bearer Header、重连去重、慢读端、业务取消、Secret Canary 与子进程回收全部通过 | [M5 实施计划 Outcome 6](superpowers/plans/2026-07-28-open-cowork-m5-wire-alpha-implementation-plan.md) |
 | M10 OpenCoWork 1.0 Closure | `win-x64` | Pending | 最终发布候选待定 | 待登记 | 安装、升级、迁移、恢复、安全、性能、签名和完整发布候选验收 | [Runtime 1.0 里程碑](milestones/2026-07/open-cowork-runtime-1-0/README.md) |
 | M10 OpenCoWork 1.0 Closure | `osx-arm64` | Pending | 最终发布候选待定 | 待登记 | 安装、升级、迁移、恢复、安全、性能、签名/公证和完整发布候选验收 | [Runtime 1.0 里程碑](milestones/2026-07/open-cowork-runtime-1-0/README.md) |
 
-## M4 Windows 后续验证项
+## M4 Windows 验证结果（2026-07-29）
 
-M4 功能需求已按用户确认的延期边界关闭，`win-x64` 真机状态仍为 `Pending`。
-后续集中验证必须至少包含：
+- 环境：Windows 11 Home `10.0.26200` x64；.NET SDK `10.0.302`；
+  Runtime `10.0.10`；`pwsh` 不存在，实际 Shell Host 为系统
+  `powershell.exe`。
+- 基线：
+  `9cf7e1e366d04fd63ac55906924ea0dde630321d`；验证时 Source/Test Patch
+  SHA-256：
+  `848ec5c02b1ef9be5afc7d9e1ffeccfa74539d3d2978b09fa9aa6f96438b1725`。
+- `dotnet test OpenCoWork.slnx -c Release --no-restore
+  --blame-hang-timeout 90s --blame-hang-dump-type none`：22.440 秒，
+  Core `221`、Integration `24`、Generators `15`、Protocol `15`、
+  Architecture `5`，合计 `280` passed / `0` failed / `0` skipped。
+- `dotnet build OpenCoWork.slnx -c Release --no-restore`：2.756 秒，
+  `0` warning / `0` error。
+- App `win-x64` framework-dependent publish 成功；发布物
+  `opencowork.exe` SHA-256 为
+  `11F7F38EED98FC44C3845A3728AF522B8F497D1F83CEA75D3D58F527EC8C6AAA`，
+  发布目录 `--version` 返回 `opencowork 0.1.0`。
+- `ToolRuntimeIntegrationTests.Chat_cli_resolves_shell_approval_and_resumes_the_turn`
+  为 `1` passed；Shell Host、Credential 移除、输出上限和取消进程树专项为
+  `4` passed。
+- 发布目录真实 PTY 在 31.333 秒内完成三次 CLI Approval/Resume、File 写入、
+  `powershell.exe` Shell、Web 私网拒绝和 Tool Result 回注。Shell 证据为
+  `Desktop|shell-ok|True`，Web 为 `tool.networkTargetDenied`。
+- Secret Canary 未命中 Journal、SQLite、Session Event、Provider Tool Message、
+  日志、stdout/stderr 或验证目录；退出后无 `opencowork`/PowerShell 残留。
+- `M4-ACC-006`、`M4-ACC-009` 已由 `Deferred` 改为 `Passed`。M10 仍须在最终
+  发布候选上重跑完整双平台验收。
 
-1. `dotnet test OpenCoWork.slnx -c Release`
-2. `dotnet build OpenCoWork.slnx -c Release --no-restore`
-3. `dotnet publish src/OpenCoWork.App/OpenCoWork.App.csproj -c Release -r win-x64 --self-contained false`
-4. `ToolRuntimeIntegrationTests` 全部通过；
-5. 发布目录真实完成 File、Shell、Web 和 CLI Approval/Resume Smoke；
-6. 确认 Shell 实际宿主优先为 `pwsh`、缺失时为 `powershell.exe`；
-7. 确认输出超限与取消后父子进程均无残留；
-8. 对 Journal、SQLite、Session Event、Provider Tool Message、日志、stdout、
-   stderr 和测试目录执行 Secret Canary 零命中扫描；
-9. 记录 Windows 版本、CPU 架构、SDK/Runtime、Commit SHA、测试计数和执行时间。
+## M5 Windows 验证结果（2026-07-29）
 
-完成后才能把 `M4-ACC-006`、`M4-ACC-009` 从 `Deferred` 改为 `Passed`，并回写
-M4 交付归档和本台账。该缺口不再阻止 M4 功能需求归档，但在补验前不得声明
-Windows 真机通过，也不能关闭 M10 双平台发布候选。
-
-## M5 Windows 后续验证项
-
-M5 当前为 `8 Passed / 1 Planned`，`win-x64` 真机状态为 `Pending`，未取得用户对
-该缺口的延期确认，因此 M5 保持 `In Progress` 且不创建交付归档。后续必须在
-Windows x64 真机对基线提交或更新后的干净提交执行：
-
-1. `dotnet test OpenCoWork.slnx -c Release --no-restore`；
-2. `dotnet build OpenCoWork.slnx -c Release --no-restore`；
-3. 分别发布 `OpenCoWork.App` 与 `OpenCoWork.Protocol.TestClient` 的
-   `win-x64` framework-dependent 产物；
-4. 从发布目录运行 TestClient，覆盖 Wire stdio、ACP v1、loopback WebSocket、
-   Bearer Header 拒绝、重连去重、慢读端和业务取消；
-5. 对协议、stdout、stderr、日志、Journal、SQLite 与配置执行 Secret Canary
-   零命中扫描，并确认所有子进程均已退出；
-6. 记录 Windows 版本、架构、SDK/Runtime、Commit SHA、测试计数与运行时间。
-
-完成后才能把 `M5-ACC-002` 从 `Planned` 改为 `Passed`、把 M5 的 Windows 行改为
-`Passed`，并创建 M5 交付归档、关闭里程碑 Slice。
+- 复用上述 Windows 环境、基线、280 项全量回归和 Release build 结果。
+- App 与 Protocol TestClient 均完成 `win-x64` framework-dependent publish；
+  TestClient `OpenCoWork.Protocol.TestClient.exe` SHA-256 为
+  `F329FE294C0C348C4B7C040015ACA23E5BFA8E7AD97C2C05AA7AAB14B62F43E8`。
+- 从 TestClient 发布目录运行真实 `opencowork.exe`，5.202 秒内通过
+  `wire-stdio-reconnect-cancel`、`acp-v1-reconnect-cancel`、
+  `wire-websocket-auth-slow-reader` 和 `secret-canary`。
+- Protocol/ACP/stdout/stderr/日志/Journal/SQLite/配置 Secret Canary 零命中；
+  TestClient 退出后无新 `opencowork` 子进程。
+- `M5-ACC-002` 已由 `Planned` 改为 `Passed`，M5 为
+  `9 Passed / 0 Planned`，交付归档和里程碑 Slice 已关闭。
 
 ## 更新规则
 

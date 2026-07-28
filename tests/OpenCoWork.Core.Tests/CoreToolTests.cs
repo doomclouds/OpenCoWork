@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -93,6 +94,8 @@ public sealed partial class CoreToolTests
         var outside = Path.Combine(
             Path.GetTempPath(),
             $"opencowork-core-file-outside-{Guid.NewGuid():N}");
+        var escape = Path.Combine(directory, "escape");
+        var dangling = Path.Combine(directory, "dangling");
         Directory.CreateDirectory(outside);
         try
         {
@@ -105,12 +108,12 @@ public sealed partial class CoreToolTests
                 Path.Combine(directory, ".git", "secret.txt"),
                 "secret",
                 cancellationToken);
-            Directory.CreateSymbolicLink(
-                Path.Combine(directory, "escape"),
-                outside);
-            Directory.CreateSymbolicLink(
-                Path.Combine(directory, "dangling"),
-                Path.Combine(outside, "missing"));
+            CreateDirectoryLink(escape, outside);
+            CreateDirectoryLink(
+                dangling,
+                OperatingSystem.IsWindows()
+                    ? outside
+                    : Path.Combine(outside, "missing"));
             var runtime = new ToolRuntime(new OpenCoWorkPaths(directory));
 
             foreach (var path in new[]
@@ -142,6 +145,17 @@ public sealed partial class CoreToolTests
         }
         finally
         {
+            foreach (var link in new[] { escape, dangling })
+            {
+                try
+                {
+                    Directory.Delete(link);
+                }
+                catch (DirectoryNotFoundException)
+                {
+                }
+            }
+
             Directory.Delete(directory, recursive: true);
             Directory.Delete(outside, recursive: true);
         }
@@ -366,9 +380,21 @@ public sealed partial class CoreToolTests
                     {
                         while (true)
                         {
-                            observed.Add(await File.ReadAllTextAsync(
-                                path,
-                                finished.Token));
+                            try
+                            {
+                                await using var stream = new FileStream(
+                                    path,
+                                    FileMode.Open,
+                                    FileAccess.Read,
+                                    FileShare.ReadWrite | FileShare.Delete,
+                                    4096,
+                                    FileOptions.Asynchronous);
+                                using var reader = new StreamReader(stream);
+                                observed.Add(await reader.ReadToEndAsync(finished.Token));
+                            }
+                            catch (IOException) when (!finished.IsCancellationRequested)
+                            {
+                            }
                         }
                     }
                     catch (OperationCanceledException)
@@ -390,7 +416,9 @@ public sealed partial class CoreToolTests
             finished.Cancel();
             await reader;
 
-            Assert.True(result.IsSuccess);
+            Assert.True(
+                result.IsSuccess,
+                $"{result.Error?.Code}: {result.Error?.Message}");
             Assert.All(
                 observed,
                 value => Assert.True(
@@ -429,6 +457,31 @@ public sealed partial class CoreToolTests
         Directory.CreateDirectory(directory);
         Directory.CreateDirectory(Path.Combine(directory, ".opencowork"));
         return directory;
+    }
+
+    private static void CreateDirectoryLink(string path, string target)
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            Directory.CreateSymbolicLink(path, target);
+            return;
+        }
+
+        using var process = Process.Start(new ProcessStartInfo
+        {
+            FileName = "cmd.exe",
+            Arguments = $"/d /c mklink /J \"{path}\" \"{target}\"",
+            CreateNoWindow = true,
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+        }) ?? throw new InvalidOperationException("Could not start mklink.");
+
+        process.WaitForExit();
+        if (process.ExitCode != 0)
+        {
+            throw new IOException(process.StandardError.ReadToEnd());
+        }
     }
 
     private static ValueTask<ToolBindingResult> InvokeAsync(

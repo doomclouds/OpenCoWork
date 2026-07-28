@@ -6,6 +6,8 @@
 - 日期：2026-07-25
 - 修订：2026-07-28，按 M5 Desktop-first 方案细化既有九项验收，并回填
   `8 Passed / 1 Planned` 的实现证据；不新增或重排 Acceptance ID
+- 修订：2026-07-29，补齐 M4/M5 Windows 真机证据；M4、M5 验收全部
+  `Passed`，不新增或重排 Acceptance ID
 - 所属里程碑：OpenCoWork Runtime 1.0
 - 契约规格：
   [OpenCoWork M0 Contract Freeze](2026-07-25-open-cowork-m0-contract-freeze-design.md)
@@ -63,6 +65,13 @@ Status 使用 `Passed`、`Planned`、`Failed`、`Deferred`、`Superseded`。
 [`docs/platform-release-validation-ledger.md`](../../platform-release-validation-ledger.md)
 后续集中补验。平台状态保持 `Pending`，不得对外宣称 Windows 已通过，且 M10
 关闭前必须补齐。
+
+2026-07-29 已在 Windows 11 x64 真机完成 M4/M5 补验：
+`M4-ACC-006`、`M4-ACC-009` 由 `Deferred` 改为 `Passed`，
+`M5-ACC-002` 由 `Planned` 改为 `Passed`。验证基线、Source/Test Patch、
+环境、测试计数、发布物摘要和发布目录场景见
+[`docs/platform-release-validation-ledger.md`](../../platform-release-validation-ledger.md)；
+M10 仍须在最终发布候选上重跑双平台验收。
 
 ## 2. M0 - Contract Freeze（8）
 
@@ -127,10 +136,10 @@ Status 使用 `Passed`、`Planned`、`Failed`、`Deferred`、`Superseded`。
 | M4-ACC-003 | ToolInvocationPipeline 的阶段顺序不可旁路，所有阶段可观测。 | CAP-033 | AutomatedTest | All | `ToolInvocationPipelineTests` 的逐阶段 Trace、顺序与旁路防护。 | Passed | — |
 | M4-ACC-004 | Audience、Exposure、Lease、Authority、Schema、Policy 拒绝均有稳定错误码。 | CAP-033, CAP-034 | SecurityTest | All | 拒绝矩阵、Schema/Policy 失败和稳定错误契约测试。 | Passed | — |
 | M4-ACC-005 | Hook 和 Approval 不能扩大权限，拒绝调用同样产生 Started/Terminal 审计。 | CAP-034 | SecurityTest | All | Authority 交集、恶意 Hook、重复审批和 CLI Approval/Resume 测试。 | Passed | — |
-| M4-ACC-006 | Timeout 与 Cancellation 贯穿 Provider、Tool 和子进程并进入单一终态。 | CAP-035 | FaultInjection | DualPlatform | 全阶段故障注入与 `osx-arm64` 进程树残留通过；`win-x64` 真机部分见双平台台账，保持 `Pending`。 | Deferred | — |
+| M4-ACC-006 | Timeout 与 Cancellation 贯穿 Provider、Tool 和子进程并进入单一终态。 | CAP-035 | FaultInjection | DualPlatform | 全阶段故障注入与双平台真实进程树残留通过；Windows 输出上限/取消专项见双平台台账。 | Passed | — |
 | M4-ACC-007 | 非幂等副作用在结果不明时不自动重试，并产生 `tool.outcomeUnknown`。 | CAP-035 | FaultInjection | All | Safe/Unsafe 恢复、提交窗口和副作用唯一性故障注入。 | Passed | — |
 | M4-ACC-008 | Plan 模式不能调用写入、执行或网络副作用工具。 | CAP-030 | SecurityTest | All | `ToolSnapshotTests` 的 Mode、Effect、Authority 和 Provider 名称矩阵。 | Passed | — |
-| M4-ACC-009 | 最小 File、Shell、Web 工具在双平台遵守路径、进程、权限和输出限制。 | CAP-036 | RealPlatformValidation | DualPlatform | `osx-arm64` 发布目录 File/zsh/Web 实跑通过；Windows PowerShell 真机部分见双平台台账，保持 `Pending`。 | Deferred | — |
+| M4-ACC-009 | 最小 File、Shell、Web 工具在双平台遵守路径、进程、权限和输出限制。 | CAP-036 | RealPlatformValidation | DualPlatform | `osx-arm64` File/zsh/Web 与 `win-x64` File/PowerShell/Web 发布目录真实 CLI 审批链通过。 | Passed | — |
 | M4-ACC-010 | 模型重试、恢复和重复 Tool Call ID 不会重复已提交副作用。 | CAP-032, CAP-033, CAP-035 | FaultInjection | All | 重复 Call ID、Journal 重放、Checkpoint 恢复和副作用计数测试。 | Passed | — |
 
 ## 7. M5 - OpenCoWork Wire Alpha（9）
@@ -138,7 +147,7 @@ Status 使用 `Passed`、`Planned`、`Failed`、`Deferred`、`Superseded`。
 | AcceptanceId | Requirement | CapabilityIds | EvidenceType | Platforms | ExpectedEvidence | Status | SupersededBy |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | M5-ACC-001 | 未 initialize 的业务请求被拒绝，协商结果固定版本、真实能力、限制和进程绑定 Workspace。 | CAP-043 | ContractSnapshot | All | `OpenCoWorkJsonRpcTests` 的 initialize 正反例、Workspace 边界与快照；基线 `882efd9`。 | Passed | — |
-| M5-ACC-002 | stdio JSONL 满足 stdout/stderr 隔离；loopback WebSocket 只接受 Bearer Header Token；两者遵守 UTF-8、上限和慢客户端规则。 | CAP-044 | SecurityTest | DualPlatform | `ProtocolServerTests`、`ProtocolProcessIntegrationTests` 与 Protocol TestClient；`osx-arm64` 真机通过，`win-x64` 仅交叉发布，见[双平台台账](../../platform-release-validation-ledger.md)。 | Planned | — |
+| M5-ACC-002 | stdio JSONL 满足 stdout/stderr 隔离；loopback WebSocket 只接受 Bearer Header Token；两者遵守 UTF-8、上限和慢客户端规则。 | CAP-044 | SecurityTest | DualPlatform | `ProtocolServerTests`、`ProtocolProcessIntegrationTests` 与双平台发布目录 Protocol TestClient 均通过，见[双平台台账](../../platform-release-validation-ledger.md)。 | Passed | — |
 | M5-ACC-003 | M5 核心 method/event（含 history/model/mode/delete prepare）全部存在且 Generated Wire Catalog 无重复。 | CAP-045 | ContractSnapshot | All | `RuntimeCatalogGeneratorTests`、`OpenCoWorkJsonRpcTests` 与 Generated Wire Catalog 快照。 | Passed | — |
 | M5-ACC-004 | Desktop 主路径从 create/history/subscribe/start 到 Turn 终态、Approval、Input、Queue、Steer 一致，start 提交即返回。 | CAP-019, CAP-045 | AutomatedTest | All | `OpenCoWorkJsonRpcTests` 全方法矩阵与 Protocol TestClient 发布目录进程场景。 | Passed | — |
 | M5-ACC-005 | subscribe 原子返回快照+Sequence，afterSequence 重连不丢失且可去重。 | CAP-046 | FaultInjection | All | `OpenCoWorkJsonRpcTests` 断连/追赶边界与 TestClient `resumeAfterSequence(0)` 严格递增、零重复检查。 | Passed | — |
@@ -231,14 +240,14 @@ Status 使用 `Passed`、`Planned`、`Failed`、`Deferred`、`Superseded`。
 | M1 | 8 | Passed |
 | M2 | 10 | Passed |
 | M3 | 8 | Passed |
-| M4 | 10 | 8 Passed / 2 Deferred |
-| M5 | 9 | Planned |
+| M4 | 10 | Passed |
+| M5 | 9 | Passed |
 | M6 | 10 | Planned |
 | M7 | 10 | Planned |
 | M8 | 9 | Planned |
 | M9 | 10 | Planned |
 | M10 | 12 | Planned |
-| **Total** | **104** | **42 Passed / 2 Deferred / 60 Planned** |
+| **Total** | **104** | **53 Passed / 51 Planned** |
 
 每个 Slice 标记 Done 前必须：
 
