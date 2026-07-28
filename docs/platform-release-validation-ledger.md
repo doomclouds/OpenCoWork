@@ -48,6 +48,8 @@ Passed`，不得把目标平台状态改为 `Passed`。M10 必须在最终发布
 | M3 Agent Runtime Alpha | `osx-arm64` | Passed | `3da2e47f1a917529e3264535b7f9efed66d1b2bb` | Apple Silicon macOS；.NET SDK `10.0.302`；Runtime `10.0.10` | 183 项离线测试、`osx-arm64` publish、DeepSeek Pro/Flash 真实冒烟、Usage 对账与 Secret Canary | [M3 交付归档](superpowers/archives/2026-07/2026-07-27-open-cowork-m3-agent-runtime-alpha-archives.md) |
 | M4 Tool Runtime Alpha | `win-x64` | Pending | 产品基线 `d236f29`；交叉发布已通过 | 真实环境待登记 | M4 已按用户确认的延期边界归档；仍待完整离线回归、PowerShell Host、File/Shell/Web 发布目录 Smoke、输出超限/取消后的进程树残留和 Secret Canary，交叉发布不计真机通过 | [M4 交付归档](superpowers/archives/2026-07/2026-07-28-open-cowork-m4-tool-runtime-alpha-archives.md) |
 | M4 Tool Runtime Alpha | `osx-arm64` | Passed | 产品基线 `d236f29` | Apple Silicon macOS 26.5.2；.NET SDK `10.0.302`；Runtime `10.0.10` | 259 项离线测试、Release build 0/0、Mach-O arm64 发布目录真实 CLI 审批链、File 原子写、`/bin/zsh`、Web 私网拒绝、进程树清理与全表面 Secret Canary | [M4 交付归档](superpowers/archives/2026-07/2026-07-28-open-cowork-m4-tool-runtime-alpha-archives.md) |
+| M5 OpenCoWork Wire Alpha | `win-x64` | Pending | 产品基线 `882efd9c22e2323060d23938501191dcc409b981`；App/TestClient 交叉发布已通过 | 真实环境待登记 | App 与 Protocol TestClient 已生成 PE32+ x86-64 产物；仍待 Windows 真机 Release 回归、stdio/ACP/WebSocket、Bearer Header、重连、慢读端、取消、Secret Canary 与进程残留验证，交叉发布不计真机通过 | [M5 实施计划 Outcome 6](superpowers/plans/2026-07-28-open-cowork-m5-wire-alpha-implementation-plan.md) |
+| M5 OpenCoWork Wire Alpha | `osx-arm64` | Passed | 产品基线 `882efd9c22e2323060d23938501191dcc409b981` | Apple Silicon macOS 26.5.2 (`25F84`)；.NET SDK `10.0.302`；Runtime `10.0.10` | 280 项离线测试、Release build 0/0、App/TestClient Mach-O arm64 发布目录真实运行；Wire stdio、ACP v1、loopback WebSocket Bearer Header、重连去重、慢读端、业务取消、Secret Canary 与子进程回收全部通过 | [M5 实施计划 Outcome 6](superpowers/plans/2026-07-28-open-cowork-m5-wire-alpha-implementation-plan.md) |
 | M10 OpenCoWork 1.0 Closure | `win-x64` | Pending | 最终发布候选待定 | 待登记 | 安装、升级、迁移、恢复、安全、性能、签名和完整发布候选验收 | [Runtime 1.0 里程碑](milestones/2026-07/open-cowork-runtime-1-0/README.md) |
 | M10 OpenCoWork 1.0 Closure | `osx-arm64` | Pending | 最终发布候选待定 | 待登记 | 安装、升级、迁移、恢复、安全、性能、签名/公证和完整发布候选验收 | [Runtime 1.0 里程碑](milestones/2026-07/open-cowork-runtime-1-0/README.md) |
 
@@ -70,6 +72,25 @@ M4 功能需求已按用户确认的延期边界关闭，`win-x64` 真机状态�
 完成后才能把 `M4-ACC-006`、`M4-ACC-009` 从 `Deferred` 改为 `Passed`，并回写
 M4 交付归档和本台账。该缺口不再阻止 M4 功能需求归档，但在补验前不得声明
 Windows 真机通过，也不能关闭 M10 双平台发布候选。
+
+## M5 Windows 后续验证项
+
+M5 当前为 `8 Passed / 1 Planned`，`win-x64` 真机状态为 `Pending`，未取得用户对
+该缺口的延期确认，因此 M5 保持 `In Progress` 且不创建交付归档。后续必须在
+Windows x64 真机对基线提交或更新后的干净提交执行：
+
+1. `dotnet test OpenCoWork.slnx -c Release --no-restore`；
+2. `dotnet build OpenCoWork.slnx -c Release --no-restore`；
+3. 分别发布 `OpenCoWork.App` 与 `OpenCoWork.Protocol.TestClient` 的
+   `win-x64` framework-dependent 产物；
+4. 从发布目录运行 TestClient，覆盖 Wire stdio、ACP v1、loopback WebSocket、
+   Bearer Header 拒绝、重连去重、慢读端和业务取消；
+5. 对协议、stdout、stderr、日志、Journal、SQLite 与配置执行 Secret Canary
+   零命中扫描，并确认所有子进程均已退出；
+6. 记录 Windows 版本、架构、SDK/Runtime、Commit SHA、测试计数与运行时间。
+
+完成后才能把 `M5-ACC-002` 从 `Planned` 改为 `Passed`、把 M5 的 Windows 行改为
+`Passed`，并创建 M5 交付归档、关闭里程碑 Slice。
 
 ## 更新规则
 

@@ -4,8 +4,8 @@
 
 - 状态：已冻结
 - 日期：2026-07-25
-- 修订：2026-07-28，按 M5 Desktop-first 方案细化既有九项验收，不新增或重排
-  Acceptance ID
+- 修订：2026-07-28，按 M5 Desktop-first 方案细化既有九项验收，并回填
+  `8 Passed / 1 Planned` 的实现证据；不新增或重排 Acceptance ID
 - 所属里程碑：OpenCoWork Runtime 1.0
 - 契约规格：
   [OpenCoWork M0 Contract Freeze](2026-07-25-open-cowork-m0-contract-freeze-design.md)
@@ -137,15 +137,15 @@ Status 使用 `Passed`、`Planned`、`Failed`、`Deferred`、`Superseded`。
 
 | AcceptanceId | Requirement | CapabilityIds | EvidenceType | Platforms | ExpectedEvidence | Status | SupersededBy |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| M5-ACC-001 | 未 initialize 的业务请求被拒绝，协商结果固定版本、真实能力、限制和进程绑定 Workspace。 | CAP-043 | ContractSnapshot | All | initialize 正反例、跨 Workspace 拒绝与协议快照。 | Planned | — |
-| M5-ACC-002 | stdio JSONL 满足 stdout/stderr 隔离；loopback WebSocket 只接受 Bearer Header Token；两者遵守 UTF-8、上限和慢客户端规则。 | CAP-044 | SecurityTest | DualPlatform | Protocol TestClient Transport 与敏感信息矩阵。 | Planned | — |
-| M5-ACC-003 | M5 核心 method/event（含 history/model/mode/delete prepare）全部存在且 Generated Wire Catalog 无重复。 | CAP-045 | ContractSnapshot | All | Catalog Snapshot 与重复贡献诊断。 | Planned | — |
-| M5-ACC-004 | Desktop 主路径从 create/history/subscribe/start 到 Turn 终态、Approval、Input、Queue、Steer 一致，start 提交即返回。 | CAP-019, CAP-045 | AutomatedTest | All | Protocol TestClient 进程级场景报告。 | Planned | — |
-| M5-ACC-005 | subscribe 原子返回快照+Sequence，afterSequence 重连不丢失且可去重。 | CAP-046 | FaultInjection | All | 断连窗口、慢消费和重复事件测试。 | Planned | — |
-| M5-ACC-006 | Request ID、idempotencyKey、expectedSequence 和业务 Cancel 各自语义独立。 | CAP-023, CAP-046 | ContractSnapshot | All | 并发/重复/取消协议矩阵。 | Planned | — |
-| M5-ACC-007 | ACP 稳定 v1 initialize/new/load/prompt/cancel/set_mode 正确映射且历史不重复；通用 UserInput 明确失败并取消。 | CAP-047 | AutomatedTest | All | ACP v1 Compatibility Harness 记录。 | Planned | — |
-| M5-ACC-008 | 稳定错误响应不包含堆栈、Secret、内部绝对路径或不透明异常文本。 | CAP-044, CAP-046 | SecurityTest | All | Error Snapshot 与敏感信息扫描。 | Planned | — |
-| M5-ACC-009 | Protocol/ACP 只调用 ISessionService，不直接写 Store，不建立第二套 Thread/Turn 状态机。 | CAP-019, CAP-047 | AutomatedTest | All | ArchitectureTests 与状态源调用图。 | Planned | — |
+| M5-ACC-001 | 未 initialize 的业务请求被拒绝，协商结果固定版本、真实能力、限制和进程绑定 Workspace。 | CAP-043 | ContractSnapshot | All | `OpenCoWorkJsonRpcTests` 的 initialize 正反例、Workspace 边界与快照；基线 `882efd9`。 | Passed | — |
+| M5-ACC-002 | stdio JSONL 满足 stdout/stderr 隔离；loopback WebSocket 只接受 Bearer Header Token；两者遵守 UTF-8、上限和慢客户端规则。 | CAP-044 | SecurityTest | DualPlatform | `ProtocolServerTests`、`ProtocolProcessIntegrationTests` 与 Protocol TestClient；`osx-arm64` 真机通过，`win-x64` 仅交叉发布，见[双平台台账](../../platform-release-validation-ledger.md)。 | Planned | — |
+| M5-ACC-003 | M5 核心 method/event（含 history/model/mode/delete prepare）全部存在且 Generated Wire Catalog 无重复。 | CAP-045 | ContractSnapshot | All | `RuntimeCatalogGeneratorTests`、`OpenCoWorkJsonRpcTests` 与 Generated Wire Catalog 快照。 | Passed | — |
+| M5-ACC-004 | Desktop 主路径从 create/history/subscribe/start 到 Turn 终态、Approval、Input、Queue、Steer 一致，start 提交即返回。 | CAP-019, CAP-045 | AutomatedTest | All | `OpenCoWorkJsonRpcTests` 全方法矩阵与 Protocol TestClient 发布目录进程场景。 | Passed | — |
+| M5-ACC-005 | subscribe 原子返回快照+Sequence，afterSequence 重连不丢失且可去重。 | CAP-046 | FaultInjection | All | `OpenCoWorkJsonRpcTests` 断连/追赶边界与 TestClient `resumeAfterSequence(0)` 严格递增、零重复检查。 | Passed | — |
+| M5-ACC-006 | Request ID、idempotencyKey、expectedSequence 和业务 Cancel 各自语义独立。 | CAP-023, CAP-046 | ContractSnapshot | All | `OpenCoWorkJsonRpcTests` 的请求取消、幂等与 sequence 冲突矩阵；TestClient Wire/ACP 业务取消。 | Passed | — |
+| M5-ACC-007 | ACP 稳定 v1 initialize/new/load/prompt/cancel/set_mode 正确映射且历史不重复；通用 UserInput 明确失败并取消。 | CAP-047 | AutomatedTest | All | `AcpConnectionTests` 6 项兼容性用例、进程测试与 TestClient new/prompt/cancel/reconnect/load。 | Passed | — |
+| M5-ACC-008 | 稳定错误响应不包含堆栈、Secret、内部绝对路径或不透明异常文本。 | CAP-044, CAP-046 | SecurityTest | All | Wire/ACP Error Snapshot、进程 stdout/stderr 隔离与 TestClient 对协议、日志、Journal、SQLite、配置的 Secret Canary 扫描。 | Passed | — |
+| M5-ACC-009 | Protocol/ACP 只调用 ISessionService，不直接写 Store，不建立第二套 Thread/Turn 状态机。 | CAP-019, CAP-047 | AutomatedTest | All | `ArchitectureTests` 5 项通过；`OpenCoWork.Protocol` 生产路径只依赖 Abstractions/`ISessionService`。 | Passed | — |
 
 ## 8. M6 - Capability Ecosystem（10）
 

@@ -48,10 +48,11 @@ Milestone standard: [README.md](README.md)
   - Completion signal: 固定工具管线、稳定错误、审批恢复、模式限制和副作用保护已完成；Windows 真机证据按用户确认保留在双平台台账后续补验。
 - [ ] 6. M5 - OpenCoWork Wire Alpha
   - Status: In Progress
+  - Acceptance: `8 Passed / 1 Planned`；`M5-ACC-002` 等待 `win-x64` 真机。
   - Related spec: docs/superpowers/specs/2026-07-28-open-cowork-m5-wire-alpha-design.md
   - Related plan: docs/superpowers/plans/2026-07-28-open-cowork-m5-wire-alpha-implementation-plan.md
   - Related archive: None yet.
-  - Completion signal: Desktop-first stdio/loopback WebSocket Wire、核心会话流与稳定 ACP v1 通过端到端契约和双平台真机验收。
+  - Completion signal: Desktop-first stdio/loopback WebSocket Wire、核心会话流与稳定 ACP v1 已通过全量回归和 `osx-arm64` 发布目录真机验收；`win-x64` 只完成交叉发布，待真机 TestClient 通过后关闭。
 - [ ] 7. M6 - Capability Ecosystem
   - Status: Not Started
   - Related spec: docs/superpowers/specs/2026-07-25-open-cowork-runtime-1-0-roadmap.md

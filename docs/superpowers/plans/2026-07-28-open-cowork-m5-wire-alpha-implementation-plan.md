@@ -80,6 +80,19 @@ win-x64 与 osx-arm64 真机证据进入平台台账。
 
 ### Outcome 6：黑盒验收与双平台证据
 
+**执行状态（2026-07-28，基线
+`882efd9c22e2323060d23938501191dcc409b981`）：**
+
+- Protocol TestClient 已在发布目录覆盖 Wire stdio、ACP v1、loopback WebSocket、
+  重连去重、慢读端、业务取消、Bearer Header 拒绝矩阵和 Secret Canary；
+- Release 全量回归为 280 passed，Release build 为 0 warning / 0 error；
+- `osx-arm64` App/TestClient 均确认是 Mach-O arm64，并在 Apple Silicon
+  macOS 26.5.2 真机通过全部 TestClient 场景；
+- `win-x64` App/TestClient 均交叉发布为 PE32+ x86-64，但缺 Windows 真机运行，
+  因此平台状态保持 `Pending`，`M5-ACC-002` 保持 `Planned`；
+- 其余八项 M5 Acceptance 已回填为 `Passed`；能力台账契约无需修订，M5
+  保持 `In Progress`，不创建完成归档。
+
 - Work:
   - 完成 `OpenCoWork.Protocol.TestClient` 的 stdio、WebSocket、ACP、重连、慢连接、
     cancel 和敏感信息扫描场景；
@@ -94,6 +107,7 @@ win-x64 与 osx-arm64 真机证据进入平台台账。
   - 真实 Provider 只验证用户显式激活的 provider/model/platform，其他项目不进入
     M5 完成声明。
 - Verify:
-  `dotnet restore OpenCoWork.sln && dotnet build OpenCoWork.sln -c Release --no-restore && dotnet test OpenCoWork.sln -c Release --no-build`；
+  `dotnet test OpenCoWork.slnx -c Release --no-restore` 与
+  `dotnet build OpenCoWork.slnx -c Release --no-restore`；
   对每个 RID 单独 restore/publish 后运行 Protocol TestClient，并把命令、平台、
   产物摘要和结果写入双平台台账。
