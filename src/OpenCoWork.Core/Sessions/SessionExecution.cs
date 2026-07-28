@@ -1333,7 +1333,7 @@ internal sealed partial class SessionService
         var checkpoint = intent.Checkpoint;
         if (!_agentInvocations.TryGetValue(turn.TurnId, out var invocation) ||
             turn.Status != TurnStatus.Running ||
-            checkpoint.SchemaVersion != 1 ||
+            checkpoint.SchemaVersion is not (1 or 2) ||
             string.IsNullOrWhiteSpace(checkpoint.Summary) ||
             checkpoint.SourceStartSequence <= 0 ||
             checkpoint.SourceEndSequence < checkpoint.SourceStartSequence ||
@@ -1357,13 +1357,7 @@ internal sealed partial class SessionService
                 checkpoint.SummarySha256,
                 CompactionCheckpointIntegrity.Sha256(checkpoint.Summary),
                 StringComparison.Ordinal) ||
-            !string.Equals(
-                checkpoint.SourceMessagesSha256,
-                CompactionCheckpointIntegrity.SourceMessagesSha256(
-                    _items.Values,
-                    checkpoint.SourceStartSequence,
-                    checkpoint.SourceEndSequence),
-                StringComparison.Ordinal))
+            !CompactionSourceMatches(checkpoint, _items.Values))
         {
             throw ExecutionError(
                 SessionErrorCodes.InvalidState,
@@ -2447,7 +2441,7 @@ internal sealed partial class SessionService
                     if (!_agentInvocations.TryGetValue(
                             compaction.TurnId,
                             out var compactionInvocation) ||
-                        compaction.Checkpoint.SchemaVersion != 1 ||
+                        compaction.Checkpoint.SchemaVersion is not (1 or 2) ||
                         string.IsNullOrWhiteSpace(compaction.Checkpoint.Summary) ||
                         compaction.Checkpoint.SourceStartSequence <= 0 ||
                         compaction.Checkpoint.SourceEndSequence <
@@ -2474,13 +2468,9 @@ internal sealed partial class SessionService
                             CompactionCheckpointIntegrity.Sha256(
                                 compaction.Checkpoint.Summary),
                             StringComparison.Ordinal) ||
-                        !string.Equals(
-                            compaction.Checkpoint.SourceMessagesSha256,
-                            CompactionCheckpointIntegrity.SourceMessagesSha256(
-                                _items.Values,
-                                compaction.Checkpoint.SourceStartSequence,
-                                compaction.Checkpoint.SourceEndSequence),
-                            StringComparison.Ordinal))
+                        !CompactionSourceMatches(
+                            compaction.Checkpoint,
+                            _items.Values))
                     {
                         throw new InvalidDataException(
                             "Journal contains an invalid compaction checkpoint.");
@@ -3937,6 +3927,31 @@ internal sealed partial class SessionService
             SessionItemType.SystemNotice => content is SystemNoticeContent,
             _ => false,
         };
+
+    private static bool CompactionSourceMatches(
+        CompactionCheckpointSnapshot checkpoint,
+        IEnumerable<SessionItemSnapshot> items)
+    {
+        try
+        {
+            return CompactionCheckpointIntegrity.SourceRangeIsClosed(
+                       items,
+                       checkpoint.SourceStartSequence,
+                       checkpoint.SourceEndSequence) &&
+                   string.Equals(
+                       checkpoint.SourceMessagesSha256,
+                       CompactionCheckpointIntegrity.SourceMessagesSha256(
+                           items,
+                           checkpoint.SourceStartSequence,
+                           checkpoint.SourceEndSequence,
+                           checkpoint.SchemaVersion),
+                       StringComparison.Ordinal);
+        }
+        catch (InvalidDataException)
+        {
+            return false;
+        }
+    }
 
     private static string? ContentText(SessionItemContent content) =>
         content switch

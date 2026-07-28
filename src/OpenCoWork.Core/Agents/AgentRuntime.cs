@@ -1,10 +1,13 @@
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using OpenCoWork.Abstractions;
 using OpenCoWork.Core.Configuration;
 using OpenCoWork.Core.Logging;
+using OpenCoWork.Core.Sessions;
 using OpenCoWork.Core.Tools;
 using OpenCoWork.Core.Workspaces;
 
@@ -186,6 +189,180 @@ internal enum AgentInvocationDraftDisposition
     CompactionRequired,
 }
 
+internal static class ProviderMessageHistory
+{
+    private static readonly JsonSerializerOptions JsonOptions = new()
+    {
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        Converters = { new JsonStringEnumConverter(JsonNamingPolicy.CamelCase) },
+    };
+
+    public static IReadOnlyList<ChatCompletionMessage> Build(
+        IEnumerable<SessionItemSnapshot> source)
+    {
+        var items = source
+            .Where(item =>
+                item.Status == SessionItemStatus.Completed &&
+                item.Type is
+                    SessionItemType.UserMessage or
+                    SessionItemType.AgentMessage or
+                    SessionItemType.ToolCall or
+                    SessionItemType.ToolResult)
+            .OrderBy(item => item.Sequence)
+            .ThenBy(item => item.ItemId)
+            .ToArray();
+        var byId = items.ToDictionary(item => item.ItemId);
+        var linkedAgentIds = items
+            .Where(item => item.Type == SessionItemType.ToolCall)
+            .Select(item => item.Content)
+            .OfType<ToolCallItemContent>()
+            .Where(content => content.AgentMessageItemId is not null)
+            .Select(content => content.AgentMessageItemId!.Value)
+            .ToHashSet();
+        var consumedResults = new HashSet<Guid>();
+        var messages = new List<ChatCompletionMessage>();
+        for (var index = 0; index < items.Length; index++)
+        {
+            var item = items[index];
+            switch (item.Type)
+            {
+                case SessionItemType.UserMessage:
+                    messages.Add(new ChatCompletionMessage(
+                        ChatCompletionMessageRole.User,
+                        Text(item)));
+                    break;
+                case SessionItemType.AgentMessage:
+                    if (!linkedAgentIds.Contains(item.ItemId))
+                    {
+                        messages.Add(new ChatCompletionMessage(
+                            ChatCompletionMessageRole.Assistant,
+                            Text(item)));
+                    }
+
+                    break;
+                case SessionItemType.ToolCall:
+                    AddToolGroup(
+                        items,
+                        byId,
+                        item,
+                        index,
+                        consumedResults,
+                        messages);
+                    break;
+                case SessionItemType.ToolResult:
+                    if (!consumedResults.Contains(item.ItemId))
+                    {
+                        throw InvalidHistory();
+                    }
+
+                    break;
+            }
+        }
+
+        return messages.AsReadOnly();
+    }
+
+    public static string ToolResultEnvelope(ToolResultSnapshot result)
+    {
+        ArgumentNullException.ThrowIfNull(result);
+        var value = JsonSerializer.SerializeToElement(result, JsonOptions);
+        return Encoding.UTF8.GetString(ThreadJournal.Canonicalize(value));
+    }
+
+    private static void AddToolGroup(
+        IReadOnlyList<SessionItemSnapshot> items,
+        IReadOnlyDictionary<Guid, SessionItemSnapshot> byId,
+        SessionItemSnapshot item,
+        int itemIndex,
+        HashSet<Guid> consumedResults,
+        List<ChatCompletionMessage> messages)
+    {
+        if (item.Content is not ToolCallItemContent toolCall ||
+            toolCall.Calls.Count == 0 ||
+            toolCall.Calls
+                .Select(call => call.ProviderToolCallId)
+                .Distinct(StringComparer.Ordinal)
+                .Count() != toolCall.Calls.Count)
+        {
+            throw InvalidHistory();
+        }
+
+        var content = string.Empty;
+        if (toolCall.AgentMessageItemId is { } agentItemId)
+        {
+            if (!byId.TryGetValue(agentItemId, out var agentItem) ||
+                agentItem.TurnId != item.TurnId ||
+                agentItem.Sequence >= item.Sequence ||
+                agentItem.Type != SessionItemType.AgentMessage)
+            {
+                throw InvalidHistory();
+            }
+
+            content = Text(agentItem);
+        }
+
+        messages.Add(new ChatCompletionMessage(
+            ChatCompletionMessageRole.Assistant,
+            content,
+            toolCall.Calls
+                .Select(call => new ChatCompletionToolCall(
+                    call.ProviderToolCallId,
+                    call.ProviderToolName,
+                    Encoding.UTF8.GetString(
+                        ThreadJournal.Canonicalize(call.Arguments))))
+                .ToArray()));
+
+        var resultIndex = 0;
+        for (var index = itemIndex + 1;
+             index < items.Count && resultIndex < toolCall.Calls.Count;
+             index++)
+        {
+            var candidate = items[index];
+            if (candidate.Type == SessionItemType.ToolResult)
+            {
+                if (candidate.TurnId != item.TurnId ||
+                    candidate.Content is not ToolResultItemContent result ||
+                    !string.Equals(
+                        result.Result.ProviderToolCallId,
+                        toolCall.Calls[resultIndex].ProviderToolCallId,
+                        StringComparison.Ordinal))
+                {
+                    throw InvalidHistory();
+                }
+
+                messages.Add(new ChatCompletionMessage(
+                    ChatCompletionMessageRole.Tool,
+                    ToolResultEnvelope(result.Result),
+                    ToolCallId: result.Result.ProviderToolCallId));
+                consumedResults.Add(candidate.ItemId);
+                resultIndex++;
+            }
+            else if (candidate.Type is
+                     SessionItemType.UserMessage or
+                     SessionItemType.AgentMessage or
+                     SessionItemType.ToolCall)
+            {
+                break;
+            }
+        }
+
+        if (resultIndex != toolCall.Calls.Count)
+        {
+            throw InvalidHistory();
+        }
+    }
+
+    private static string Text(SessionItemSnapshot item) =>
+        item.Content is TextItemContent text
+            ? text.Text
+            : throw InvalidHistory();
+
+    private static AgentPreparationException InvalidHistory() =>
+        new(
+            AgentErrorCodes.ContextInputInvalid,
+            "Model history contains an invalid tool message group.");
+}
+
 internal sealed record AgentInvocationDraft(
     AgentInvocationDraftDisposition Disposition,
     ProviderModelRegistration Provider,
@@ -272,13 +449,19 @@ internal sealed class AgentFactory(
         var messages = BuildMessages(
             session,
             responsePrompt.SystemMessage);
-        var inputTokenCount = CountPromptTokens(provider.Tokenizer, messages);
+        var inputTokenCount = CountPromptTokens(
+            provider.Tokenizer,
+            messages,
+            tools);
         var usableInputBudget =
             provider.ContextWindowTokens - provider.MaxOutputTokens;
-        var currentInput = messages[^1];
+        var currentMessages = ProviderMessageHistory.Build(
+            session.ModelHistory.Where(item =>
+                item.TurnId == session.Turn.TurnId));
         var fixedInputCount = CountPromptTokens(
             provider.Tokenizer,
-            [messages[0], currentInput]);
+            [messages[0], .. currentMessages],
+            tools);
         if (fixedInputCount > usableInputBudget)
         {
             throw new AgentPreparationException(
@@ -334,32 +517,15 @@ internal sealed class AgentFactory(
         }
 
         var currentUserMessageCount = 0;
-        foreach (var item in session.ModelHistory
-                     .Where(item =>
-                         item.Status == SessionItemStatus.Completed &&
-                         item.Sequence > sourceEndSequence)
-                     .OrderBy(item => item.Sequence)
-                     .ThenBy(item => item.ItemId))
+        var history = session.ModelHistory
+            .Where(item =>
+                item.Status == SessionItemStatus.Completed &&
+                item.Sequence > sourceEndSequence)
+            .OrderBy(item => item.Sequence)
+            .ThenBy(item => item.ItemId)
+            .ToArray();
+        foreach (var item in history)
         {
-            var role = item.Type switch
-            {
-                SessionItemType.UserMessage => ChatCompletionMessageRole.User,
-                SessionItemType.AgentMessage => ChatCompletionMessageRole.Assistant,
-                _ => (ChatCompletionMessageRole?)null,
-            };
-            if (role is null)
-            {
-                continue;
-            }
-
-            if (item.Content is not TextItemContent text)
-            {
-                throw new AgentPreparationException(
-                    AgentErrorCodes.ContextInputInvalid,
-                    "Model history contains invalid message content.");
-            }
-
-            messages.Add(new ChatCompletionMessage(role.Value, text.Text));
             if (item.TurnId == session.Turn.TurnId &&
                 item.Type == SessionItemType.UserMessage)
             {
@@ -367,8 +533,11 @@ internal sealed class AgentFactory(
             }
         }
 
+        messages.AddRange(ProviderMessageHistory.Build(history));
         if (currentUserMessageCount != 1 ||
-            messages[^1].Role != ChatCompletionMessageRole.User)
+            messages[^1].Role is not (
+                ChatCompletionMessageRole.User or
+                ChatCompletionMessageRole.Tool))
         {
             throw new AgentPreparationException(
                 AgentErrorCodes.ContextInputInvalid,
@@ -382,43 +551,63 @@ internal sealed class AgentFactory(
         CompactionCheckpointSnapshot checkpoint,
         AgentSession session,
         ProviderModelRegistration provider,
-        AgentPromptMaterialization compactionPrompt) =>
-        checkpoint.SchemaVersion == 1 &&
-        !string.IsNullOrWhiteSpace(checkpoint.Summary) &&
-        checkpoint.SourceStartSequence > 0 &&
-        checkpoint.SourceEndSequence >= checkpoint.SourceStartSequence &&
-        checkpoint.SummaryTokenCount ==
-        provider.Tokenizer.CountTokens(checkpoint.Summary) &&
-        string.Equals(
-            checkpoint.SummarySha256,
-            CompactionCheckpointIntegrity.Sha256(checkpoint.Summary),
-            StringComparison.Ordinal) &&
-        CompactionCheckpointIntegrity.IsLowerSha256(
-            checkpoint.SourceMessagesSha256) &&
-        string.Equals(
-            checkpoint.SourceMessagesSha256,
-            CompactionCheckpointIntegrity.SourceMessagesSha256(
-                session.ModelHistory,
-                checkpoint.SourceStartSequence,
-                checkpoint.SourceEndSequence),
-            StringComparison.Ordinal) &&
-        CompactionCheckpointIntegrity.IsValidSummary(checkpoint.Summary) &&
-        string.Equals(
-            checkpoint.SummaryPromptVersion,
-            compactionPrompt.Snapshot.Version,
-            StringComparison.Ordinal) &&
-        string.Equals(
-            checkpoint.TokenizerProfileId,
-            provider.TokenizerProfileId,
-            StringComparison.Ordinal) &&
-        string.Equals(
-            checkpoint.TokenizerProfileVersion,
-            provider.TokenizerProfileVersion,
-            StringComparison.Ordinal);
+        AgentPromptMaterialization compactionPrompt)
+    {
+        try
+        {
+            return checkpoint.SchemaVersion is 1 or 2 &&
+                   !string.IsNullOrWhiteSpace(checkpoint.Summary) &&
+                   checkpoint.SourceStartSequence > 0 &&
+                   checkpoint.SourceEndSequence >= checkpoint.SourceStartSequence &&
+                   CompactionCheckpointIntegrity.SourceRangeIsClosed(
+                       session.ModelHistory,
+                       checkpoint.SourceStartSequence,
+                       checkpoint.SourceEndSequence) &&
+                   checkpoint.SummaryTokenCount ==
+                   provider.Tokenizer.CountTokens(checkpoint.Summary) &&
+                   string.Equals(
+                       checkpoint.SummarySha256,
+                       CompactionCheckpointIntegrity.Sha256(checkpoint.Summary),
+                       StringComparison.Ordinal) &&
+                   CompactionCheckpointIntegrity.IsLowerSha256(
+                       checkpoint.SourceMessagesSha256) &&
+                   string.Equals(
+                       checkpoint.SourceMessagesSha256,
+                       CompactionCheckpointIntegrity.SourceMessagesSha256(
+                           session.ModelHistory,
+                           checkpoint.SourceStartSequence,
+                           checkpoint.SourceEndSequence,
+                           checkpoint.SchemaVersion),
+                       StringComparison.Ordinal) &&
+                   CompactionCheckpointIntegrity.IsValidSummary(checkpoint.Summary) &&
+                   (string.Equals(
+                        checkpoint.SummaryPromptVersion,
+                        compactionPrompt.Snapshot.Version,
+                        StringComparison.Ordinal) ||
+                    checkpoint.SchemaVersion == 1 &&
+                    string.Equals(
+                        checkpoint.SummaryPromptVersion,
+                        AgentPrompts.LegacyCompactionVersion,
+                        StringComparison.Ordinal)) &&
+                   string.Equals(
+                       checkpoint.TokenizerProfileId,
+                       provider.TokenizerProfileId,
+                       StringComparison.Ordinal) &&
+                   string.Equals(
+                       checkpoint.TokenizerProfileVersion,
+                       provider.TokenizerProfileVersion,
+                       StringComparison.Ordinal);
+        }
+        catch (InvalidDataException)
+        {
+            return false;
+        }
+    }
 
     internal static int CountPromptTokens(
         ModelTokenizer tokenizer,
-        IReadOnlyList<ChatCompletionMessage> messages)
+        IReadOnlyList<ChatCompletionMessage> messages,
+        IReadOnlyList<ChatCompletionToolDefinition>? tools = null)
     {
         var count = 3;
         foreach (var message in messages)
@@ -428,6 +617,30 @@ internal sealed class AgentFactory(
                 5 +
                 tokenizer.CountTokens(message.Role.ToString().ToLowerInvariant()) +
                 tokenizer.CountTokens(message.Content));
+            if (message.ToolCallId is { } toolCallId)
+            {
+                count = checked(count + 2 + tokenizer.CountTokens(toolCallId));
+            }
+
+            foreach (var toolCall in message.ToolCalls ?? [])
+            {
+                count = checked(
+                    count +
+                    8 +
+                    tokenizer.CountTokens(toolCall.Id) +
+                    tokenizer.CountTokens(toolCall.Name) +
+                    tokenizer.CountTokens(toolCall.Arguments));
+            }
+        }
+
+        foreach (var tool in tools ?? [])
+        {
+            count = checked(
+                count +
+                10 +
+                tokenizer.CountTokens(tool.ProviderName) +
+                tokenizer.CountTokens(tool.Description) +
+                tokenizer.CountTokens(tool.InputSchema.GetRawText()));
         }
 
         return count;
@@ -892,7 +1105,7 @@ internal sealed class AgentRuntimeExecutor : ISessionExecutor
                 }
 
                 var checkpoint = new CompactionCheckpointSnapshot(
-                    SchemaVersion: 1,
+                    SchemaVersion: 2,
                     normalizedSummary,
                     CompactionCheckpointIntegrity.Sha256(normalizedSummary),
                     session.CompactionCheckpoint?.SourceStartSequence ??
@@ -902,7 +1115,8 @@ internal sealed class AgentRuntimeExecutor : ISessionExecutor
                         session.ModelHistory,
                         session.CompactionCheckpoint?.SourceStartSequence ??
                         selection.Items[0].Sequence,
-                        selection.SourceEndSequence),
+                        selection.SourceEndSequence,
+                        schemaVersion: 2),
                     draft.CompactionPrompt.Snapshot.Version,
                     draft.Provider.TokenizerProfileId,
                     draft.Provider.TokenizerProfileVersion,
@@ -958,7 +1172,9 @@ internal sealed class AgentRuntimeExecutor : ISessionExecutor
                 item.TurnId != session.Turn.TurnId &&
                 item.Sequence > sourceEnd &&
                 item.Type is SessionItemType.UserMessage or
-                    SessionItemType.AgentMessage)
+                    SessionItemType.AgentMessage or
+                    SessionItemType.ToolCall or
+                    SessionItemType.ToolResult)
             .OrderBy(item => item.Sequence)
             .ThenBy(item => item.ItemId)
             .GroupBy(item => item.TurnId)
@@ -968,13 +1184,18 @@ internal sealed class AgentRuntimeExecutor : ISessionExecutor
         foreach (var turn in turns)
         {
             selected.AddRange(turn);
-            var sourceEndSequence = session.ModelHistory
+            var nextSequence = session.ModelHistory
                 .Where(item =>
                     item.Status == SessionItemStatus.Completed &&
                     item.Sequence > selected[^1].Sequence &&
                     item.Type is SessionItemType.UserMessage or
-                        SessionItemType.AgentMessage)
-                .Min(item => item.Sequence) - 1;
+                        SessionItemType.AgentMessage or
+                        SessionItemType.ToolCall or
+                        SessionItemType.ToolResult)
+                .Select(item => (long?)item.Sequence)
+                .Min();
+            var sourceEndSequence =
+                (nextSequence ?? selected[^1].Sequence + 1) - 1;
             if (ProjectedResponseTokens(
                     session,
                     draft,
@@ -1007,21 +1228,15 @@ internal sealed class AgentRuntimeExecutor : ISessionExecutor
                 summaryPrefix),
         };
         messages.AddRange(
-            session.ModelHistory
-                .Where(item =>
+            ProviderMessageHistory.Build(
+                session.ModelHistory.Where(item =>
                     item.Status == SessionItemStatus.Completed &&
-                    item.Sequence > sourceEndSequence &&
-                    item.Type is SessionItemType.UserMessage or
-                        SessionItemType.AgentMessage)
-                .OrderBy(item => item.Sequence)
-                .ThenBy(item => item.ItemId)
-                .Select(item => new ChatCompletionMessage(
-                    item.Type == SessionItemType.UserMessage
-                        ? ChatCompletionMessageRole.User
-                        : ChatCompletionMessageRole.Assistant,
-                    ((TextItemContent)item.Content).Text)));
+                    item.Sequence > sourceEndSequence)));
         return checked(
-            AgentFactory.CountPromptTokens(draft.Provider.Tokenizer, messages) +
+            AgentFactory.CountPromptTokens(
+                draft.Provider.Tokenizer,
+                messages,
+                draft.Tools) +
             Math.Min(
                 8192,
                 (draft.UsableInputBudgetTokens + 9) / 10));
@@ -1039,13 +1254,27 @@ internal sealed class AgentRuntimeExecutor : ISessionExecutor
             result.Append("\n\n");
         }
 
-        foreach (var item in items)
+        foreach (var message in ProviderMessageHistory.Build(items))
         {
-            result.Append(
-                item.Type == SessionItemType.UserMessage
-                    ? "User:\n"
-                    : "Assistant:\n");
-            result.Append(NormalizeLf(((TextItemContent)item.Content).Text));
+            result.Append(message.Role);
+            result.Append(":\n");
+            result.Append(NormalizeLf(message.Content));
+            foreach (var call in message.ToolCalls ?? [])
+            {
+                result.Append("\nToolCall ");
+                result.Append(call.Id);
+                result.Append(' ');
+                result.Append(call.Name);
+                result.Append(' ');
+                result.Append(call.Arguments);
+            }
+
+            if (message.ToolCallId is { } toolCallId)
+            {
+                result.Append("\nToolCallId ");
+                result.Append(toolCallId);
+            }
+
             result.Append("\n\n");
         }
 

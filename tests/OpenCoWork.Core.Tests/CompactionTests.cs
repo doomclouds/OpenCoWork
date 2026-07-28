@@ -1,6 +1,7 @@
 using System.Runtime.CompilerServices;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using OpenCoWork.Abstractions;
 using OpenCoWork.Core.Agents;
 using OpenCoWork.Core.Configuration;
@@ -41,6 +42,8 @@ public sealed class CompactionTests
             var checkpoint = Assert.Single(
                     sink.Intents.OfType<RecordCompactionCheckpointIntent>())
                 .Checkpoint;
+            Assert.Equal(2, checkpoint.SchemaVersion);
+            Assert.Equal("opencowork.compaction.v2", checkpoint.SummaryPromptVersion);
             Assert.Equal(2, checkpoint.SourceStartSequence);
             Assert.Equal(4, checkpoint.SourceEndSequence);
             Assert.Equal(CompactionClient.Summary, checkpoint.Summary);
@@ -48,7 +51,8 @@ public sealed class CompactionTests
                 CompactionCheckpointIntegrity.SourceMessagesSha256(
                     session.ModelHistory,
                     2,
-                    4),
+                    4,
+                    schemaVersion: 2),
                 checkpoint.SourceMessagesSha256);
             Assert.Equal(
                 [
@@ -130,6 +134,55 @@ public sealed class CompactionTests
             Assert.Equal(2, checkpoint.SourceStartSequence);
             Assert.Equal(8, checkpoint.SourceEndSequence);
             Assert.IsType<CompleteTurnIntent>(sink.Intents[^1]);
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Compaction_keeps_assistant_tool_call_and_result_in_one_source_group()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var directory = Path.Combine(
+            Path.GetTempPath(),
+            $"opencowork-tool-compaction-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        try
+        {
+            var client = new CompactionClient();
+            var sink = new RecordingSink();
+            var session = WithToolGroup(
+                Session(priorTurnCount: 1, historyRepeats: 400_000));
+
+            await Executor(directory, client)
+                .ExecuteAsync(session, sink, cancellationToken);
+
+            var compactionRequest = Assert.Single(
+                client.Requests,
+                request =>
+                    request.Purpose == ChatCompletionInvocationPurpose.Compaction);
+            Assert.Contains(
+                "ToolCall call-1 file__list",
+                compactionRequest.Messages[^1].Content,
+                StringComparison.Ordinal);
+            Assert.Contains(
+                "ToolCallId call-1",
+                compactionRequest.Messages[^1].Content,
+                StringComparison.Ordinal);
+            var checkpoint = Assert.Single(
+                    sink.Intents.OfType<RecordCompactionCheckpointIntent>())
+                .Checkpoint;
+            Assert.Equal(2, checkpoint.SchemaVersion);
+            Assert.Equal(5, checkpoint.SourceEndSequence);
+            Assert.Equal(
+                CompactionCheckpointIntegrity.SourceMessagesSha256(
+                    session.ModelHistory,
+                    checkpoint.SourceStartSequence,
+                    checkpoint.SourceEndSequence,
+                    schemaVersion: 2),
+                checkpoint.SourceMessagesSha256);
         }
         finally
         {
@@ -272,6 +325,84 @@ public sealed class CompactionTests
         {
             Directory.Delete(directory, recursive: true);
         }
+    }
+
+    [Fact]
+    public void Compaction_v2_hashes_complete_tool_groups_and_v1_rejects_them()
+    {
+        var timestamp = new DateTimeOffset(
+            2026,
+            7,
+            28,
+            8,
+            0,
+            0,
+            TimeSpan.Zero);
+        var turnId = Guid.CreateVersion7(timestamp);
+        var agent = new SessionItemSnapshot(
+            Guid.CreateVersion7(timestamp.AddTicks(1)),
+            turnId,
+            SessionItemType.AgentMessage,
+            SessionItemStatus.Completed,
+            new TextItemContent("checking"),
+            Sequence: 1,
+            timestamp,
+            timestamp);
+        using var arguments = JsonDocument.Parse("""{"path":"src"}""");
+        using var output = JsonDocument.Parse("""{"entries":[]}""");
+        var call = new SessionItemSnapshot(
+            Guid.CreateVersion7(timestamp.AddTicks(2)),
+            turnId,
+            SessionItemType.ToolCall,
+            SessionItemStatus.Completed,
+            new ToolCallItemContent(
+                providerRound: 1,
+                agent.ItemId,
+                [
+                    new ToolCallItemEntry(
+                        "call-1",
+                        "file__list",
+                        arguments.RootElement,
+                        new string('a', 64),
+                        sensitiveInputDetected: false),
+                ]),
+            Sequence: 2,
+            timestamp,
+            timestamp);
+        var result = new SessionItemSnapshot(
+            Guid.CreateVersion7(timestamp.AddTicks(3)),
+            turnId,
+            SessionItemType.ToolResult,
+            SessionItemStatus.Completed,
+            new ToolResultItemContent(new ToolResultSnapshot(
+                Guid.CreateVersion7(timestamp.AddTicks(4)),
+                "call-1",
+                ToolInvocationStatus.Completed,
+                output.RootElement,
+                Error: null,
+                IsTruncated: false,
+                OriginalByteCount: 14,
+                new string('b', 64),
+                AttemptCount: 1)),
+            Sequence: 3,
+            timestamp,
+            timestamp);
+        SessionItemSnapshot[] history = [agent, call, result];
+
+        var hash = CompactionCheckpointIntegrity.SourceMessagesSha256(
+            history,
+            1,
+            3,
+            schemaVersion: 2);
+        Assert.Equal(64, hash.Length);
+        Assert.Throws<InvalidDataException>(() =>
+            CompactionCheckpointIntegrity.SourceMessagesSha256(
+                history,
+                1,
+                3,
+                schemaVersion: 1));
+        Assert.Throws<AgentPreparationException>(() =>
+            ProviderMessageHistory.Build([agent, call]));
     }
 
     private static AgentRuntimeExecutor Executor(
@@ -423,6 +554,56 @@ public sealed class CompactionTests
             session.ModelHistory,
             session.Checkpoint,
             checkpoint);
+
+    private static AgentSession WithToolGroup(AgentSession session)
+    {
+        var agent = session.ModelHistory.Single(item =>
+            item.Type == SessionItemType.AgentMessage);
+        var timestamp = agent.CreatedAt;
+        var toolCall = new SessionItemSnapshot(
+            Guid.CreateVersion7(timestamp.AddTicks(4)),
+            agent.TurnId,
+            SessionItemType.ToolCall,
+            SessionItemStatus.Completed,
+            new ToolCallItemContent(
+                providerRound: 1,
+                agent.ItemId,
+                [
+                    new ToolCallItemEntry(
+                        "call-1",
+                        "file__list",
+                        JsonSerializer.SerializeToElement(new { path = "src" }),
+                        new string('a', 64),
+                        sensitiveInputDetected: false),
+                ]),
+            Sequence: 4,
+            timestamp,
+            timestamp);
+        var toolResult = new SessionItemSnapshot(
+            Guid.CreateVersion7(timestamp.AddTicks(5)),
+            agent.TurnId,
+            SessionItemType.ToolResult,
+            SessionItemStatus.Completed,
+            new ToolResultItemContent(new ToolResultSnapshot(
+                Guid.CreateVersion7(timestamp.AddTicks(6)),
+                "call-1",
+                ToolInvocationStatus.Completed,
+                JsonSerializer.SerializeToElement(new { entries = Array.Empty<string>() }),
+                Error: null,
+                IsTruncated: false,
+                OriginalByteCount: 14,
+                new string('b', 64),
+                AttemptCount: 1)),
+            Sequence: 5,
+            timestamp,
+            timestamp);
+        return new AgentSession(
+            session.Thread,
+            session.Turn,
+            [.. session.ModelHistory, toolCall, toolResult],
+            session.Checkpoint,
+            session.CompactionCheckpoint);
+    }
 
     private static string Sha256(string value) =>
         Convert.ToHexString(

@@ -67,6 +67,7 @@ internal sealed class OpenAiCompatibleChatClient(
             await response.Content.ReadAsStreamAsync(cancellationToken);
         var reader = new SseReader(stream, _timeProvider);
         ChatCompletionFinishReason? finishReason = null;
+        var toolCalls = new List<ToolCallFrame>();
         var outputBytes = 0;
         while (true)
         {
@@ -79,6 +80,18 @@ internal sealed class OpenAiCompatibleChatClient(
             if (string.Equals(data, "[DONE]", StringComparison.Ordinal))
             {
                 if (finishReason is null)
+                {
+                    throw InvalidStream();
+                }
+
+                if (finishReason == ChatCompletionFinishReason.ToolCall)
+                {
+                    foreach (var toolCall in CompleteToolCalls(toolCalls))
+                    {
+                        yield return toolCall;
+                    }
+                }
+                else if (toolCalls.Count != 0)
                 {
                     throw InvalidStream();
                 }
@@ -108,6 +121,15 @@ internal sealed class OpenAiCompatibleChatClient(
                 {
                     outputBytes = AddOutputBytes(outputBytes, reasoning.Delta);
                 }
+                else if (item is ChatCompletionToolCallDeltaEvent toolCall)
+                {
+                    outputBytes = AddOutputBytes(
+                        outputBytes,
+                        (toolCall.Id ?? string.Empty) +
+                        (toolCall.Name ?? string.Empty) +
+                        toolCall.ArgumentsDelta);
+                    AddToolCallDelta(toolCalls, toolCall);
+                }
 
                 yield return item;
             }
@@ -135,29 +157,7 @@ internal sealed class OpenAiCompatibleChatClient(
 
     private HttpRequestMessage CreateRequest(ChatCompletionRequest request)
     {
-        var body = JsonSerializer.SerializeToUtf8Bytes(new
-        {
-            model = request.ModelId,
-            messages = request.Messages.Select(message => new
-            {
-                role = message.Role switch
-                {
-                    ChatCompletionMessageRole.System => "system",
-                    ChatCompletionMessageRole.User => "user",
-                    ChatCompletionMessageRole.Assistant => "assistant",
-                    _ => throw new ArgumentOutOfRangeException(
-                        nameof(request),
-                        "Message role is invalid."),
-                },
-                content = message.Content,
-            }),
-            stream = true,
-            stream_options = new
-            {
-                include_usage = true,
-            },
-            max_tokens = request.MaxOutputTokens,
-        });
+        var body = SerializeRequest(request);
         var content = new ByteArrayContent(body);
         content.Headers.ContentType =
             new MediaTypeHeaderValue("application/json")
@@ -173,6 +173,131 @@ internal sealed class OpenAiCompatibleChatClient(
         message.Headers.Accept.Add(
             new MediaTypeWithQualityHeaderValue("text/event-stream"));
         return message;
+    }
+
+    private static byte[] SerializeRequest(ChatCompletionRequest request)
+    {
+        var buffer = new ArrayBufferWriter<byte>();
+        using var writer = new Utf8JsonWriter(buffer);
+        writer.WriteStartObject();
+        writer.WriteString("model", request.ModelId);
+        writer.WriteStartArray("messages");
+        foreach (var message in request.Messages)
+        {
+            WriteMessage(writer, message);
+        }
+
+        writer.WriteEndArray();
+        if (request.Purpose == ChatCompletionInvocationPurpose.Response &&
+            request.Tools.Count != 0)
+        {
+            writer.WriteStartArray("tools");
+            foreach (var tool in request.Tools)
+            {
+                writer.WriteStartObject();
+                writer.WriteString("type", "function");
+                writer.WriteStartObject("function");
+                writer.WriteString("name", tool.ProviderName);
+                writer.WriteString("description", tool.Description);
+                writer.WritePropertyName("parameters");
+                tool.InputSchema.WriteTo(writer);
+                writer.WriteEndObject();
+                writer.WriteEndObject();
+            }
+
+            writer.WriteEndArray();
+        }
+
+        writer.WriteBoolean("stream", true);
+        writer.WriteStartObject("stream_options");
+        writer.WriteBoolean("include_usage", true);
+        writer.WriteEndObject();
+        writer.WriteNumber("max_tokens", request.MaxOutputTokens);
+        writer.WriteEndObject();
+        writer.Flush();
+        return buffer.WrittenSpan.ToArray();
+    }
+
+    private static void WriteMessage(
+        Utf8JsonWriter writer,
+        ChatCompletionMessage message)
+    {
+        ArgumentNullException.ThrowIfNull(message);
+        ArgumentNullException.ThrowIfNull(message.Content);
+        var role = message.Role switch
+        {
+            ChatCompletionMessageRole.System => "system",
+            ChatCompletionMessageRole.User => "user",
+            ChatCompletionMessageRole.Assistant => "assistant",
+            ChatCompletionMessageRole.Tool => "tool",
+            _ => throw new ArgumentOutOfRangeException(
+                nameof(message),
+                "Message role is invalid."),
+        };
+        var toolCalls = message.ToolCalls ?? [];
+        if (message.Role == ChatCompletionMessageRole.Tool)
+        {
+            if (string.IsNullOrWhiteSpace(message.ToolCallId) ||
+                toolCalls.Count != 0)
+            {
+                throw new ArgumentException("Tool message is invalid.", nameof(message));
+            }
+        }
+        else if (message.ToolCallId is not null ||
+                 message.Role != ChatCompletionMessageRole.Assistant &&
+                 toolCalls.Count != 0)
+        {
+            throw new ArgumentException("Message tool fields are invalid.", nameof(message));
+        }
+
+        writer.WriteStartObject();
+        writer.WriteString("role", role);
+        if (message.Role == ChatCompletionMessageRole.Assistant &&
+            toolCalls.Count != 0 &&
+            message.Content.Length == 0)
+        {
+            writer.WriteNull("content");
+        }
+        else
+        {
+            writer.WriteString("content", message.Content);
+        }
+
+        if (toolCalls.Count != 0)
+        {
+            var ids = new HashSet<string>(StringComparer.Ordinal);
+            writer.WriteStartArray("tool_calls");
+            foreach (var toolCall in toolCalls)
+            {
+                if (string.IsNullOrWhiteSpace(toolCall.Id) ||
+                    string.IsNullOrWhiteSpace(toolCall.Name) ||
+                    string.IsNullOrWhiteSpace(toolCall.Arguments) ||
+                    !ids.Add(toolCall.Id))
+                {
+                    throw new ArgumentException(
+                        "Assistant tool call is invalid.",
+                        nameof(message));
+                }
+
+                writer.WriteStartObject();
+                writer.WriteString("id", toolCall.Id);
+                writer.WriteString("type", "function");
+                writer.WriteStartObject("function");
+                writer.WriteString("name", toolCall.Name);
+                writer.WriteString("arguments", toolCall.Arguments);
+                writer.WriteEndObject();
+                writer.WriteEndObject();
+            }
+
+            writer.WriteEndArray();
+        }
+
+        if (message.Role == ChatCompletionMessageRole.Tool)
+        {
+            writer.WriteString("tool_call_id", message.ToolCallId);
+        }
+
+        writer.WriteEndObject();
     }
 
     private async Task<HttpResponseMessage> SendAsync(
@@ -387,6 +512,7 @@ internal sealed class OpenAiCompatibleChatClient(
                     "reasoning_content",
                     value => events.Add(
                         new ChatCompletionReasoningDeltaEvent(value)));
+                AddToolCallDeltas(delta, events);
                 if (choice.TryGetProperty("finish_reason", out var finish) &&
                     finish.ValueKind != JsonValueKind.Null)
                 {
@@ -429,6 +555,168 @@ internal sealed class OpenAiCompatibleChatClient(
         {
             throw InvalidStream();
         }
+    }
+
+    private static void AddToolCallDeltas(
+        JsonElement delta,
+        List<ChatCompletionEvent> events)
+    {
+        if (!delta.TryGetProperty("tool_calls", out var toolCalls))
+        {
+            return;
+        }
+
+        if (toolCalls.ValueKind != JsonValueKind.Array ||
+            toolCalls.GetArrayLength() == 0)
+        {
+            throw InvalidStream();
+        }
+
+        var indices = new HashSet<int>();
+        foreach (var toolCall in toolCalls.EnumerateArray())
+        {
+            if (toolCall.ValueKind != JsonValueKind.Object ||
+                !toolCall.TryGetProperty("index", out var indexValue) ||
+                !indexValue.TryGetInt32(out var index) ||
+                index < 0 ||
+                !indices.Add(index) ||
+                !toolCall.TryGetProperty("function", out var function) ||
+                function.ValueKind != JsonValueKind.Object)
+            {
+                throw InvalidStream();
+            }
+
+            var id = OptionalString(toolCall, "id");
+            var name = OptionalString(function, "name");
+            var arguments = OptionalString(function, "arguments") ?? string.Empty;
+            events.Add(new ChatCompletionToolCallDeltaEvent(
+                index,
+                id,
+                name,
+                arguments));
+        }
+    }
+
+    private static string? OptionalString(JsonElement value, string name)
+    {
+        if (!value.TryGetProperty(name, out var property))
+        {
+            return null;
+        }
+
+        if (property.ValueKind != JsonValueKind.String)
+        {
+            throw InvalidStream();
+        }
+
+        return property.GetString();
+    }
+
+    private static void AddToolCallDelta(
+        List<ToolCallFrame> frames,
+        ChatCompletionToolCallDeltaEvent delta)
+    {
+        ToolCallFrame frame;
+        if (delta.Index == frames.Count)
+        {
+            frame = new ToolCallFrame(delta.Index);
+            frames.Add(frame);
+        }
+        else if (delta.Index >= 0 && delta.Index < frames.Count)
+        {
+            frame = frames[delta.Index];
+        }
+        else
+        {
+            throw InvalidStream();
+        }
+
+        if (delta.Id is { } id)
+        {
+            if (id.Length == 0 ||
+                frame.Id is not null &&
+                !string.Equals(frame.Id, id, StringComparison.Ordinal))
+            {
+                throw InvalidStream();
+            }
+
+            frame.Id = id;
+        }
+
+        if (delta.Name is { } name)
+        {
+            if (name.Length == 0 ||
+                frame.Name is not null &&
+                !string.Equals(frame.Name, name, StringComparison.Ordinal))
+            {
+                throw InvalidStream();
+            }
+
+            frame.Name = name;
+        }
+
+        frame.Arguments.Append(delta.ArgumentsDelta);
+        frame.ArgumentBytes = checked(
+            frame.ArgumentBytes +
+            StrictUtf8.GetByteCount(delta.ArgumentsDelta));
+        if (frame.ArgumentBytes >
+            ToolRuntimeLimits.MaximumArgumentsBytes)
+        {
+            throw InvalidStream();
+        }
+    }
+
+    private static IReadOnlyList<ChatCompletionToolCallCompletedEvent>
+        CompleteToolCalls(IReadOnlyList<ToolCallFrame> frames)
+    {
+        if (frames.Count == 0)
+        {
+            throw InvalidStream();
+        }
+
+        var ids = new HashSet<string>(StringComparer.Ordinal);
+        var completed = new List<ChatCompletionToolCallCompletedEvent>(frames.Count);
+        foreach (var frame in frames)
+        {
+            var arguments = frame.Arguments.ToString();
+            if (string.IsNullOrWhiteSpace(frame.Id) ||
+                string.IsNullOrWhiteSpace(frame.Name) ||
+                string.IsNullOrWhiteSpace(arguments) ||
+                !ids.Add(frame.Id))
+            {
+                throw InvalidStream();
+            }
+
+            try
+            {
+                using var document = JsonDocument.Parse(
+                    arguments,
+                    new JsonDocumentOptions
+                    {
+                        MaxDepth = ToolRuntimeLimits.MaximumJsonDepth,
+                    });
+                if (document.RootElement.ValueKind != JsonValueKind.Object)
+                {
+                    throw InvalidStream();
+                }
+            }
+            catch (ChatCompletionException)
+            {
+                throw;
+            }
+            catch (JsonException)
+            {
+                throw InvalidStream();
+            }
+
+            completed.Add(new ChatCompletionToolCallCompletedEvent(
+                frame.Index,
+                frame.Id,
+                frame.Name,
+                arguments));
+        }
+
+        return completed;
     }
 
     private static void AddStringDelta(
@@ -484,6 +772,19 @@ internal sealed class OpenAiCompatibleChatClient(
     private sealed record ParsedChunk(
         IReadOnlyList<ChatCompletionEvent> Events,
         ChatCompletionFinishReason? FinishReason);
+
+    private sealed class ToolCallFrame(int index)
+    {
+        public int Index { get; } = index;
+
+        public string? Id { get; set; }
+
+        public string? Name { get; set; }
+
+        public StringBuilder Arguments { get; } = new();
+
+        public int ArgumentBytes { get; set; }
+    }
 
     private sealed class SseReader(
         Stream stream,

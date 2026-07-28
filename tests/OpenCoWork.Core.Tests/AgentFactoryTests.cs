@@ -222,7 +222,7 @@ public sealed class AgentFactoryTests
             Assert.Equal("Use C#.\nBe exact.\n", instructions!.Content);
             Assert.Equal(25, instructions.RawByteCount);
             Assert.Equal(
-                ["builtin:opencowork.response.v1", "mode:agent", "workspace:AGENTS.md", "runtime:workspaceName"],
+                ["builtin:opencowork.response.v2", "mode:agent", "workspace:AGENTS.md", "runtime:workspaceName"],
                 agent.Snapshot.Sources);
             Assert.Equal(
                 Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(agent.SystemMessage)))
@@ -290,6 +290,51 @@ public sealed class AgentFactoryTests
                 0,
                 0,
                 TimeSpan.Zero);
+            var priorAgent = Item(
+                priorTurnId,
+                SessionItemType.AgentMessage,
+                "Earlier answer",
+                6);
+            using var arguments = JsonDocument.Parse("""{"path":"src"}""");
+            using var output = JsonDocument.Parse("""{"entries":[]}""");
+            var toolInvocationId = Guid.CreateVersion7(timestamp.AddTicks(7));
+            var toolCall = new SessionItemSnapshot(
+                Guid.CreateVersion7(timestamp.AddTicks(8)),
+                priorTurnId,
+                SessionItemType.ToolCall,
+                SessionItemStatus.Completed,
+                new ToolCallItemContent(
+                    providerRound: 1,
+                    priorAgent.ItemId,
+                    [
+                        new ToolCallItemEntry(
+                            "call-1",
+                            "file__list",
+                            arguments.RootElement,
+                            new string('a', 64),
+                            sensitiveInputDetected: false),
+                    ]),
+                Sequence: 7,
+                timestamp,
+                timestamp);
+            var toolResult = new SessionItemSnapshot(
+                Guid.CreateVersion7(timestamp.AddTicks(9)),
+                priorTurnId,
+                SessionItemType.ToolResult,
+                SessionItemStatus.Completed,
+                new ToolResultItemContent(new ToolResultSnapshot(
+                    toolInvocationId,
+                    "call-1",
+                    ToolInvocationStatus.Completed,
+                    output.RootElement,
+                    Error: null,
+                    IsTruncated: false,
+                    OriginalByteCount: 14,
+                    new string('b', 64),
+                    AttemptCount: 1)),
+                Sequence: 8,
+                timestamp,
+                timestamp);
             var session = new AgentSession(
                 new ThreadSnapshot(
                     Guid.Parse("019f2f95-7b3f-75e9-b71a-ed15bcf17054"),
@@ -319,7 +364,9 @@ public sealed class AgentFactoryTests
                 [
                     Item(priorTurnId, SessionItemType.UserMessage, "Earlier question", 2),
                     Item(priorTurnId, SessionItemType.Reasoning, "private reasoning", 4),
-                    Item(priorTurnId, SessionItemType.AgentMessage, "Earlier answer", 6),
+                    priorAgent,
+                    toolCall,
+                    toolResult,
                     Item(currentTurnId, SessionItemType.UserMessage, "Current question", 19),
                 ]);
             var invocationId =
@@ -337,9 +384,21 @@ public sealed class AgentFactoryTests
                     ChatCompletionMessageRole.System,
                     ChatCompletionMessageRole.User,
                     ChatCompletionMessageRole.Assistant,
+                    ChatCompletionMessageRole.Tool,
                     ChatCompletionMessageRole.User,
                 ],
                 first.Messages.Select(message => message.Role));
+            var assistantToolCall = Assert.Single(
+                first.Messages,
+                message => message.ToolCalls is not null);
+            Assert.Equal("Earlier answer", assistantToolCall.Content);
+            Assert.Equal("call-1", Assert.Single(assistantToolCall.ToolCalls!).Id);
+            Assert.Equal(
+                "call-1",
+                Assert.Single(
+                    first.Messages,
+                    message => message.Role == ChatCompletionMessageRole.Tool)
+                    .ToolCallId);
             Assert.Single(
                 first.Messages,
                 message => message.Content == "Current question");
@@ -351,6 +410,11 @@ public sealed class AgentFactoryTests
             Assert.DoesNotContain(secret, firstJson, StringComparison.Ordinal);
             Assert.DoesNotContain(secret, first.ResponsePrompt.SystemMessage, StringComparison.Ordinal);
             Assert.Equal(64, first.Snapshot.ConfigurationSha256.Length);
+            Assert.True(
+                first.InputTokenCount >
+                AgentFactory.CountPromptTokens(
+                    first.Provider.Tokenizer,
+                    first.Messages));
         }
         finally
         {

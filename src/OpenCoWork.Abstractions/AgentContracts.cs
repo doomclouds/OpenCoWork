@@ -115,7 +115,9 @@ public sealed class ChatCompletionRequest
         InvocationId = invocationId;
         AttemptNumber = attemptNumber;
         Purpose = purpose;
-        Tools = Array.AsReadOnly((tools ?? []).ToArray());
+        Tools = purpose == ChatCompletionInvocationPurpose.Response
+            ? Array.AsReadOnly((tools ?? []).ToArray())
+            : Array.AsReadOnly<ChatCompletionToolDefinition>([]);
     }
 
     public string ModelId { get; }

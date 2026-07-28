@@ -111,6 +111,209 @@ public sealed class ChatCompletionClientTests
     }
 
     [Fact]
+    public async Task Response_serializes_tools_and_tool_history_while_compaction_omits_tools()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        using var schema = JsonDocument.Parse(
+            """{"type":"object","additionalProperties":false}""");
+        var definition = new ChatCompletionToolDefinition(
+            "file__list",
+            "List files.",
+            schema.RootElement);
+        var messages = new[]
+        {
+            new ChatCompletionMessage(ChatCompletionMessageRole.System, "system"),
+            new ChatCompletionMessage(
+                ChatCompletionMessageRole.Assistant,
+                string.Empty,
+                [new ChatCompletionToolCall("call-1", "file__list", "{}")]),
+            new ChatCompletionMessage(
+                ChatCompletionMessageRole.Tool,
+                """{"status":"completed"}""",
+                ToolCallId: "call-1"),
+        };
+        var handler = new RecordingHandler(_ => Response(
+            HttpStatusCode.OK,
+            """
+            data: {"choices":[{"index":0,"delta":{"content":"done"},"finish_reason":"stop"}]}
+
+            data: [DONE]
+
+            """));
+        using var httpClient = new HttpClient(handler)
+        {
+            Timeout = Timeout.InfiniteTimeSpan,
+        };
+        var client = new OpenAiCompatibleChatClient(
+            httpClient,
+            new Uri("https://provider.example/v1/"),
+            "secret");
+
+        await DrainAsync(
+            client.StreamAsync(
+                new ChatCompletionRequest(
+                    "model",
+                    messages,
+                    maxOutputTokens: 32,
+                    Guid.CreateVersion7(),
+                    attemptNumber: 1,
+                    ChatCompletionInvocationPurpose.Response,
+                    [definition]),
+                cancellationToken),
+            cancellationToken);
+        using var responseJson = JsonDocument.Parse(handler.RequestBody);
+        var root = responseJson.RootElement;
+        var tools = root.GetProperty("tools");
+        Assert.Equal("function", tools[0].GetProperty("type").GetString());
+        Assert.Equal(
+            "file__list",
+            tools[0].GetProperty("function").GetProperty("name").GetString());
+        var requestMessages = root.GetProperty("messages");
+        Assert.Equal(
+            "call-1",
+            requestMessages[1]
+                .GetProperty("tool_calls")[0]
+                .GetProperty("id")
+                .GetString());
+        Assert.Equal("tool", requestMessages[2].GetProperty("role").GetString());
+        Assert.Equal(
+            "call-1",
+            requestMessages[2].GetProperty("tool_call_id").GetString());
+
+        await DrainAsync(
+            client.StreamAsync(
+                new ChatCompletionRequest(
+                    "model",
+                    messages[..1],
+                    maxOutputTokens: 32,
+                    Guid.CreateVersion7(),
+                    attemptNumber: 2,
+                    ChatCompletionInvocationPurpose.Compaction,
+                    [definition]),
+                cancellationToken),
+            cancellationToken);
+        using var compactionJson = JsonDocument.Parse(handler.RequestBody);
+        Assert.False(compactionJson.RootElement.TryGetProperty("tools", out _));
+    }
+
+    [Fact]
+    public async Task Streams_fragmented_multiple_tool_calls_only_after_a_complete_frame()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var handler = new RecordingHandler(_ => Response(
+            HttpStatusCode.OK,
+            """
+            data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call-1","function":{"name":"file__list","arguments":"{\"pa"}},{"index":1,"id":"call-2","function":{"name":"web__fetch","arguments":"{\"ur"}}]},"finish_reason":null}]}
+
+            data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"th\":\"src\"}"}},{"index":1,"function":{"arguments":"l\":\"https://example.test\"}"}}]},"finish_reason":"tool_calls"}]}
+
+            data: [DONE]
+
+            """,
+            maximumReadSize: 1));
+        using var httpClient = new HttpClient(handler)
+        {
+            Timeout = Timeout.InfiniteTimeSpan,
+        };
+        var client = new OpenAiCompatibleChatClient(
+            httpClient,
+            new Uri("https://provider.example/v1/"),
+            "secret");
+
+        var events = await DrainAsync(
+            client.StreamAsync(Request(), cancellationToken),
+            cancellationToken);
+
+        Assert.Equal(4, events.OfType<ChatCompletionToolCallDeltaEvent>().Count());
+        Assert.Equal(
+            [
+                new ChatCompletionToolCallCompletedEvent(
+                    0,
+                    "call-1",
+                    "file__list",
+                    """{"path":"src"}"""),
+                new ChatCompletionToolCallCompletedEvent(
+                    1,
+                    "call-2",
+                    "web__fetch",
+                    """{"url":"https://example.test"}"""),
+            ],
+            events.OfType<ChatCompletionToolCallCompletedEvent>());
+        Assert.Equal(
+            ChatCompletionFinishReason.ToolCall,
+            Assert.IsType<ChatCompletionCompletedEvent>(events[^1]).FinishReason);
+    }
+
+    [Theory]
+    [InlineData(
+        """data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"id":"call-2","function":{"name":"file__list","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}\n\ndata: [DONE]\n\n""")]
+    [InlineData(
+        """data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call-1","function":{"name":"file__list","arguments":"{}"}},{"index":0,"function":{"arguments":"{}"}}]},"finish_reason":"tool_calls"}]}\n\ndata: [DONE]\n\n""")]
+    [InlineData(
+        """data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call-1","function":{"name":"file__list","arguments":""}}]},"finish_reason":"tool_calls"}]}\n\ndata: [DONE]\n\n""")]
+    [InlineData(
+        """data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call-1","function":{"name":"file__list","arguments":"{}"}}]},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n""")]
+    public async Task Rejects_sparse_duplicate_incomplete_or_mismatched_tool_frames(
+        string sse)
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var handler = new RecordingHandler(_ => Response(
+            HttpStatusCode.OK,
+            sse.Replace("\\n", "\n", StringComparison.Ordinal)));
+        using var httpClient = new HttpClient(handler)
+        {
+            Timeout = Timeout.InfiniteTimeSpan,
+        };
+        var client = new OpenAiCompatibleChatClient(
+            httpClient,
+            new Uri("https://provider.example/v1/"),
+            "secret");
+
+        var exception = await Assert.ThrowsAsync<ChatCompletionException>(
+            () => DrainAsync(
+                client.StreamAsync(Request(), cancellationToken),
+                cancellationToken));
+
+        Assert.Equal(AgentErrorCodes.ProviderInvalidStream, exception.Code);
+    }
+
+    [Fact]
+    public async Task Rejects_the_whole_tool_frame_before_publishing_completed_calls()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var handler = new RecordingHandler(_ => Response(
+            HttpStatusCode.OK,
+            """
+            data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call-1","function":{"name":"file__list","arguments":"{}"}},{"index":1,"id":"call-2","function":{"name":"web__fetch","arguments":""}}]},"finish_reason":"tool_calls"}]}
+
+            data: [DONE]
+
+            """));
+        using var httpClient = new HttpClient(handler)
+        {
+            Timeout = Timeout.InfiniteTimeSpan,
+        };
+        var client = new OpenAiCompatibleChatClient(
+            httpClient,
+            new Uri("https://provider.example/v1/"),
+            "secret");
+        var observed = new List<ChatCompletionEvent>();
+
+        var exception = await Assert.ThrowsAsync<ChatCompletionException>(async () =>
+        {
+            await foreach (var item in client.StreamAsync(
+                               Request(),
+                               cancellationToken))
+            {
+                observed.Add(item);
+            }
+        });
+
+        Assert.Equal(AgentErrorCodes.ProviderInvalidStream, exception.Code);
+        Assert.Empty(observed.OfType<ChatCompletionToolCallCompletedEvent>());
+    }
+
+    [Fact]
     public async Task Rejects_early_eof_and_maps_http_errors_without_exposing_body()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
