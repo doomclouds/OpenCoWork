@@ -36,9 +36,6 @@ public static class OpenCoWorkProtocolServer
         ArgumentNullException.ThrowIfNull(input);
         ArgumentNullException.ThrowIfNull(output);
         return RunConnectionAsync(
-            sessions,
-            workspacePath,
-            "stdio",
             ReadStdioFramesAsync(input, cancellationToken),
             async (message, token) =>
             {
@@ -46,6 +43,13 @@ public static class OpenCoWorkProtocolServer
                 await output.WriteAsync(Newline, token);
                 await output.FlushAsync(token);
             },
+            send => new OpenCoWorkJsonRpcConnection(
+                sessions,
+                workspacePath,
+                "stdio",
+                send),
+            static (connection, message, token) =>
+                connection.ProcessAsync(message, token),
             cancellationToken);
     }
 
@@ -59,9 +63,6 @@ public static class OpenCoWorkProtocolServer
         ArgumentNullException.ThrowIfNull(input);
         ArgumentNullException.ThrowIfNull(output);
         return RunConnectionAsync(
-            sessions,
-            workspacePath,
-            "stdio",
             ReadTextFramesAsync(input, cancellationToken),
             async (message, token) =>
             {
@@ -69,6 +70,73 @@ public static class OpenCoWorkProtocolServer
                 await output.WriteLineAsync();
                 await output.FlushAsync(token);
             },
+            send => new OpenCoWorkJsonRpcConnection(
+                sessions,
+                workspacePath,
+                "stdio",
+                send),
+            static (connection, message, token) =>
+                connection.ProcessAsync(message, token),
+            cancellationToken);
+    }
+
+    public static Task RunAcpStdioAsync(
+        ISessionService sessions,
+        string workspacePath,
+        string defaultProvider,
+        string defaultModel,
+        Stream input,
+        Stream output,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(input);
+        ArgumentNullException.ThrowIfNull(output);
+        return RunConnectionAsync(
+            ReadStdioFramesAsync(input, cancellationToken),
+            async (message, token) =>
+            {
+                await output.WriteAsync(message, token);
+                await output.WriteAsync(Newline, token);
+                await output.FlushAsync(token);
+            },
+            send => new OpenCoWorkAcpConnection(
+                sessions,
+                workspacePath,
+                defaultProvider,
+                defaultModel,
+                send),
+            static (connection, message, token) =>
+                connection.ProcessAsync(message, token),
+            cancellationToken);
+    }
+
+    public static Task RunAcpJsonLinesAsync(
+        ISessionService sessions,
+        string workspacePath,
+        string defaultProvider,
+        string defaultModel,
+        TextReader input,
+        TextWriter output,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(input);
+        ArgumentNullException.ThrowIfNull(output);
+        return RunConnectionAsync(
+            ReadTextFramesAsync(input, cancellationToken),
+            async (message, token) =>
+            {
+                await output.WriteAsync(StrictUtf8.GetString(message.Span));
+                await output.WriteLineAsync();
+                await output.FlushAsync(token);
+            },
+            send => new OpenCoWorkAcpConnection(
+                sessions,
+                workspacePath,
+                defaultProvider,
+                defaultModel,
+                send),
+            static (connection, message, token) =>
+                connection.ProcessAsync(message, token),
             cancellationToken);
     }
 
@@ -118,9 +186,6 @@ public static class OpenCoWorkProtocolServer
                 try
                 {
                     await RunConnectionAsync(
-                        sessions,
-                        workspacePath,
-                        "websocket",
                         ReadWebSocketFramesAsync(
                             socket,
                             context.RequestAborted),
@@ -130,6 +195,13 @@ public static class OpenCoWorkProtocolServer
                                 WebSocketMessageType.Text,
                                 endOfMessage: true,
                                 token),
+                        send => new OpenCoWorkJsonRpcConnection(
+                            sessions,
+                            workspacePath,
+                            "websocket",
+                            send),
+                        static (connection, message, token) =>
+                            connection.ProcessAsync(message, token),
                         context.RequestAborted);
                 }
                 catch (OperationCanceledException) when (
@@ -156,16 +228,17 @@ public static class OpenCoWorkProtocolServer
         await app.WaitForShutdownAsync(cancellationToken);
     }
 
-    private static async Task RunConnectionAsync(
-        ISessionService sessions,
-        string workspacePath,
-        string transport,
+    private static async Task RunConnectionAsync<TConnection>(
         IAsyncEnumerable<ReadOnlyMemory<byte>> inbound,
         Func<ReadOnlyMemory<byte>, CancellationToken, ValueTask> write,
+        Func<Func<ReadOnlyMemory<byte>, CancellationToken, ValueTask>, TConnection>
+            createConnection,
+        Func<TConnection, ReadOnlyMemory<byte>, CancellationToken, Task> process,
         CancellationToken cancellationToken)
+        where TConnection : IAsyncDisposable
     {
-        ArgumentNullException.ThrowIfNull(sessions);
-        ArgumentException.ThrowIfNullOrWhiteSpace(workspacePath);
+        ArgumentNullException.ThrowIfNull(createConnection);
+        ArgumentNullException.ThrowIfNull(process);
         using var lifetime = CancellationTokenSource.CreateLinkedTokenSource(
             cancellationToken);
         var outbound = Channel.CreateBounded<ReadOnlyMemory<byte>>(
@@ -186,10 +259,7 @@ public static class OpenCoWorkProtocolServer
             TaskContinuationOptions.ExecuteSynchronously |
             TaskContinuationOptions.OnlyOnFaulted,
             TaskScheduler.Default);
-        await using var connection = new OpenCoWorkJsonRpcConnection(
-            sessions,
-            workspacePath,
-            transport,
+        await using var connection = createConnection(
             (message, _) =>
             {
                 var copied = message.ToArray();
@@ -208,7 +278,7 @@ public static class OpenCoWorkProtocolServer
         {
             await foreach (var message in inbound.WithCancellation(lifetime.Token))
             {
-                var request = connection.ProcessAsync(message, lifetime.Token);
+                var request = process(connection, message, lifetime.Token);
                 pending.Add(request);
                 if (pending.Count < MaximumInFlightRequests)
                 {

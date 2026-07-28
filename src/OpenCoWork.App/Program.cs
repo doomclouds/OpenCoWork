@@ -149,6 +149,7 @@ namespace OpenCoWork.App
                       doctor    Inspect runtime and workspace health without modifying state.
                       chat      Run a local multi-turn agent conversation.
                       app-server  Serve the Desktop wire protocol.
+                      acp       Serve the ACP v1 bridge over stdio.
 
                     Options:
                       --version  Show version information.
@@ -318,7 +319,7 @@ namespace OpenCoWork.App
                 port,
             };
             appServer.SetAction((parseResult, cancellationToken) =>
-                RunAppServerAsync(
+                RunProtocolServerAsync(
                     parseResult.GetValue(serverWorkspace),
                     ResolveOptionalPath(
                         parseResult.GetValue(serverConfig),
@@ -335,8 +336,53 @@ namespace OpenCoWork.App
                     configureServices,
                     protocolInput,
                     protocolOutput,
+                    acp: false,
                     cancellationToken));
             root.Subcommands.Add(appServer);
+
+            var acpWorkspace = CreateWorkspaceOption();
+            var acpConfig = new Option<string?>("--config")
+            {
+                Description = "Use an additional JSONC configuration file.",
+            };
+            var acpSet = new Option<string[]>("--set")
+            {
+                Description = "Override configuration with path=value; repeatable.",
+            };
+            var acpStrictConfig = new Option<bool>("--strict-config")
+            {
+                Description = "Treat unknown configuration fields as failures.",
+            };
+            var acp = new Command(
+                "acp",
+                "Serve the ACP v1 bridge over stdio.")
+            {
+                acpWorkspace,
+                acpConfig,
+                acpSet,
+                acpStrictConfig,
+            };
+            acp.SetAction((parseResult, cancellationToken) =>
+                RunProtocolServerAsync(
+                    parseResult.GetValue(acpWorkspace),
+                    ResolveOptionalPath(
+                        parseResult.GetValue(acpConfig),
+                        workingDirectory),
+                    parseResult.GetValue(acpSet) ?? [],
+                    parseResult.GetValue(acpStrictConfig),
+                    requestedTransport: null,
+                    port: null,
+                    workingDirectory,
+                    userProfileDirectory,
+                    input,
+                    parseResult.InvocationConfiguration.Output,
+                    parseResult.InvocationConfiguration.Error,
+                    configureServices,
+                    protocolInput,
+                    protocolOutput,
+                    acp: true,
+                    cancellationToken));
+            root.Subcommands.Add(acp);
             return root;
         }
 
@@ -496,7 +542,7 @@ namespace OpenCoWork.App
             }
         }
 
-        private static async Task<int> RunAppServerAsync(
+        private static async Task<int> RunProtocolServerAsync(
             string? explicitWorkspace,
             string? explicitConfigPath,
             IReadOnlyList<string> setOverrides,
@@ -511,12 +557,13 @@ namespace OpenCoWork.App
             Action<IServiceCollection>? configureServices,
             Stream? protocolInput,
             Stream? protocolOutput,
+            bool acp,
             CancellationToken cancellationToken)
         {
             var redactor = new SecretRedactor([]);
             try
             {
-                var transport = requestedTransport ?? "stdio";
+                var transport = acp ? "stdio" : requestedTransport ?? "stdio";
                 if (transport is not ("stdio" or "websocket"))
                 {
                     await error.WriteLineAsync(
@@ -573,13 +620,39 @@ namespace OpenCoWork.App
                         snapshot,
                         configureServices),
                     snapshot.GetRequiredSection<RuntimeConfig>(),
-                    "app-server");
+                    acp ? "acp" : "app-server");
                 redactor = host.Services.GetRequiredService<SecretRedactor>();
                 await host.StartAsync(cancellationToken);
                 try
                 {
                     var sessions = host.Services.GetRequiredService<ISessionService>();
-                    if (transport == "websocket")
+                    if (acp)
+                    {
+                        var models = snapshot.GetRequiredSection<ModelsConfig>();
+                        if (protocolInput is not null && protocolOutput is not null)
+                        {
+                            await OpenCoWorkProtocolServer.RunAcpStdioAsync(
+                                sessions,
+                                paths.WorkspaceRoot,
+                                models.DefaultProvider,
+                                models.DefaultModel,
+                                protocolInput,
+                                protocolOutput,
+                                cancellationToken);
+                        }
+                        else
+                        {
+                            await OpenCoWorkProtocolServer.RunAcpJsonLinesAsync(
+                                sessions,
+                                paths.WorkspaceRoot,
+                                models.DefaultProvider,
+                                models.DefaultModel,
+                                input,
+                                output,
+                                cancellationToken);
+                        }
+                    }
+                    else if (transport == "websocket")
                     {
                         await OpenCoWorkProtocolServer.RunWebSocketAsync(
                             sessions,
@@ -777,6 +850,27 @@ namespace OpenCoWork.App
         Dependencies = ["session"],
         CanBePrimaryHost = true)]
     public sealed class AppServerModule : IOpenCoWorkModule
+    {
+        public void ConfigureServices(IServiceCollection services)
+        {
+        }
+
+        public ValueTask StartAsync(
+            IServiceProvider services,
+            CancellationToken cancellationToken) =>
+            ValueTask.CompletedTask;
+
+        public ValueTask StopAsync(
+            IServiceProvider services,
+            CancellationToken cancellationToken) =>
+            ValueTask.CompletedTask;
+    }
+
+    [OpenCoWorkModule(
+        "acp",
+        Dependencies = ["session"],
+        CanBePrimaryHost = true)]
+    public sealed class AcpModule : IOpenCoWorkModule
     {
         public void ConfigureServices(IServiceCollection services)
         {
