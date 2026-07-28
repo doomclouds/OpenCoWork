@@ -247,7 +247,12 @@ public sealed record ToolInvocationContext(
     JsonElement Arguments,
     string ArgumentsSha256,
     bool SensitiveInputDetected,
-    EffectiveToolSnapshot Snapshot);
+    EffectiveToolSnapshot Snapshot,
+    SessionExecutionCheckpoint? ApprovalCheckpoint = null,
+    DateTimeOffset? ApprovalTimeoutAt = null,
+    bool? ApprovalGranted = null,
+    int PriorAttemptCount = 0,
+    TimeSpan? RemainingExecutionBudget = null);
 
 public sealed class ToolBindingResult
 {

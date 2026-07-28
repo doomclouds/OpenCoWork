@@ -1927,6 +1927,28 @@ internal sealed class SessionProjection
             ("$toolInvocationId", fact.ToolInvocationId is null
                 ? null
                 : Wire(fact.ToolInvocationId.Value)));
+        if (fact.ToolInvocationId is { } waitingInvocationId)
+        {
+            await ExecuteRequiredAsync(
+                connection,
+                transaction,
+                """
+                UPDATE tool_invocations
+                SET status = 'waitingApproval',
+                    updated_at = $timestamp
+                WHERE tool_invocation_id = $invocationId
+                  AND thread_id = $threadId
+                  AND turn_id = $turnId
+                  AND status = 'started'
+                  AND completed_at IS NULL;
+                """,
+                cancellationToken,
+                ("$timestamp", timestamp),
+                ("$invocationId", Wire(waitingInvocationId)),
+                ("$threadId", Wire(entry.ThreadId)),
+                ("$turnId", Wire(fact.TurnId)));
+        }
+
         await ExecuteAsync(
             connection,
             transaction,

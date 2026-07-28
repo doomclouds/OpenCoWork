@@ -246,6 +246,21 @@ internal sealed partial class ToolRuntime
                    }).IsValid;
     }
 
+    public bool ValidateArguments(
+        ToolDefinition definition,
+        JsonElement arguments)
+    {
+        ArgumentNullException.ThrowIfNull(definition);
+        return TryCompileSchema(definition, out var schema) &&
+               schema!.Evaluate(
+                   arguments,
+                   new EvaluationOptions
+                   {
+                       OutputFormat = OutputFormat.Flag,
+                       RequireFormatValidation = false,
+                   }).IsValid;
+    }
+
     public bool TryResolveBinding(
         RuntimeBindingId bindingId,
         out ToolRuntimeBinding? binding)

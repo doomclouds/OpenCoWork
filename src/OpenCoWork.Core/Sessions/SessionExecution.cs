@@ -1936,6 +1936,16 @@ internal sealed partial class SessionService
 
         var requestType = RequestItemType(intent.Type, intent.Request);
         var timestamp = _timeProvider.GetUtcNow();
+        var waitingToolInvocation = intent.ToolInvocationId is { } invocationId
+            ? _toolInvocations[invocationId]
+            : null;
+        var waitingToolSnapshot = waitingToolInvocation is null
+            ? null
+            : waitingToolInvocation.Snapshot with
+            {
+                Status = ToolInvocationStatus.WaitingApproval,
+                UpdatedAt = timestamp,
+            };
         var itemId = Guid.CreateVersion7();
         var request = SerializeContent(intent.Request);
         var contentText = ContentText(intent.Request);
@@ -2000,7 +2010,8 @@ internal sealed partial class SessionService
             new SessionEventPayload(
                 Turn: waitingTurn,
                 Item: item,
-                Interaction: interaction),
+                Interaction: interaction,
+                ToolInvocation: waitingToolSnapshot),
             hash,
             cancellationToken);
         _turns[turn.TurnId] = waitingTurn;
@@ -2012,6 +2023,16 @@ internal sealed partial class SessionService
             request,
             intent.Checkpoint,
             Resolution: null);
+        if (waitingToolInvocation is not null)
+        {
+            _toolInvocations[waitingToolInvocation.Snapshot.ToolInvocationId] =
+                waitingToolInvocation with
+                {
+                    Snapshot = waitingToolSnapshot!,
+                    Sequence = sequence,
+                };
+        }
+
         return sequence;
     }
 
@@ -2940,6 +2961,22 @@ internal sealed partial class SessionService
                             "Journal waiting interaction has an invalid Tool Invocation.");
                     }
 
+                    if (waiting.ToolInvocationId is { } referencedInvocationId)
+                    {
+                        var waitingRecord = toolInvocations[referencedInvocationId];
+                        toolInvocation = waitingRecord.Snapshot with
+                        {
+                            Status = ToolInvocationStatus.WaitingApproval,
+                            UpdatedAt = entry.Timestamp,
+                        };
+                        toolInvocations[referencedInvocationId] =
+                            waitingRecord with
+                            {
+                                Snapshot = toolInvocation,
+                                Sequence = entry.Sequence,
+                            };
+                    }
+
                     turn = UpdateHistoryTurn(
                         turns,
                         waiting.TurnId,
@@ -3613,6 +3650,20 @@ internal sealed partial class SessionService
             fact.Request,
             fact.Checkpoint,
             Resolution: null);
+        if (fact.ToolInvocationId is { } waitingInvocationId)
+        {
+            var waitingInvocation = _toolInvocations[waitingInvocationId];
+            _toolInvocations[waitingInvocationId] = waitingInvocation with
+            {
+                Snapshot = waitingInvocation.Snapshot with
+                {
+                    Status = ToolInvocationStatus.WaitingApproval,
+                    UpdatedAt = entry.Timestamp,
+                },
+                Sequence = entry.Sequence,
+            };
+        }
+
         UpdateTurn(
             fact.TurnId,
             WaitingStatus(fact.InteractionType),
@@ -3846,7 +3897,9 @@ internal sealed partial class SessionService
             SessionItemType.Reasoning =>
                 content.Deserialize<TextItemContent>(JsonOptions),
             SessionItemType.ApprovalRequest =>
-                content.Deserialize<ApprovalRequestContent>(JsonOptions),
+                content.TryGetProperty("toolInvocationId", out _)
+                    ? content.Deserialize<ToolApprovalRequestContent>(JsonOptions)
+                    : content.Deserialize<ApprovalRequestContent>(JsonOptions),
             SessionItemType.ApprovalResponse =>
                 content.Deserialize<ApprovalResponseContent>(JsonOptions),
             SessionItemType.UserInputRequest =>

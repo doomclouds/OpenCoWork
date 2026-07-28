@@ -219,6 +219,170 @@ public sealed class SessionExecutionTests
     }
 
     [Fact]
+    public async Task Tool_approval_waits_and_resumes_the_same_invocation()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        using var files = new TempWorkspace();
+        var toolCallItemId = Guid.CreateVersion7();
+        var toolInvocationId = Guid.CreateVersion7();
+        var resultItemId = Guid.CreateVersion7();
+        var interactionId = Guid.CreateVersion7();
+        var checkpoint = SessionExecutionCheckpointCodec.Create(
+            "scripted",
+            schemaVersion: 1,
+            payload: """{"stage":"approval"}""");
+        using var arguments = JsonDocument.Parse("""{"path":"src"}""");
+        using var output = JsonDocument.Parse("""{"entries":[]}""");
+        var argumentsSha256 = Sha256(arguments.RootElement.GetRawText());
+        var result = new ToolResultSnapshot(
+            toolInvocationId,
+            "call-approval",
+            ToolInvocationStatus.Completed,
+            output.RootElement,
+            Error: null,
+            IsTruncated: false,
+            Encoding.UTF8.GetByteCount(output.RootElement.GetRawText()),
+            Sha256(output.RootElement.GetRawText()),
+            AttemptCount: 1);
+        var executor = new ScriptedExecutor(
+            async (_, sink, token) =>
+            {
+                await sink.EmitAsync(
+                    new RecordToolCallIntent(
+                        toolCallItemId,
+                        new ToolCallItemContent(
+                            providerRound: 1,
+                            agentMessageItemId: null,
+                            [
+                                new ToolCallItemEntry(
+                                    "call-approval",
+                                    "file__list",
+                                    arguments.RootElement,
+                                    argumentsSha256,
+                                    sensitiveInputDetected: false),
+                            ])),
+                    token);
+                await sink.EmitAsync(
+                    new RecordToolInvocationStartedIntent(
+                        toolInvocationId,
+                        toolCallItemId,
+                        CallIndex: 0,
+                        "call-approval",
+                        "file__list",
+                        new ToolDefinitionId(
+                            ToolSourceKind.CoreNative,
+                            "opencowork.core",
+                            "file.list"),
+                        new RuntimeBindingId("core.file.list.v1"),
+                        new string('a', 64),
+                        argumentsSha256),
+                    token);
+                await sink.EmitAsync(
+                    new WaitForInteractionIntent(
+                        interactionId,
+                        SessionInteractionType.Approval,
+                        new ToolApprovalRequestContent(
+                            toolInvocationId,
+                            new ToolDefinitionId(
+                                ToolSourceKind.CoreNative,
+                                "opencowork.core",
+                                "file.list"),
+                            new string('a', 64),
+                            argumentsSha256,
+                            "Approve?"),
+                        checkpoint,
+                        TimeoutAt: null,
+                        toolInvocationId),
+                    token);
+            },
+            async (context, sink, token) =>
+            {
+                Assert.Equal(checkpoint, context.Checkpoint);
+                Assert.Contains(
+                    context.ModelHistory,
+                    item => item.Content is
+                        ApprovalResponseContent { Approved: true });
+                await sink.EmitAsync(
+                    new RecordToolInvocationAttemptStartedIntent(
+                        toolInvocationId,
+                        AttemptNumber: 1),
+                    token);
+                await sink.EmitAsync(
+                    new RecordToolInvocationTerminalIntent(resultItemId, result),
+                    token);
+                await sink.EmitAsync(new CompleteTurnIntent(), token);
+            });
+        var (runtime, _, service) = await CreateServiceAsync(
+            files,
+            cancellationToken,
+            executor);
+        var thread = await CreateThreadAsync(service, cancellationToken);
+        var turnId = Guid.CreateVersion7();
+        await service.StartTurnAsync(
+            thread.ThreadId,
+            turnId,
+            Guid.CreateVersion7(),
+            thread.CurrentSequence,
+            cancellationToken);
+        await service.WaitForExecutionAsync(turnId, cancellationToken);
+
+        var waitingHistory = Assert.IsType<SessionPage<SessionEvent>>(
+            (await service.ReadHistoryAsync(
+                new ReadHistoryRequest(thread.ThreadId),
+                cancellationToken)).Value);
+        var waitingEvent = Assert.Single(
+            waitingHistory.Items,
+            item => item.Type == SessionEventType.TurnWaitingApproval);
+        Assert.Equal(
+            ToolInvocationStatus.WaitingApproval,
+            waitingEvent.Payload.ToolInvocation?.Status);
+        var approval = Assert.IsType<ToolApprovalRequestContent>(
+            waitingEvent.Payload.Item?.Content);
+        Assert.Equal(toolInvocationId, approval.ToolInvocationId);
+        Assert.Equal(argumentsSha256, approval.ArgumentsSha256);
+        await using (var connection =
+                     await runtime.OpenReadOnlyConnectionAsync(cancellationToken))
+        await using (var command = connection.CreateCommand())
+        {
+            command.CommandText =
+                "SELECT status FROM tool_invocations WHERE tool_invocation_id = $id;";
+            command.Parameters.AddWithValue(
+                "$id",
+                toolInvocationId.ToString("D").ToLowerInvariant());
+            Assert.Equal(
+                "waitingApproval",
+                await command.ExecuteScalarAsync(cancellationToken));
+        }
+
+        var waitingThread = Assert.IsType<ThreadSnapshot>(
+            (await service.GetThreadAsync(
+                thread.ThreadId,
+                cancellationToken)).Value);
+        await service.ResolveInteractionAsync(
+            new ResolveInteractionRequest(
+                thread.ThreadId,
+                turnId,
+                interactionId,
+                new ApprovalResponseContent(true, "approved"),
+                Guid.CreateVersion7(),
+                waitingThread.CurrentSequence),
+            cancellationToken);
+        await service.WaitForExecutionAsync(turnId, cancellationToken);
+
+        await using var completedConnection =
+            await runtime.OpenReadOnlyConnectionAsync(cancellationToken);
+        await using var completedCommand = completedConnection.CreateCommand();
+        completedCommand.CommandText =
+            "SELECT status FROM tool_invocations WHERE tool_invocation_id = $id;";
+        completedCommand.Parameters.AddWithValue(
+            "$id",
+            toolInvocationId.ToString("D").ToLowerInvariant());
+        Assert.Equal(
+            "completed",
+            await completedCommand.ExecuteScalarAsync(cancellationToken));
+    }
+
+    [Fact]
     public async Task Agent_snapshots_usage_and_compaction_are_durable_across_restart()
     {
         var cancellationToken = TestContext.Current.CancellationToken;

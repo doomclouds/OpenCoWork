@@ -181,7 +181,7 @@ public abstract record SessionItemContent;
 
 public sealed record TextItemContent(string Text) : SessionItemContent;
 
-public sealed record ApprovalRequestContent(string Prompt) : SessionItemContent;
+public record ApprovalRequestContent(string Prompt) : SessionItemContent;
 
 public sealed record ApprovalResponseContent(bool Approved, string? Comment) : SessionItemContent;
 
@@ -198,7 +198,7 @@ public sealed record ToolApprovalRequestContent(
     ToolDefinitionId ToolDefinitionId,
     string SnapshotSha256,
     string ArgumentsSha256,
-    string Prompt) : SessionItemContent;
+    string Prompt) : ApprovalRequestContent(Prompt);
 
 public sealed record ToolCallItemEntry
 {

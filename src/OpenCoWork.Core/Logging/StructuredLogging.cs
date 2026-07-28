@@ -1,4 +1,5 @@
 using System.Collections;
+using System.Buffers;
 using System.Globalization;
 using System.Text;
 using System.Text.Json;
@@ -71,6 +72,19 @@ public sealed class SecretRedactor
                 match.Groups["key"].Value +
                 match.Groups["separator"].Value +
                 Replacement);
+    }
+
+    internal JsonElement RedactJson(JsonElement value, out bool changed)
+    {
+        var buffer = new ArrayBufferWriter<byte>();
+        using (var writer = new Utf8JsonWriter(buffer))
+        {
+            changed = false;
+            WriteRedactedJson(writer, value, key: null, ref changed);
+        }
+
+        using var document = JsonDocument.Parse(buffer.WrittenMemory);
+        return document.RootElement.Clone();
     }
 
     internal object? RedactValue(string? key, object? value)
@@ -155,6 +169,67 @@ public sealed class SecretRedactor
         }
 
         return result;
+    }
+
+    private void WriteRedactedJson(
+        Utf8JsonWriter writer,
+        JsonElement value,
+        string? key,
+        ref bool changed)
+    {
+        if (key is not null && IsSensitiveKey(key))
+        {
+            writer.WriteStringValue(Replacement);
+            changed = true;
+            return;
+        }
+
+        switch (value.ValueKind)
+        {
+            case JsonValueKind.Object:
+                writer.WriteStartObject();
+                foreach (var property in value.EnumerateObject())
+                {
+                    writer.WritePropertyName(property.Name);
+                    WriteRedactedJson(
+                        writer,
+                        property.Value,
+                        property.Name,
+                        ref changed);
+                }
+
+                writer.WriteEndObject();
+                break;
+            case JsonValueKind.Array:
+                writer.WriteStartArray();
+                foreach (var item in value.EnumerateArray())
+                {
+                    WriteRedactedJson(writer, item, key: null, ref changed);
+                }
+
+                writer.WriteEndArray();
+                break;
+            case JsonValueKind.String:
+                var text = value.GetString() ?? string.Empty;
+                var redacted = RedactText(text);
+                changed |= !string.Equals(text, redacted, StringComparison.Ordinal);
+                writer.WriteStringValue(redacted);
+                break;
+            case JsonValueKind.Number:
+                writer.WriteRawValue(value.GetRawText(), skipInputValidation: true);
+                break;
+            case JsonValueKind.True:
+                writer.WriteBooleanValue(true);
+                break;
+            case JsonValueKind.False:
+                writer.WriteBooleanValue(false);
+                break;
+            case JsonValueKind.Null:
+                writer.WriteNullValue();
+                break;
+            default:
+                throw new JsonException("JSON value is undefined.");
+        }
     }
 
     private static bool IsSensitiveKey(string key)
