@@ -29,6 +29,8 @@ public sealed class RuntimeCompositionIntegrationTests
                 Assert.Collection(
                     modules,
                     module => Assert.IsType<SessionModule>(module),
+                    module => Assert.IsType<AcpModule>(module),
+                    module => Assert.IsType<AppServerModule>(module),
                     module => Assert.IsType<CliModule>(module));
                 Assert.IsType<ModuleLifecycleCoordinator>(
                     Assert.Single(host.Services.GetServices<IHostedService>()));
@@ -39,7 +41,7 @@ public sealed class RuntimeCompositionIntegrationTests
                 Assert.Equal(WorkspaceRuntimeStatus.Running, runtime.Status);
                 Assert.Equal("cli", runtime.StartedState.PrimaryHost.Id);
                 Assert.Equal(
-                    ["session", "cli"],
+                    ["session", "acp", "app-server", "cli"],
                     host.Services.GetRequiredService<ModuleRegistry>()
                         .StartupOrder.Select(module => module.Id));
 

@@ -15,6 +15,8 @@ public sealed class SessionCrashRecoveryIntegrationTests
     private const string ChildFlag = "OPENCOWORK_M2_CRASH_CHILD";
     private const string ToolChildFlag = "OPENCOWORK_M4_TOOL_CRASH_CHILD";
     private const string ChildWorkspace = "OPENCOWORK_M2_CRASH_WORKSPACE";
+    private const string ToolKeyEnvironment = "OPENCOWORK_M4_TOOL_KEY";
+    private const string ToolModel = "qwen3.8-max-preview";
     private const int CrashExitCode = 73;
 
     [Fact]
@@ -32,7 +34,12 @@ public sealed class SessionCrashRecoveryIntegrationTests
                 nameof(Child_commits_turn_then_terminates_process),
                 ChildFlag,
                 cancellationToken);
-            Assert.Equal(CrashExitCode, child.ExitCode);
+            Assert.True(
+                child.ExitCode == CrashExitCode,
+                $"Exit={child.ExitCode}{Environment.NewLine}" +
+                $"stdout:{Environment.NewLine}{child.Output}" +
+                $"{Environment.NewLine}stderr:{Environment.NewLine}" +
+                child.Error);
             Assert.DoesNotContain(
                 root,
                 child.Output,
@@ -91,7 +98,12 @@ public sealed class SessionCrashRecoveryIntegrationTests
                 nameof(Child_commits_tool_attempt_then_terminates_process),
                 ToolChildFlag,
                 cancellationToken);
-            Assert.Equal(CrashExitCode, child.ExitCode);
+            Assert.True(
+                child.ExitCode == CrashExitCode,
+                $"Exit={child.ExitCode}{Environment.NewLine}" +
+                $"stdout:{Environment.NewLine}{child.Output}" +
+                $"{Environment.NewLine}stderr:{Environment.NewLine}" +
+                child.Error);
 
             using var host = OpenCoWorkCompositionRoot.Build(
                 [],
@@ -193,9 +205,13 @@ public sealed class SessionCrashRecoveryIntegrationTests
         using var host = OpenCoWorkCompositionRoot.Build(
             [],
             root,
-            services => services.AddSingleton<
-                ISessionExecutor,
-                ToolAttemptCrashExecutor>());
+            services =>
+            {
+                services.AddSingleton(ToolCrashModels());
+                services.AddSingleton<
+                    ISessionExecutor,
+                    ToolAttemptCrashExecutor>();
+            });
         await host.StartAsync(TestContext.Current.CancellationToken);
         var service = host.Services.GetRequiredService<ISessionService>();
         var thread = (await service.CreateThreadAsync(
@@ -204,7 +220,7 @@ public sealed class SessionCrashRecoveryIntegrationTests
                 ExpectedSequence: 0,
                 DisplayName: "tool crash recovery",
                 ProviderId: "test",
-                ModelId: "model"),
+                ModelId: ToolModel),
             TestContext.Current.CancellationToken)).Value!;
         await service.EnqueueInputAsync(
             new EnqueueInputRequest(
@@ -238,6 +254,7 @@ public sealed class SessionCrashRecoveryIntegrationTests
             $"{typeof(SessionCrashRecoveryIntegrationTests).FullName}.{method}");
         startInfo.Environment[flag] = "1";
         startInfo.Environment[ChildWorkspace] = root;
+        startInfo.Environment[ToolKeyEnvironment] = "test-secret";
         using var process = Process.Start(startInfo)
             ?? throw new InvalidOperationException("Could not start crash child.");
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(
@@ -289,15 +306,15 @@ public sealed class SessionCrashRecoveryIntegrationTests
             var invocation = new AgentInvocationSnapshot(
                 Guid.CreateVersion7(),
                 "test",
-                "model",
-                "test-tokenizer",
+                ToolModel,
+                "qwen-o200k",
                 "1",
                 AgentMode.Agent,
                 new AgentPromptSnapshot("response-v1", new string('b', 64), 1),
                 new AgentPromptSnapshot("compaction-v1", new string('c', 64), 1),
                 WorkspaceInstructions: null,
-                ContextWindowTokens: 1024,
-                MaxOutputTokens: 128,
+                ContextWindowTokens: 983_616,
+                MaxOutputTokens: 131_072,
                 new string('d', 64),
                 tools);
             await sink.EmitAsync(
@@ -375,6 +392,34 @@ public sealed class SessionCrashRecoveryIntegrationTests
                 cancellationToken);
         }
     }
+
+    private static ModelsConfig ToolCrashModels() =>
+        new()
+        {
+            DefaultProvider = "test",
+            DefaultModel = ToolModel,
+            Providers = new Dictionary<string, ProviderConfig>(StringComparer.Ordinal)
+            {
+                ["test"] = new()
+                {
+                    BaseUrl = "https://example.test/v1",
+                    ApiKey = new ProviderApiKeyConfig
+                    {
+                        Environment = ToolKeyEnvironment,
+                    },
+                    Models = new Dictionary<string, ModelConfig>(StringComparer.Ordinal)
+                    {
+                        [ToolModel] = new()
+                        {
+                            TokenizerProfileId = "qwen-o200k",
+                            TokenizerProfileVersion = "1",
+                            ContextWindowTokens = 983_616,
+                            MaxOutputTokens = 131_072,
+                        },
+                    },
+                },
+            },
+        };
 
     private sealed record CrashChildResult(
         int ExitCode,

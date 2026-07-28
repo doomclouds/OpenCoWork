@@ -125,16 +125,17 @@ public sealed class ToolRuntimeIntegrationTests
             var credentials = FrozenProviderCredentials.Capture(
                 models,
                 name => name == "TOOL_RUNTIME_KEY" ? "test-secret" : null);
+            var providers = new ProviderRegistry(
+                models,
+                credentials,
+                AppContext.BaseDirectory,
+                root);
             var tools = new ToolRuntime(paths);
             var redactor = new SecretRedactor(["test-secret"]);
             var client = new ToolLoopClient();
             var executor = new AgentRuntimeExecutor(
                 new AgentFactory(
-                    new ProviderRegistry(
-                        models,
-                        credentials,
-                        AppContext.BaseDirectory,
-                        root),
+                    providers,
                     paths,
                     tools),
                 paths,
@@ -146,17 +147,23 @@ public sealed class ToolRuntimeIntegrationTests
             using var host = OpenCoWorkCompositionRoot.Build(
                 [],
                 root,
-                services => services.AddSingleton<ISessionExecutor>(executor));
+                services =>
+                {
+                    services.AddSingleton(providers);
+                    services.AddSingleton<ISessionExecutor>(executor);
+                });
             await host.StartAsync(cancellationToken);
             var service = host.Services.GetRequiredService<ISessionService>();
-            var thread = (await service.CreateThreadAsync(
+            var created = await service.CreateThreadAsync(
                 new CreateThreadRequest(
                     Guid.CreateVersion7(),
                     ExpectedSequence: 0,
                     DisplayName: "tool loop",
                     ProviderId: "token-plan",
                     ModelId: "qwen3.8-max-preview"),
-                cancellationToken)).Value!;
+                cancellationToken);
+            Assert.Null(created.Error);
+            var thread = Assert.IsType<ThreadSnapshot>(created.Value);
             await service.EnqueueInputAsync(
                 new EnqueueInputRequest(
                     thread.ThreadId,
