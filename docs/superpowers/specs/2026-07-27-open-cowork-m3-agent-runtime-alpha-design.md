@@ -2,8 +2,9 @@
 
 ## 文档状态
 
-- 状态：设计已冻结，待实现计划
+- 状态：已交付
 - 日期：2026-07-27
+- 验收边界修订：2026-07-28
 - 所属里程碑：OpenCoWork Runtime 1.0 / M3
 - 目标框架：.NET 10
 - 路线规格：
@@ -121,6 +122,11 @@ M3 只实现一个 `openai-compatible` Chat Completions 适配器，通过配置
 - OpenAI 兼容端点；
 - 千问 Token Plan；
 - DeepSeek。
+
+上述“支持”只表示共享协议与配置入口，不等于已经取得真实兼容性证据。M3 的首个
+真实 Provider 发布承诺收敛为 DeepSeek 官方；千问 Token Plan 和后续 Provider
+必须先进入 `docs/provider-validation-backlog.md`，待显式激活后再增加对应真实
+发布测试和支持声明。
 
 核心请求仅依赖三方共同具备的最小字段：
 
@@ -779,14 +785,10 @@ Snapshot 只记录：
 
 ### 2.13 真实 Provider 与发布验证
 
-M3 的真实兼容性发布矩阵固定为六条：
+M3 的首个真实 Provider 发布矩阵固定为两条：
 
 | Provider 路径 | 精确 Model ID |
 | --- | --- |
-| 千问 Token Plan | `qwen3.8-max-preview` |
-| 千问 Token Plan | `glm-5.2` |
-| 千问 Token Plan | `deepseek-v4-pro` |
-| 千问 Token Plan | `deepseek-v4-flash` |
 | DeepSeek 官方 | `deepseek-v4-pro` |
 | DeepSeek 官方 | `deepseek-v4-flash` |
 
@@ -798,17 +800,17 @@ M3 的真实兼容性发布矩阵固定为六条：
 - 返回真实、非空 Usage；
 - 本地 Tokenizer 与 Provider Prompt Usage 满足 2.7 的对账阈值。
 
-Reasoning 真实冒烟只保留两个代表：千问 Token Plan 使用
-`qwen3.8-max-preview`，DeepSeek 官方使用 `deepseek-v4-flash`。测试只断言
-Reasoning 流可选出现时能被正确归一化和提交，不比较思考内容或回答措辞。
+Reasoning 真实冒烟使用 `deepseek-v4-flash` 作为代表。测试只断言 Reasoning
+流可选出现时能被正确归一化和提交，不比较思考内容或回答措辞。
 
 真实测试固定为显式发布任务，不进入默认 `dotnet test`，也不在缺少安全凭据的普通
-CI 或开发机上自动联网。缺少某条路径的凭据时结果是 `NotRun`，不能记为通过；任一
-对外宣称支持的模型路径未通过，都阻止 M3 发布。
+CI 或开发机上自动联网。缺少某条 DeepSeek 路径的凭据时结果是 `NotRun`，不能记为
+通过；任一对外宣称支持的模型路径未通过，都阻止 M3 发布。
 
-`M3-ACC-002` 的 `DualPlatform` 证据固定为：六条真实路径分别在 `win-x64` 和
-`osx-arm64` 各执行一次，共十二个短请求；本地 Fake Provider 契约、安全和故障注入
-套件也必须在两个真实平台分别通过，不能在单一平台模拟另一平台。
+`M3-ACC-002` 的真实平台证据固定为：两条 DeepSeek 官方路径在 `osx-arm64`
+各执行一次。本地 Fake Provider 契约、安全和故障注入套件继续证明 Provider 中立
+行为；`win-x64` 真实 Provider、千问 Token Plan 和后续 Provider 的兼容性证据延期到
+`docs/provider-validation-backlog.md`，未激活和通过前不得对外宣称支持。
 
 Secret Canary 固定为两层：
 
@@ -904,7 +906,7 @@ ThreadJournal
 | 验收编号 | 冻结设计覆盖 | 预期证据 |
 | --- | --- | --- |
 | `M3-ACC-001` | §2.1、§2.8、§2.12：单一执行路径、确定性 AgentFactory、唯一 System Message 和空 Tool Snapshot。 | AgentFactory 组装顺序测试、五份 Prompt Golden Snapshot、配置快照重放断言。 |
-| `M3-ACC-002` | §2.1、§2.2、§2.13、§2.14：Fake 与真实 Provider 共用中立契约，Secret 不进入持久化与输出面。 | 双平台 Provider Contract/Security Tests、十二条真实短冒烟、Secret Canary 全输出面扫描。 |
+| `M3-ACC-002` | §2.1、§2.2、§2.13、§2.14：Fake 与首个真实 Provider 共用中立契约，Secret 不进入持久化与输出面。 | Provider Contract/Security Tests、`osx-arm64` 两条 DeepSeek 官方短冒烟、Secret Canary 全输出面扫描。 |
 | `M3-ACC-003` | §2.3、§2.4：Content、Reasoning、Usage 和终态只经 Session Sink 按 Journal 顺序提交并恢复。 | Chunk/Reasoning/Usage/Terminal 顺序测试、Journal 重放与投影重建快照。 |
 | `M3-ACC-004` | §2.5、§2.9：首个可见增量前只重试白名单瞬态错误，提交后保留部分输出且不重试。 | Fake Server 两阶段断流、协议错误和 Invocation/Attempt 计数故障注入。 |
 | `M3-ACC-005` | §2.6、§2.7、§2.12：真实 Token 预算、80%/60%/50% 水位和权威 Checkpoint 可重放。 | Token 边界测试、Micro/Partial Compaction 测试、崩溃后 Checkpoint 重放。 |
@@ -914,6 +916,7 @@ ThreadJournal
 
 ## 6. 冻结结论
 
-M3 设计于 2026-07-27 完成全文一致性审查并冻结，没有待确认设计项。实现计划可以
-基于本文创建，但不得提前引入 M4+ 的工具、Provider 插件、动态能力协商或厂商专用
-接口；任何公共行为变更必须先修订本文和对应验收映射。
+M3 设计于 2026-07-27 完成全文一致性审查并冻结，并于 2026-07-28 按用户确认将
+真实发布承诺收敛为 `osx-arm64` 上的 DeepSeek 官方首个 Provider。实现计划不得
+提前引入 M4+ 的工具、Provider 插件、动态能力协商或厂商专用接口；后续 Provider
+必须按待验证清单显式激活后再增加发布测试和支持声明。

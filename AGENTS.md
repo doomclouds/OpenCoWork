@@ -25,6 +25,12 @@
 M1/M2 的 Apple Silicon macOS 真机验证已于 2026-07-27 完成，详细证据保存在
 对应交付归档中。后续发布候选验收按所属里程碑规格执行，不在此重复维护待办清单。
 
+## Provider 真实兼容性验证
+
+当前支持声明、已验证基线和后续待验证 Provider 统一记录在
+`docs/provider-validation-backlog.md`。只有用户显式激活对应 Provider、模型和平台
+后才编写真实发布测试；不得用共享协议适配或其他 Provider 的通过结果代替真实证据。
+
 <!-- asset-compounding-guidance:start -->
 <!-- asset-compounding-guidance:version=0.3.1 -->
 ## Asset Compounding Retrieval Guide

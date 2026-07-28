@@ -48,6 +48,12 @@ Status 使用 `Passed`、`Planned`、`Failed`、`Superseded`。
 伪通过，统一滚动登记到仓库 `AGENTS.md`，并在 M10 / OpenCoWork 1.0 发布前清零。
 该调整只改变 M1 的收口时点，不改变 1.0 对 `osx-arm64` 真实平台验收的承诺。
 
+2026-07-28 用户确认 M3 以 DeepSeek 官方作为首个真实 Provider，并接受
+`osx-arm64` 的两条真实模型证据关闭本 Slice。千问 Token Plan、其他 Provider 和
+`win-x64` 真实 Provider 兼容性统一进入
+[`docs/provider-validation-backlog.md`](../../provider-validation-backlog.md)，
+并由 M10 的双平台兼容矩阵继续约束；未验证项不得对外宣称支持。
+
 ## 2. M0 - Contract Freeze（8）
 
 | AcceptanceId | Requirement | CapabilityIds | EvidenceType | Platforms | ExpectedEvidence | Status | SupersededBy |
@@ -93,14 +99,14 @@ Status 使用 `Passed`、`Planned`、`Failed`、`Superseded`。
 
 | AcceptanceId | Requirement | CapabilityIds | EvidenceType | Platforms | ExpectedEvidence | Status | SupersededBy |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| M3-ACC-001 | AgentFactory 确定性组装 AgentSession、系统提示、Context 和空 Tool Snapshot。 | CAP-025, CAP-037 | ContractSnapshot | All | 组装顺序与 Prompt Snapshot。 | Planned | — |
-| M3-ACC-002 | Fake Provider 和首个真实 Provider 共享中立契约，认证 Secret 不落盘。 | CAP-026, CAP-027 | SecurityTest | DualPlatform | Provider Contract Tests、真实模型冒烟和 Secret Canary。 | Planned | — |
-| M3-ACC-003 | 流式响应、Reasoning 和 Item 终态按 Journal 顺序持久化并可恢复。 | CAP-028 | AutomatedTest | All | Chunk/Reasoning/Terminal 重放快照。 | Planned | — |
-| M3-ACC-004 | 首 Token 前瞬态错误可重试，首 Token 后中断不重复已显示内容。 | CAP-029 | FaultInjection | All | 两阶段流中断测试与 Invocation 计数。 | Planned | — |
-| M3-ACC-005 | Token 预算、Micro/Partial Compaction 和 Checkpoint 在重启后保持一致。 | CAP-038, CAP-039 | AutomatedTest | All | 边界窗口、压缩和重放测试。 | Planned | — |
-| M3-ACC-006 | Prompt-too-long 触发有界响应式压缩，当前 Turn 不重复。 | CAP-040 | FaultInjection | All | Provider Overflow 脚本和规范化历史断言。 | Planned | — |
-| M3-ACC-007 | Usage 在流式、重试、压缩和恢复后无重复累计。 | CAP-028, CAP-075 | AutomatedTest | All | Usage Ledger 对账测试。 | Planned | — |
-| M3-ACC-008 | Agent/Plan 模式持久化，并为 M4 提供不同的工具曝光策略输入。 | CAP-030 | ContractSnapshot | All | 模式切换、重启恢复和策略快照。 | Planned | — |
+| M3-ACC-001 | AgentFactory 确定性组装 AgentSession、系统提示、Context 和空 Tool Snapshot。 | CAP-025, CAP-037 | ContractSnapshot | All | `AgentFactoryTests`、Prompt Golden、`AgentContractTests` 和 [M3 交付归档](../archives/2026-07/2026-07-27-open-cowork-m3-agent-runtime-alpha-archives.md)。 | Passed | — |
+| M3-ACC-002 | Fake Provider 和首个真实 Provider 共享中立契约，认证 Secret 不落盘。 | CAP-026, CAP-027 | SecurityTest | osx-arm64 | `ChatCompletionClientTests`、`StructuredLoggingTests`、Secret Canary，以及提交 `3da2e47` 上 DeepSeek Pro/Flash 两条真实冒烟。 | Passed | — |
+| M3-ACC-003 | 流式响应、Reasoning 和 Item 终态按 Journal 顺序持久化并可恢复。 | CAP-028 | AutomatedTest | All | `AgentRuntimeExecutorTests`、`SessionExecutionTests` 和 `SessionCrashRecoveryIntegrationTests`。 | Passed | — |
+| M3-ACC-004 | 首 Token 前瞬态错误可重试，首 Token 后中断不重复已显示内容。 | CAP-029 | FaultInjection | All | `AgentRuntimeExecutorTests` 与 `ChatCompletionClientTests` 的两阶段流中断、协议错误和 Invocation 计数。 | Passed | — |
+| M3-ACC-005 | Token 预算、Micro/Partial Compaction 和 Checkpoint 在重启后保持一致。 | CAP-038, CAP-039 | AutomatedTest | All | `AgentFactoryTests`、`CompactionTests`、`SessionProjectionTests` 和 `SessionRecoveryTests`。 | Passed | — |
+| M3-ACC-006 | Prompt-too-long 触发有界响应式压缩，当前 Turn 不重复。 | CAP-040 | FaultInjection | All | `CompactionTests` 的精确错误信封、三次调用预算、唯一当前 Turn 和失败边界。 | Passed | — |
+| M3-ACC-007 | Usage 在流式、重试、压缩和恢复后无重复累计。 | CAP-028, CAP-075 | AutomatedTest | All | `AgentRuntimeExecutorTests`、`CompactionTests` 和 Usage 投影/重放对账。 | Passed | — |
+| M3-ACC-008 | Agent/Plan 模式持久化，并为 M4 提供不同的工具曝光策略输入。 | CAP-030 | ContractSnapshot | All | `ChatCliIntegrationTests`、`SessionContractTests` 和 Queue/重启模式冻结测试。 | Passed | — |
 
 ## 6. M4 - Tool Runtime Alpha（10）
 

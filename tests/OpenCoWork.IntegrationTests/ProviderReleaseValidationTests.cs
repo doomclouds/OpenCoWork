@@ -20,26 +20,6 @@ public sealed class ProviderReleaseValidationTests(ITestOutputHelper output)
     private static readonly ProviderCase[] Paths =
     [
         new(
-            "qwen-token-plan",
-            "qwen3.8-max-preview",
-            "OPENCOWORK_RELEASE_TOKEN_PLAN_BASE_URL",
-            "OPENCOWORK_RELEASE_TOKEN_PLAN_API_KEY"),
-        new(
-            "qwen-token-plan",
-            "glm-5.2",
-            "OPENCOWORK_RELEASE_TOKEN_PLAN_BASE_URL",
-            "OPENCOWORK_RELEASE_TOKEN_PLAN_API_KEY"),
-        new(
-            "qwen-token-plan",
-            "deepseek-v4-pro",
-            "OPENCOWORK_RELEASE_TOKEN_PLAN_BASE_URL",
-            "OPENCOWORK_RELEASE_TOKEN_PLAN_API_KEY"),
-        new(
-            "qwen-token-plan",
-            "deepseek-v4-flash",
-            "OPENCOWORK_RELEASE_TOKEN_PLAN_BASE_URL",
-            "OPENCOWORK_RELEASE_TOKEN_PLAN_API_KEY"),
-        new(
             "deepseek-official",
             "deepseek-v4-pro",
             "OPENCOWORK_RELEASE_DEEPSEEK_BASE_URL",
@@ -354,9 +334,6 @@ public sealed class ProviderReleaseValidationTests(ITestOutputHelper output)
         string ApiKeyVariable)
     {
         public bool RequiresReasoningRepresentative =>
-            ProviderPath == "qwen-token-plan" &&
-            ModelId == "qwen3.8-max-preview" ||
-            ProviderPath == "deepseek-official" &&
             ModelId == "deepseek-v4-flash";
     }
 

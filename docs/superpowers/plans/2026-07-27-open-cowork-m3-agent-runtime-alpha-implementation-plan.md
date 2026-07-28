@@ -1,19 +1,20 @@
 # OpenCoWork M3 Agent Runtime Alpha 实施计划
 
-**Status:** In Progress；Outcome 1-7 已完成，正在推进 Outcome 8。
+**Status:** Completed；Outcome 1-8 已完成。
 
 **Goal:** 在 M2 Durable Session Core 上交付 Provider 中立、无真实工具、支持
 真实多轮对话、流式响应、重试、Token 预算和可恢复压缩的 Agent Runtime。
 
 **Why planning is required:** M3 同时修改公共 Agent/Session 契约、SQLite Schema、
 ThreadJournal 事实、配置与 Secret 边界、Tokenizer 资产、HTTP/SSE 协议、流式提交、
-重试、上下文压缩、CLI 和双平台真实 Provider 发布验证，属于跨模块、数据迁移、
+重试、上下文压缩、CLI 和真实 Provider 发布验证，属于跨模块、数据迁移、
 公共契约和安全敏感工作，必须按依赖闭包推进。
 
 **Acceptance:** `M3-ACC-001` 至 `M3-ACC-008` 全部具备自动化或真实平台证据；
-默认测试完全离线；六条真实 Provider/Model 路径在 `win-x64` 与 `osx-arm64`
-分别通过，共十二个短请求；Secret 不进入 Journal、SQLite、Session Event、日志、
-stdout、stderr 或测试产物；最终只生成一份 M3 交付归档。
+默认测试完全离线；DeepSeek 官方的两条模型路径在 `osx-arm64` 通过真实短请求；
+Secret 不进入 Journal、SQLite、Session Event、日志、stdout、stderr 或测试产物；
+其他 Provider 和 `win-x64` 真实兼容性进入独立待验证清单；最终只生成一份 M3
+交付归档。
 
 ## Source Documents
 
@@ -51,7 +52,7 @@ stdout、stderr 或测试产物；最终只生成一份 M3 交付归档。
 | `tests/OpenCoWork.Core.Tests/AgentRuntimeExecutorTests.cs` | 流式 Item、重试、Usage、取消、Deadline 和终态测试。 |
 | `tests/OpenCoWork.Core.Tests/CompactionTests.cs` | Micro/Partial、Checkpoint、prompt-too-long 和恢复测试。 |
 | `tests/OpenCoWork.IntegrationTests/ChatCliIntegrationTests.cs` | `opencowork chat`、重启恢复、模式、重定向输入和 Ctrl+C 集成测试。 |
-| `tests/OpenCoWork.IntegrationTests/ProviderReleaseValidationTests.cs` | 显式启用的双平台十二条真实短冒烟和 Secret Canary 发布 Runner。 |
+| `tests/OpenCoWork.IntegrationTests/ProviderReleaseValidationTests.cs` | 显式启用的 DeepSeek 官方两条真实短冒烟和 Secret Canary 发布 Runner。 |
 
 实现时可以在不改变职责边界的前提下合并过短文件或测试 Fixture；不得为单一实现
 创建 `IProviderRegistry`、`IAgentFactory`、`IPromptBuilder`、`ITokenBudgetPlanner`
@@ -334,43 +335,55 @@ stdout、stderr 或测试产物；最终只生成一份 M3 交付归档。
   - `M3-ACC-003`
   - `M3-ACC-008`
 
-### Outcome 8: 双平台故障矩阵、真实 Provider 矩阵和 M3 统一收口（进行中）
+### Outcome 8: DeepSeek 官方真实验证和 M3 统一收口（已完成）
 
 - Work:
-  - 默认离线回归在 Windows 与 Apple Silicon macOS 分别执行 Provider Contract、
-    SSE、重试、Compaction、Secret、安全和 CLI 测试；不在单一平台模拟另一平台。
+  - 默认离线回归执行 Provider Contract、SSE、重试、Compaction、Secret、安全和
+    CLI 测试，不访问公网或真实凭据。
   - 真实发布 Runner 保持显式启用并只在进程内读取安全凭据；缺失任一路径时记录
     `NotRun` 且阻止对外宣称支持，不把普通开发/CI 标记为失败。
-  - 在两个平台分别运行六条短冒烟：千问 Token Plan 的
-    `qwen3.8-max-preview`、`glm-5.2`、`deepseek-v4-pro`、
-    `deepseek-v4-flash`，以及 DeepSeek 官方的 `deepseek-v4-pro`、
-    `deepseek-v4-flash`。
+  - 在 `osx-arm64` 运行 DeepSeek 官方的 `deepseek-v4-pro` 和
+    `deepseek-v4-flash` 两条短冒烟。
   - 每条真实路径只断言 `[DONE]`、非空 Content、归一化 Finish Reason、真实 Usage
-    和 Tokenizer 对账；Reasoning 代表只用千问 `qwen3.8-max-preview` 与 DeepSeek
-    `deepseek-v4-flash`，不快照回答或思考正文。
+    和 Tokenizer 对账；Reasoning 代表只用 `deepseek-v4-flash`，不快照回答或
+    思考正文。
   - Fake Canary 覆盖成功、认证、重试、错误 Body 和流中断；真实 Runner 扫描
     Journal、SQLite、Session Event、结构化日志、stdout、stderr 和测试产物，
     只输出命中/未命中，不保存 Secret 原值。
   - 发布证据只保留 Commit SHA、RID、Provider 路径、精确 Model ID、UTC 时间、
     Usage、Finish Reason 和 Pass/Fail/NotRun；不保留 Base URL 敏感部分、Prompt、
     回答正文或原始响应。
-  - 两个平台完成 restore、Release build、完整 test、framework-dependent publish
-    和发布目录 CLI 实跑；解释所有 skipped/explicit/not-run 项及临时资源清理结果。
+  - Apple Silicon macOS 完成 restore、Release build、完整 test、
+    framework-dependent publish 和发布目录 CLI 实跑；解释所有
+    skipped/explicit/not-run 项及临时资源清理结果。
+  - 千问 Token Plan、其他 Provider 和 `win-x64` 真实兼容性进入
+    `docs/provider-validation-backlog.md`，激活时再编写对应发布测试。
   - 用实际测试类、命令和结果把 `M3-ACC-001` 至 `M3-ACC-008` 从 Planned 更新为
     Passed；随后同步里程碑 CHECKLIST/INDEX，并生成唯一 M3 交付归档。
-- Partial real-provider evidence（2026-07-27）:
+- Real-provider evidence（2026-07-27）:
 
   | Commit SHA | RID | Provider 路径 | 精确 Model ID | UTC 时间 | Usage（Prompt / Completion / Total） | Finish Reason | 结果 |
   | --- | --- | --- | --- | --- | --- | --- | --- |
-  | `93011bcde17d4c1c08d162634bea21e0a1ce64d6` | `osx-arm64` | `deepseek-official` | `deepseek-v4-pro` | `2026-07-27T15:11:20.983288+00:00` | `141 / 40 / 181` | `stop` | Pass |
-  | `93011bcde17d4c1c08d162634bea21e0a1ce64d6` | `osx-arm64` | `deepseek-official` | `deepseek-v4-flash` | `2026-07-27T15:11:22.694074+00:00` | `140 / 29 / 169` | `stop` | Pass |
+  | `3da2e47f1a917529e3264535b7f9efed66d1b2bb` | `osx-arm64` | `deepseek-official` | `deepseek-v4-pro` | `2026-07-27T15:18:05.857672+00:00` | `142 / 18 / 160` | `stop` | Pass |
+  | `3da2e47f1a917529e3264535b7f9efed66d1b2bb` | `osx-arm64` | `deepseek-official` | `deepseek-v4-flash` | `2026-07-27T15:18:07.291915+00:00` | `144 / 26 / 170` | `stop` | Pass |
 
-  千问 Token Plan 的四条 `osx-arm64` 路径仍为 `NotRun`，`win-x64` 六条路径
-  尚无真机证据；因此 Outcome 8、`M3-ACC-002` 和 M3 Completion Gate 均保持未完成。
+  2026-07-28 用户确认 DeepSeek 官方是 M3 的首个真实 Provider；千问 Token Plan
+  和 `win-x64` 真实兼容性不再阻止 M3，统一进入独立待验证清单。
+- Completion evidence（2026-07-28）:
+  - Release build 为 `0` warning / `0` error。
+  - 完整离线回归为 Core `147`、Integration `18`、Generators `14`、
+    Architecture `4`，合计 `183` passed / `0` failed；显式真实 Provider Runner
+    按设计跳过。
+  - `OpenCoWork.Protocol.Tests` 仍是无可发现测试的冻结项目壳，不计作通过或跳过。
+  - `osx-arm64` framework-dependent publish 成功。
+  - DeepSeek-only Runner 在强制清空凭据时只产生 Pro/Flash 两条 `NotRun`，没有
+    Token Plan 占位，也没有发起网络请求。
+  - `scripts/setup-deepseek-env-macos.zsh` 的语法、临时设置和 `--clear` 分支均通过
+    无 Secret 的模拟验证。
 - Risks/open questions:
   - 真实 Provider 请求属于显式发布操作；只有操作者提供对应凭据和执行授权时运行。
-  - 任一 Secret Canary 命中、真实路径 NotRun、Tokenizer 对账失败或双平台证据
-    缺失都阻止 M3 标记 Done。
+  - 任一 DeepSeek 官方路径 `NotRun`、Secret Canary 命中或 Tokenizer 对账失败都
+    阻止 M3 标记 Done。
 - Verify:
   - `dotnet restore OpenCoWork.slnx`
   - `dotnet build OpenCoWork.slnx -c Release --no-restore`
@@ -379,22 +392,23 @@ stdout、stderr 或测试产物；最终只生成一份 M3 交付归档。
   - `dotnet publish src/OpenCoWork.App/OpenCoWork.App.csproj -c Release -r win-x64 --self-contained false`
   - `dotnet publish src/OpenCoWork.App/OpenCoWork.App.csproj -c Release -r osx-arm64 --self-contained false`
   - 在安全凭据和显式发布开关下运行
-    `ProviderReleaseValidationTests`，每个平台生成六条结果
+    `ProviderReleaseValidationTests`，生成两条 DeepSeek 官方结果
   - 发布目录中的 `opencowork --version`、`doctor --json`、`chat --help` 和
     Fake Provider 多轮恢复场景
   - `git diff --check`
 - Acceptance contribution:
   - `M3-ACC-001` 至 `M3-ACC-008`
 
-## M3 Completion Gate
+## M3 Completion Gate（已满足）
 
 只有同时满足以下条件才能关闭 M3：
 
 - 八个 Outcome 的聚焦测试和完整累计回归全部通过；
 - `M3-ACC-001` 至 `M3-ACC-008` 均从 Planned 更新为 Passed，并链接实际证据；
 - 默认测试无公网依赖，所有真实 Provider 测试只能显式运行；
-- `win-x64` 与 `osx-arm64` 各完成六条真实短冒烟，合计十二条，无 `NotRun`；
-- 四个内置 Tokenizer Profile 的 Token ID、Prompt Usage 和资产 SHA-256 对账通过；
+- `osx-arm64` 完成两条 DeepSeek 官方真实短冒烟，无 `NotRun`；
+- 内置 Tokenizer Profile 的 Token ID 和资产 SHA-256 离线校验通过，DeepSeek
+  两个 Profile 的 Prompt Usage 真实对账通过；
 - Secret Canary 未命中 Journal、SQLite、Session Event、日志、stdout、stderr
   或测试产物；
 - Prompt Golden、SSE/HTTP 故障矩阵、首个可见增量重试边界、Usage 去重、
@@ -402,4 +416,6 @@ stdout、stderr 或测试产物；最终只生成一份 M3 交付归档。
 - 没有未解释的 skipped test、后台任务、HTTP 连接、临时证书、测试服务器、
   Journal、SQLite 或临时目录残留；
 - M3 交付归档、里程碑 CHECKLIST 和 INDEX 同步完成；
+- 千问 Token Plan、其他 Provider 和 `win-x64` 真实兼容性已进入
+  `docs/provider-validation-backlog.md`；
 - 根目录 DotCraft 证据文档仍被忽略，未进入任何提交。
