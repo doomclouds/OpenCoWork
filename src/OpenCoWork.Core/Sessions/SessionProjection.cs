@@ -33,7 +33,8 @@ internal sealed record SessionProjectionSnapshot(
     int ItemCount,
     int QueueCount,
     int InteractionCount,
-    int IdempotencyCount);
+    int IdempotencyCount,
+    int ToolInvocationCount);
 
 internal sealed record ThreadJournalSource(
     ThreadJournalLocation Location,
@@ -390,6 +391,20 @@ internal sealed class SessionProjection
                 FROM compaction_checkpoints ORDER BY thread_id;
                 """,
                 cancellationToken),
+            await ReadRowsAsync(
+                connection,
+                """
+                SELECT quote(tool_invocation_id) || '|' || quote(thread_id) || '|' ||
+                       quote(turn_id) || '|' || quote(provider_tool_call_id) || '|' ||
+                       quote(provider_tool_name) || '|' || quote(tool_definition_id) || '|' ||
+                       quote(runtime_binding_id) || '|' || quote(snapshot_sha256) || '|' ||
+                       quote(arguments_sha256) || '|' || quote(status) || '|' ||
+                       quote(attempt_count) || '|' || quote(result_item_id) || '|' ||
+                       quote(error_code) || '|' || quote(started_at) || '|' ||
+                       quote(updated_at) || '|' || quote(completed_at)
+                FROM tool_invocations ORDER BY tool_invocation_id;
+                """,
+                cancellationToken),
         };
         var canonical = new StringBuilder();
         for (var index = 0; index < tables.Length; index++)
@@ -408,7 +423,8 @@ internal sealed class SessionProjection
             tables[2].Count,
             tables[3].Count,
             tables[4].Count,
-            tables[5].Count);
+            tables[5].Count,
+            tables[9].Count);
     }
 
     public async Task<ThreadSnapshot?> ReadThreadSnapshotAsync(
@@ -876,6 +892,22 @@ internal sealed class SessionProjection
             case SessionEventType.ItemCancelled:
                 await ApplyItemTerminalAsync(connection, transaction, entry, cancellationToken);
                 return;
+            case SessionEventType.ToolCallRecorded:
+                await ApplyToolCallRecordedAsync(
+                    connection, transaction, entry, cancellationToken);
+                return;
+            case SessionEventType.ToolInvocationStarted:
+                await ApplyToolInvocationStartedAsync(
+                    connection, transaction, entry, cancellationToken);
+                return;
+            case SessionEventType.ToolInvocationAttemptStarted:
+                await ApplyToolInvocationAttemptStartedAsync(
+                    connection, transaction, entry, cancellationToken);
+                return;
+            case SessionEventType.ToolInvocationTerminal:
+                await ApplyToolInvocationTerminalAsync(
+                    connection, transaction, entry, cancellationToken);
+                return;
             case SessionEventType.AgentInvocationSnapshotRecorded:
                 await ApplyAgentInvocationAsync(
                     connection, transaction, entry, cancellationToken);
@@ -1232,6 +1264,154 @@ internal sealed class SessionProjection
                 ("$sha256", Hash(bytes)),
                 ("$created", UnixMilliseconds(item.CreatedAt)),
                 ("$updated", UnixMilliseconds(item.UpdatedAt)));
+        }
+
+        var itemsById = checkpoint.Items.ToDictionary(item => item.ItemId);
+        foreach (var item in checkpoint.Items.Where(item =>
+                     item.ItemType is
+                         SessionItemType.ToolCall or
+                         SessionItemType.ToolResult))
+        {
+            var valid = item.Status == SessionItemStatus.Completed &&
+                        (item.ItemType == SessionItemType.ToolCall &&
+                         item.Content.Deserialize<ToolCallItemContent>(JsonOptions)
+                             is { } toolCall &&
+                         IsValidToolCallContent(toolCall) &&
+                         HasValidAgentMessageReference(
+                             itemsById,
+                             item.TurnId,
+                             toolCall) ||
+                         item.ItemType == SessionItemType.ToolResult &&
+                         item.Content.Deserialize<ToolResultItemContent>(JsonOptions)
+                             is { } toolResult &&
+                         IsValidToolResultContent(toolResult.Result));
+            if (!valid)
+            {
+                throw ProjectionError(
+                    SessionErrorCodes.InvalidState,
+                    "History checkpoint contains an invalid Tool Item.");
+            }
+        }
+
+        var invocationCalls = new HashSet<(Guid ItemId, int CallIndex)>();
+        var invocationResults = new HashSet<Guid>();
+        foreach (var invocation in checkpoint.ToolInvocations ?? [])
+        {
+            var snapshot = invocation.Snapshot;
+            SessionIds.RequireVersion7(
+                snapshot.ToolInvocationId,
+                nameof(snapshot.ToolInvocationId),
+                "Tool Invocation ID");
+            if (snapshot.ThreadId != threadId ||
+                !turnIds.Contains(snapshot.TurnId) ||
+                snapshot.CompletedAt is null ||
+                !IsTerminalToolStatus(snapshot.Status) ||
+                snapshot.AttemptCount is < 0 or > 2 ||
+                !IsLowerSha256(snapshot.SnapshotSha256) ||
+                !IsLowerSha256(snapshot.ArgumentsSha256) ||
+                (snapshot.ToolDefinitionId is null) !=
+                (snapshot.RuntimeBindingId is null) ||
+                snapshot.ResultItemId is not { } resultItemId ||
+                !itemsById.TryGetValue(
+                    invocation.ToolCallItemId,
+                    out var callItem) ||
+                callItem.ItemType != SessionItemType.ToolCall ||
+                callItem.Status != SessionItemStatus.Completed ||
+                callItem.TurnId != snapshot.TurnId ||
+                callItem.Content.Deserialize<ToolCallItemContent>(JsonOptions)
+                    is not { } callContent ||
+                !IsValidToolCallContent(callContent) ||
+                invocation.CallIndex < 0 ||
+                invocation.CallIndex >= callContent.Calls.Count ||
+                !string.Equals(
+                    callContent.Calls[invocation.CallIndex].ProviderToolCallId,
+                    snapshot.ProviderToolCallId,
+                    StringComparison.Ordinal) ||
+                !string.Equals(
+                    callContent.Calls[invocation.CallIndex].ProviderToolName,
+                    snapshot.ProviderToolName,
+                    StringComparison.Ordinal) ||
+                !string.Equals(
+                    callContent.Calls[invocation.CallIndex].ArgumentsSha256,
+                    snapshot.ArgumentsSha256,
+                    StringComparison.Ordinal) ||
+                !invocationCalls.Add((
+                    invocation.ToolCallItemId,
+                    invocation.CallIndex)) ||
+                !itemsById.TryGetValue(resultItemId, out var resultItem) ||
+                resultItem.ItemType != SessionItemType.ToolResult ||
+                resultItem.Status != SessionItemStatus.Completed ||
+                resultItem.TurnId != snapshot.TurnId ||
+                resultItem.Content.Deserialize<ToolResultItemContent>(JsonOptions)
+                    is not { } resultContent ||
+                !IsValidToolResultContent(resultContent.Result) ||
+                resultContent.Result.ToolInvocationId != snapshot.ToolInvocationId ||
+                resultContent.Result.Status != snapshot.Status ||
+                resultContent.Result.AttemptCount != snapshot.AttemptCount ||
+                !string.Equals(
+                    resultContent.Result.Error?.Code,
+                    snapshot.ErrorCode,
+                    StringComparison.Ordinal) ||
+                !string.Equals(
+                    resultContent.Result.ProviderToolCallId,
+                    snapshot.ProviderToolCallId,
+                    StringComparison.Ordinal) ||
+                !invocationResults.Add(resultItemId))
+            {
+                throw ProjectionError(
+                    SessionErrorCodes.InvalidState,
+                    "History checkpoint contains an invalid Tool Invocation.");
+            }
+
+            await ExecuteRequiredAsync(
+                connection,
+                transaction,
+                """
+                INSERT INTO tool_invocations (
+                    tool_invocation_id, thread_id, turn_id,
+                    provider_tool_call_id, provider_tool_name,
+                    tool_definition_id, runtime_binding_id,
+                    snapshot_sha256, arguments_sha256,
+                    status, attempt_count, result_item_id, error_code,
+                    started_at, updated_at, completed_at)
+                VALUES (
+                    $invocationId, $threadId, $turnId,
+                    $providerCallId, $providerName,
+                    $definitionId, $bindingId,
+                    $snapshotSha256, $argumentsSha256,
+                    $status, $attemptCount, $resultItemId, $errorCode,
+                    $startedAt, $updatedAt, $completedAt);
+                """,
+                cancellationToken,
+                ("$invocationId", Wire(snapshot.ToolInvocationId)),
+                ("$threadId", Wire(threadId)),
+                ("$turnId", Wire(snapshot.TurnId)),
+                ("$providerCallId", snapshot.ProviderToolCallId),
+                ("$providerName", snapshot.ProviderToolName),
+                ("$definitionId", snapshot.ToolDefinitionId is null
+                    ? null
+                    : JsonSerializer.Serialize(
+                        snapshot.ToolDefinitionId,
+                        JsonOptions)),
+                ("$bindingId", snapshot.RuntimeBindingId?.Value),
+                ("$snapshotSha256", snapshot.SnapshotSha256),
+                ("$argumentsSha256", snapshot.ArgumentsSha256),
+                ("$status", Wire(snapshot.Status)),
+                ("$attemptCount", snapshot.AttemptCount),
+                ("$resultItemId", Wire(resultItemId)),
+                ("$errorCode", snapshot.ErrorCode),
+                ("$startedAt", UnixMilliseconds(snapshot.StartedAt)),
+                ("$updatedAt", UnixMilliseconds(snapshot.UpdatedAt)),
+                ("$completedAt", UnixMilliseconds(snapshot.CompletedAt.Value)));
+        }
+
+        if (checkpoint.Items.Any(item =>
+                item.ItemType == SessionItemType.ToolResult &&
+                !invocationResults.Contains(item.ItemId)))
+        {
+            throw ProjectionError(
+                SessionErrorCodes.InvalidState,
+                "History checkpoint contains an orphan Tool Result Item.");
         }
     }
 
@@ -1689,6 +1869,19 @@ internal sealed class SessionProjection
                 SessionErrorCodes.InvalidState,
                 "Waiting fact type does not match its event.");
         }
+        if (fact.ToolInvocationId is { } toolInvocationId)
+        {
+            SessionIds.RequireVersion7(
+                toolInvocationId,
+                nameof(fact.ToolInvocationId),
+                "Tool Invocation ID");
+            if (expectedType != SessionInteractionType.Approval)
+            {
+                throw ProjectionError(
+                    SessionErrorCodes.InvalidState,
+                    "Only an approval can reference a Tool Invocation.");
+            }
+        }
 
         var status = expectedType == SessionInteractionType.Approval
             ? "waitingApproval"
@@ -1718,13 +1911,22 @@ internal sealed class SessionProjection
             SET status = $status, updated_utc = $timestamp
             WHERE turn_id = $turnId
               AND thread_id = $threadId
-              AND status = 'running';
+              AND status = 'running'
+              AND ($toolInvocationId IS NULL OR EXISTS (
+                SELECT 1 FROM tool_invocations
+                WHERE tool_invocation_id = $toolInvocationId
+                  AND thread_id = $threadId
+                  AND turn_id = $turnId
+                  AND completed_at IS NULL));
             """,
             cancellationToken,
             ("$status", status),
             ("$timestamp", timestamp),
             ("$turnId", Wire(fact.TurnId)),
-            ("$threadId", Wire(entry.ThreadId)));
+            ("$threadId", Wire(entry.ThreadId)),
+            ("$toolInvocationId", fact.ToolInvocationId is null
+                ? null
+                : Wire(fact.ToolInvocationId.Value)));
         await ExecuteAsync(
             connection,
             transaction,
@@ -2138,6 +2340,354 @@ internal sealed class SessionProjection
             ("$timestamp", UnixMilliseconds(entry.Timestamp)),
             ("$itemId", Wire(fact.ItemId)),
             ("$threadId", Wire(entry.ThreadId)));
+    }
+
+    private static Task ApplyToolCallRecordedAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        ThreadJournalEntry entry,
+        CancellationToken cancellationToken)
+    {
+        var fact = ReadFact<ToolCallRecordedFact>(entry);
+        var content = fact.Content.Deserialize<ToolCallItemContent>(JsonOptions);
+        if (content is null || !IsValidToolCallContent(content))
+        {
+            throw ProjectionError(
+                SessionErrorCodes.JournalCorrupt,
+                "Tool Call Item content is invalid.");
+        }
+
+        return InsertCompletedToolItemAsync(
+            connection,
+            transaction,
+            entry,
+            fact.ItemId,
+            fact.TurnId,
+            SessionItemType.ToolCall,
+            fact.Content,
+            fact.ContentLength,
+            fact.ContentSha256,
+            cancellationToken,
+            content.AgentMessageItemId);
+    }
+
+    private static async Task ApplyToolInvocationStartedAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        ThreadJournalEntry entry,
+        CancellationToken cancellationToken)
+    {
+        var fact = ReadFact<ToolInvocationStartedFact>(entry);
+        SessionIds.RequireVersion7(
+            fact.ToolInvocationId,
+            nameof(fact.ToolInvocationId),
+            "Tool Invocation ID");
+        SessionIds.RequireVersion7(fact.TurnId, nameof(fact.TurnId), "Turn ID");
+        SessionIds.RequireVersion7(
+            fact.ToolCallItemId,
+            nameof(fact.ToolCallItemId),
+            "Tool Call Item ID");
+        if (fact.CallIndex < 0 ||
+            string.IsNullOrWhiteSpace(fact.ProviderToolCallId) ||
+            string.IsNullOrWhiteSpace(fact.ProviderToolName) ||
+            (fact.ToolDefinitionId is null) != (fact.RuntimeBindingId is null) ||
+            !IsLowerSha256(fact.SnapshotSha256) ||
+            !IsLowerSha256(fact.ArgumentsSha256))
+        {
+            throw ProjectionError(
+                SessionErrorCodes.InvalidState,
+                "Tool Invocation start is invalid.");
+        }
+
+        var toolCall = await ReadToolCallAsync(
+            connection,
+            transaction,
+            entry.ThreadId,
+            fact.TurnId,
+            fact.ToolCallItemId,
+            cancellationToken);
+        if (toolCall is null ||
+            fact.CallIndex >= toolCall.Calls.Count ||
+            !string.Equals(
+                toolCall.Calls[fact.CallIndex].ProviderToolCallId,
+                fact.ProviderToolCallId,
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                toolCall.Calls[fact.CallIndex].ProviderToolName,
+                fact.ProviderToolName,
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                toolCall.Calls[fact.CallIndex].ArgumentsSha256,
+                fact.ArgumentsSha256,
+                StringComparison.Ordinal))
+        {
+            throw ProjectionError(
+                SessionErrorCodes.JournalCorrupt,
+                "Tool Invocation start does not match its Tool Call Item.");
+        }
+
+        await ExecuteRequiredAsync(
+            connection,
+            transaction,
+            """
+            INSERT INTO tool_invocations (
+                tool_invocation_id, thread_id, turn_id,
+                provider_tool_call_id, provider_tool_name,
+                tool_definition_id, runtime_binding_id,
+                snapshot_sha256, arguments_sha256,
+                status, attempt_count, result_item_id, error_code,
+                started_at, updated_at, completed_at)
+            SELECT
+                $invocationId, $threadId, $turnId,
+                $providerCallId, $providerName,
+                $definitionId, $bindingId,
+                $snapshotSha256, $argumentsSha256,
+                'started', 0, NULL, NULL,
+                $timestamp, $timestamp, NULL
+            WHERE EXISTS (
+                SELECT 1
+                FROM items
+                WHERE item_id = $toolCallItemId
+                  AND thread_id = $threadId
+                  AND turn_id = $turnId
+                  AND item_type = 'toolCall'
+                  AND status = 'completed')
+              AND EXISTS (
+                SELECT 1 FROM turns
+                WHERE turn_id = $turnId
+                  AND thread_id = $threadId
+                  AND status = 'running');
+            """,
+            cancellationToken,
+            ("$invocationId", Wire(fact.ToolInvocationId)),
+            ("$threadId", Wire(entry.ThreadId)),
+            ("$turnId", Wire(fact.TurnId)),
+            ("$providerCallId", fact.ProviderToolCallId),
+            ("$providerName", fact.ProviderToolName),
+            ("$definitionId", fact.ToolDefinitionId is null
+                ? null
+                : JsonSerializer.Serialize(fact.ToolDefinitionId, JsonOptions)),
+            ("$bindingId", fact.RuntimeBindingId?.Value),
+            ("$snapshotSha256", fact.SnapshotSha256),
+            ("$argumentsSha256", fact.ArgumentsSha256),
+            ("$toolCallItemId", Wire(fact.ToolCallItemId)),
+            ("$timestamp", UnixMilliseconds(entry.Timestamp)));
+    }
+
+    private static async Task<ToolCallItemContent?> ReadToolCallAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        Guid threadId,
+        Guid turnId,
+        Guid itemId,
+        CancellationToken cancellationToken)
+    {
+        await using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText =
+            """
+            SELECT payload_json
+            FROM items
+            WHERE item_id = $itemId
+              AND thread_id = $threadId
+              AND turn_id = $turnId
+              AND item_type = 'toolCall'
+              AND status = 'completed';
+            """;
+        command.Parameters.AddWithValue("$itemId", Wire(itemId));
+        command.Parameters.AddWithValue("$threadId", Wire(threadId));
+        command.Parameters.AddWithValue("$turnId", Wire(turnId));
+        var value = await command.ExecuteScalarAsync(cancellationToken);
+        return value is string json
+            ? JsonSerializer.Deserialize<ToolCallItemContent>(json, JsonOptions)
+            : null;
+    }
+
+    private static Task ApplyToolInvocationAttemptStartedAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        ThreadJournalEntry entry,
+        CancellationToken cancellationToken)
+    {
+        var fact = ReadFact<ToolInvocationAttemptStartedFact>(entry);
+        SessionIds.RequireVersion7(
+            fact.ToolInvocationId,
+            nameof(fact.ToolInvocationId),
+            "Tool Invocation ID");
+        if (fact.AttemptNumber is < 1 or > 2)
+        {
+            throw ProjectionError(
+                SessionErrorCodes.InvalidState,
+                "Tool Invocation attempt is invalid.");
+        }
+
+        return ExecuteRequiredAsync(
+            connection,
+            transaction,
+            """
+            UPDATE tool_invocations
+            SET status = 'started',
+                attempt_count = $attempt,
+                updated_at = $timestamp
+            WHERE tool_invocation_id = $invocationId
+              AND thread_id = $threadId
+              AND status IN ('started', 'waitingApproval')
+              AND completed_at IS NULL
+              AND attempt_count = $previousAttempt;
+            """,
+            cancellationToken,
+            ("$attempt", fact.AttemptNumber),
+            ("$previousAttempt", fact.AttemptNumber - 1),
+            ("$timestamp", UnixMilliseconds(entry.Timestamp)),
+            ("$invocationId", Wire(fact.ToolInvocationId)),
+            ("$threadId", Wire(entry.ThreadId)));
+    }
+
+    private static async Task ApplyToolInvocationTerminalAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        ThreadJournalEntry entry,
+        CancellationToken cancellationToken)
+    {
+        var fact = ReadFact<ToolInvocationTerminalJournalFact>(entry);
+        var terminal = fact.Invocation;
+        var item = fact.ResultItem;
+        SessionIds.RequireVersion7(
+            terminal.ToolInvocationId,
+            nameof(terminal.ToolInvocationId),
+            "Tool Invocation ID");
+        if (terminal.ResultItemId != item.ItemId ||
+            !IsTerminalToolStatus(terminal.Status) ||
+            !IsLowerSha256(terminal.ResultSha256))
+        {
+            throw ProjectionError(
+                SessionErrorCodes.InvalidState,
+                "Tool Invocation terminal is invalid.");
+        }
+
+        var content = item.Content.Deserialize<ToolResultItemContent>(JsonOptions);
+        if (content?.Result is not { } result ||
+            !IsValidToolResultContent(result) ||
+            result.ToolInvocationId != terminal.ToolInvocationId ||
+            result.Status != terminal.Status ||
+            !string.Equals(result.Error?.Code, terminal.ErrorCode, StringComparison.Ordinal) ||
+            !string.Equals(
+                result.ResultSha256,
+                terminal.ResultSha256,
+                StringComparison.Ordinal))
+        {
+            throw ProjectionError(
+                SessionErrorCodes.JournalCorrupt,
+                "Tool Result Item does not match its terminal summary.");
+        }
+
+        await InsertCompletedToolItemAsync(
+            connection,
+            transaction,
+            entry,
+            item.ItemId,
+            item.TurnId,
+            SessionItemType.ToolResult,
+            item.Content,
+            item.ContentLength,
+            item.ContentSha256,
+            cancellationToken);
+        await ExecuteRequiredAsync(
+            connection,
+            transaction,
+            """
+            UPDATE tool_invocations
+            SET status = $status,
+                result_item_id = $resultItemId,
+                error_code = $errorCode,
+                updated_at = $timestamp,
+                completed_at = $timestamp
+            WHERE tool_invocation_id = $invocationId
+              AND thread_id = $threadId
+              AND turn_id = $turnId
+              AND status IN ('started', 'waitingApproval')
+              AND provider_tool_call_id = $providerCallId
+              AND attempt_count = $attemptCount
+              AND result_item_id IS NULL
+              AND completed_at IS NULL;
+            """,
+            cancellationToken,
+            ("$status", Wire(terminal.Status)),
+            ("$resultItemId", Wire(item.ItemId)),
+            ("$errorCode", terminal.ErrorCode),
+            ("$providerCallId", result.ProviderToolCallId),
+            ("$attemptCount", result.AttemptCount),
+            ("$timestamp", UnixMilliseconds(entry.Timestamp)),
+            ("$invocationId", Wire(terminal.ToolInvocationId)),
+            ("$threadId", Wire(entry.ThreadId)),
+            ("$turnId", Wire(item.TurnId)));
+    }
+
+    private static Task InsertCompletedToolItemAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        ThreadJournalEntry entry,
+        Guid itemId,
+        Guid turnId,
+        SessionItemType itemType,
+        JsonElement content,
+        int contentLength,
+        string contentSha256,
+        CancellationToken cancellationToken,
+        Guid? agentMessageItemId = null)
+    {
+        SessionIds.RequireVersion7(itemId, nameof(itemId), "Item ID");
+        SessionIds.RequireVersion7(turnId, nameof(turnId), "Turn ID");
+        var bytes = ThreadJournal.Canonicalize(content);
+        if (itemType is not (SessionItemType.ToolCall or SessionItemType.ToolResult) ||
+            contentLength != bytes.Length ||
+            !string.Equals(Hash(bytes), contentSha256, StringComparison.Ordinal))
+        {
+            throw ProjectionError(
+                SessionErrorCodes.JournalCorrupt,
+                "Completed Tool Item content metadata is invalid.");
+        }
+
+        var timestamp = UnixMilliseconds(entry.Timestamp);
+        var canonicalContent = Encoding.UTF8.GetString(bytes);
+        return ExecuteRequiredAsync(
+            connection,
+            transaction,
+            """
+            INSERT INTO items (
+                item_id, thread_id, turn_id, sequence,
+                item_type, status, payload_json, content_text,
+                content_length, content_sha256, created_utc, updated_utc)
+            SELECT
+                $itemId, $threadId, $turnId, $sequence,
+                $itemType, 'completed', $payload, NULL,
+                $contentLength, $contentSha256, $timestamp, $timestamp
+            WHERE EXISTS (
+                SELECT 1 FROM turns
+                WHERE turn_id = $turnId
+                  AND thread_id = $threadId
+                  AND status = 'running')
+              AND ($agentMessageItemId IS NULL OR EXISTS (
+                SELECT 1 FROM items
+                WHERE item_id = $agentMessageItemId
+                  AND thread_id = $threadId
+                  AND turn_id = $turnId
+                  AND item_type = 'agentMessage'
+                  AND status = 'completed'));
+            """,
+            cancellationToken,
+            ("$itemId", Wire(itemId)),
+            ("$threadId", Wire(entry.ThreadId)),
+            ("$turnId", Wire(turnId)),
+            ("$sequence", entry.Sequence),
+            ("$itemType", Wire(itemType)),
+            ("$payload", canonicalContent),
+            ("$contentLength", contentLength),
+            ("$contentSha256", contentSha256),
+            ("$agentMessageItemId", agentMessageItemId is null
+                ? null
+                : Wire(agentMessageItemId.Value)),
+            ("$timestamp", timestamp));
     }
 
     private static Task ApplyAgentInvocationAsync(
@@ -2766,6 +3316,46 @@ internal sealed class SessionProjection
         value is { Length: 64 } &&
         value.All(character =>
             character is >= '0' and <= '9' or >= 'a' and <= 'f');
+
+    private static bool IsTerminalToolStatus(ToolInvocationStatus status) =>
+        status is
+            ToolInvocationStatus.Completed or
+            ToolInvocationStatus.Rejected or
+            ToolInvocationStatus.Failed or
+            ToolInvocationStatus.Cancelled or
+            ToolInvocationStatus.TimedOut or
+            ToolInvocationStatus.OutcomeUnknown;
+
+    private static bool IsValidToolCallContent(ToolCallItemContent content) =>
+        content.Calls.Count > 0 &&
+        content.Calls.All(call =>
+            !string.IsNullOrWhiteSpace(call.ProviderToolCallId) &&
+            !string.IsNullOrWhiteSpace(call.ProviderToolName) &&
+            call.Arguments.ValueKind == JsonValueKind.Object &&
+            IsLowerSha256(call.ArgumentsSha256)) &&
+        content.Calls
+            .Select(call => call.ProviderToolCallId)
+            .Distinct(StringComparer.Ordinal)
+            .Count() == content.Calls.Count;
+
+    private static bool HasValidAgentMessageReference(
+        IReadOnlyDictionary<Guid, HistoryCheckpointItemFact> items,
+        Guid turnId,
+        ToolCallItemContent content) =>
+        content.AgentMessageItemId is not { } itemId ||
+        items.TryGetValue(itemId, out var item) &&
+        item.TurnId == turnId &&
+        item.ItemType == SessionItemType.AgentMessage &&
+        item.Status == SessionItemStatus.Completed;
+
+    private static bool IsValidToolResultContent(ToolResultSnapshot result) =>
+        IsLowerSha256(result.ResultSha256) &&
+        (result.Status == ToolInvocationStatus.Completed
+            ? result.Output is { ValueKind: not JsonValueKind.Undefined } &&
+              result.Error is null
+            : IsTerminalToolStatus(result.Status) &&
+              result.Output is null &&
+              result.Error is { Code.Length: > 0 });
 
     private static bool ContentMetadataMatches(
         string? content,

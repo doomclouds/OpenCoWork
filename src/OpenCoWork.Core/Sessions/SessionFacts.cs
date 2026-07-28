@@ -29,7 +29,8 @@ internal sealed record ThreadStateFact(string RequestSha256);
 
 internal sealed record HistoryCheckpointFact(
     IReadOnlyList<TurnSnapshot> Turns,
-    IReadOnlyList<HistoryCheckpointItemFact> Items);
+    IReadOnlyList<HistoryCheckpointItemFact> Items,
+    IReadOnlyList<HistoryCheckpointToolInvocationFact>? ToolInvocations = null);
 
 internal sealed record HistoryCheckpointItemFact(
     Guid ItemId,
@@ -41,6 +42,11 @@ internal sealed record HistoryCheckpointItemFact(
     long Sequence,
     DateTimeOffset CreatedAt,
     DateTimeOffset UpdatedAt);
+
+internal sealed record HistoryCheckpointToolInvocationFact(
+    ToolInvocationSnapshot Snapshot,
+    Guid ToolCallItemId,
+    int CallIndex);
 
 internal sealed record ThreadDeletionRequestedFact(
     string ThreadIdSha256,
@@ -103,7 +109,8 @@ internal sealed record TurnWaitingFact(
     string ContentSha256,
     SessionExecutionCheckpoint Checkpoint,
     DateTimeOffset? TimeoutAt,
-    string RequestSha256);
+    string RequestSha256,
+    Guid? ToolInvocationId = null);
 
 internal sealed record InteractionResolvedFact(
     Guid InteractionId,
@@ -147,6 +154,51 @@ internal sealed record ItemCompletedFact(
 internal sealed record ItemTerminalFact(
     Guid ItemId,
     SessionError? Error,
+    string RequestSha256);
+
+internal sealed record ToolCallRecordedFact(
+    Guid ItemId,
+    Guid TurnId,
+    JsonElement Content,
+    int ContentLength,
+    string ContentSha256,
+    string RequestSha256);
+
+internal sealed record ToolInvocationStartedFact(
+    Guid ToolInvocationId,
+    Guid TurnId,
+    Guid ToolCallItemId,
+    int CallIndex,
+    string ProviderToolCallId,
+    string ProviderToolName,
+    ToolDefinitionId? ToolDefinitionId,
+    RuntimeBindingId? RuntimeBindingId,
+    string SnapshotSha256,
+    string ArgumentsSha256,
+    string RequestSha256);
+
+internal sealed record ToolInvocationAttemptStartedFact(
+    Guid ToolInvocationId,
+    int AttemptNumber,
+    string RequestSha256);
+
+internal sealed record ToolInvocationTerminalFact(
+    Guid ToolInvocationId,
+    ToolInvocationStatus Status,
+    string? ErrorCode,
+    string ResultSha256,
+    Guid ResultItemId);
+
+internal sealed record ToolResultItemFact(
+    Guid ItemId,
+    Guid TurnId,
+    JsonElement Content,
+    int ContentLength,
+    string ContentSha256);
+
+internal sealed record ToolInvocationTerminalJournalFact(
+    ToolInvocationTerminalFact Invocation,
+    ToolResultItemFact ResultItem,
     string RequestSha256);
 
 internal sealed record AgentInvocationSnapshotRecordedFact(

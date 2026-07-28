@@ -22,6 +22,203 @@ public sealed class SessionExecutionTests
     };
 
     [Fact]
+    public async Task Tool_journal_and_projection_are_atomic_ordered_and_rebuildable()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        using var files = new TempWorkspace();
+        var toolCallItemId = Guid.CreateVersion7();
+        var toolInvocationId = Guid.CreateVersion7();
+        var resultItemId = Guid.CreateVersion7();
+        using var arguments = JsonDocument.Parse("""{"path":"src"}""");
+        using var output = JsonDocument.Parse("""{"entries":[]}""");
+        var argumentsSha256 = Sha256(arguments.RootElement.GetRawText());
+        var resultSha256 = Sha256(output.RootElement.GetRawText());
+        var toolCall = new ToolCallItemContent(
+            providerRound: 1,
+            agentMessageItemId: null,
+            [
+                new ToolCallItemEntry(
+                    "call-1",
+                    "file__list",
+                    arguments.RootElement,
+                    argumentsSha256,
+                    sensitiveInputDetected: false),
+            ]);
+        var result = new ToolResultSnapshot(
+            toolInvocationId,
+            "call-1",
+            ToolInvocationStatus.Completed,
+            output.RootElement,
+            Error: null,
+            IsTruncated: false,
+            OriginalByteCount: Encoding.UTF8.GetByteCount(output.RootElement.GetRawText()),
+            resultSha256,
+            AttemptCount: 1);
+        var callIntent = new RecordToolCallIntent(toolCallItemId, toolCall);
+        var startIntent = new RecordToolInvocationStartedIntent(
+            toolInvocationId,
+            toolCallItemId,
+            CallIndex: 0,
+            "call-1",
+            "file__list",
+            new ToolDefinitionId(
+                ToolSourceKind.CoreNative,
+                "opencowork.core",
+                "file.list"),
+            new RuntimeBindingId("core.file.list.v1"),
+            new string('a', 64),
+            argumentsSha256);
+        var attemptIntent = new RecordToolInvocationAttemptStartedIntent(
+            toolInvocationId,
+            AttemptNumber: 1);
+        var terminalIntent =
+            new RecordToolInvocationTerminalIntent(resultItemId, result);
+        var executor = new ScriptedExecutor(
+            async (_, sink, token) =>
+            {
+                await sink.EmitAsync(callIntent, token);
+                await sink.EmitAsync(callIntent, token);
+                await sink.EmitAsync(startIntent, token);
+                await sink.EmitAsync(startIntent, token);
+                await sink.EmitAsync(attemptIntent, token);
+                await sink.EmitAsync(attemptIntent, token);
+                await sink.EmitAsync(terminalIntent, token);
+                await sink.EmitAsync(terminalIntent, token);
+                await sink.EmitAsync(new CompleteTurnIntent(), token);
+            });
+        var (runtime, journal, service) = await CreateServiceAsync(
+            files,
+            cancellationToken,
+            executor);
+        var thread = await CreateThreadAsync(service, cancellationToken);
+        var turnId = Guid.CreateVersion7();
+
+        await service.StartTurnAsync(
+            thread.ThreadId,
+            turnId,
+            Guid.CreateVersion7(),
+            thread.CurrentSequence,
+            cancellationToken);
+        await service.WaitForExecutionAsync(turnId, cancellationToken);
+
+        var replay = await journal.ReplayAsync(
+            ThreadJournalLocation.Active,
+            thread.ThreadId,
+            cancellationToken);
+        Assert.Equal(
+            [
+                SessionEventType.ThreadCreated,
+                SessionEventType.TurnStarted,
+                SessionEventType.ToolCallRecorded,
+                SessionEventType.ToolInvocationStarted,
+                SessionEventType.ToolInvocationAttemptStarted,
+                SessionEventType.ToolInvocationTerminal,
+                SessionEventType.TurnCompleted,
+            ],
+            replay.Entries.Select(entry => entry.EntryType));
+        var terminalFact = replay.Entries[^2].Payload
+            .Deserialize<ToolInvocationTerminalJournalFact>(JsonOptions);
+        Assert.NotNull(terminalFact);
+        Assert.Equal(resultItemId, terminalFact.ResultItem.ItemId);
+        Assert.Equal(resultItemId, terminalFact.Invocation.ResultItemId);
+        var toolCallFact = replay.Entries[2].Payload
+            .Deserialize<ToolCallRecordedFact>(JsonOptions);
+        Assert.NotNull(toolCallFact);
+        var toolCallBytes = ThreadJournal.Canonicalize(toolCallFact.Content);
+        Assert.Equal(toolCallFact.ContentLength, toolCallBytes.Length);
+        var replayedToolCallSha256 =
+            Convert.ToHexString(SHA256.HashData(toolCallBytes)).ToLowerInvariant();
+        Assert.Equal(toolCallFact.ContentSha256, replayedToolCallSha256);
+
+        var history = Assert.IsType<SessionPage<SessionEvent>>(
+            (await service.ReadHistoryAsync(
+                new ReadHistoryRequest(thread.ThreadId),
+                cancellationToken)).Value);
+        var terminalEvent = Assert.Single(
+            history.Items,
+            item => item.Type == SessionEventType.ToolInvocationTerminal);
+        Assert.Equal(ToolInvocationStatus.Completed, terminalEvent.Payload.ToolInvocation?.Status);
+        Assert.Equal(SessionItemType.ToolResult, terminalEvent.Payload.Item?.Type);
+        Assert.Equal(resultSha256, terminalEvent.Payload.ToolResult?.ResultSha256);
+
+        var projection = new SessionProjection(runtime);
+        var expected = await projection.ReadNormalizedSnapshotAsync(cancellationToken);
+        Assert.Equal(1, expected.ToolInvocationCount);
+        await projection.RebuildAsync(
+            [
+                new ThreadJournalSource(
+                    ThreadJournalLocation.Active,
+                    thread.ThreadId,
+                    replay.Entries),
+            ],
+            cancellationToken);
+        Assert.Equal(
+            expected,
+            await projection.ReadNormalizedSnapshotAsync(cancellationToken));
+
+        var current = Assert.IsType<ThreadSnapshot>(
+            (await service.GetThreadAsync(
+                thread.ThreadId,
+                cancellationToken)).Value);
+        var forked = await service.ForkThreadAsync(
+            new ForkThreadRequest(
+                thread.ThreadId,
+                current.CurrentSequence,
+                current.CurrentSequence,
+                Guid.CreateVersion7(),
+                "tool-fork"),
+            cancellationToken);
+        Assert.NotEqual(SessionCommandStatus.Rejected, forked.Status);
+        var forkReplay = await journal.ReplayAsync(
+            ThreadJournalLocation.Active,
+            forked.Value!.ThreadId,
+            cancellationToken);
+        var forkFact = Assert.Single(forkReplay.Entries).Payload
+            .Deserialize<ThreadForkedFact>(JsonOptions);
+        var forkInvocation = Assert.Single(forkFact!.History.ToolInvocations!);
+        Assert.NotEqual(toolInvocationId, forkInvocation.Snapshot.ToolInvocationId);
+        Assert.Equal(forked.Value.ThreadId, forkInvocation.Snapshot.ThreadId);
+        Assert.Equal(
+            2,
+            (await projection.ReadNormalizedSnapshotAsync(cancellationToken))
+            .ToolInvocationCount);
+
+        var rolledBack = await service.RollbackThreadAsync(
+            new RollbackThreadRequest(
+                thread.ThreadId,
+                current.CurrentSequence,
+                current.CurrentSequence,
+                Guid.CreateVersion7()),
+            cancellationToken);
+        Assert.NotEqual(SessionCommandStatus.Rejected, rolledBack.Status);
+        Assert.Equal(
+            2,
+            (await projection.ReadNormalizedSnapshotAsync(cancellationToken))
+            .ToolInvocationCount);
+
+        await journal.AppendAsync(
+            ThreadJournalLocation.Active,
+            new ThreadJournalDraft(
+                thread.ThreadId,
+                rolledBack.Value!.Thread.CurrentSequence + 1,
+                Guid.CreateVersion7(),
+                DateTimeOffset.UtcNow,
+                SessionEventType.ToolInvocationTerminal,
+                Guid.CreateVersion7(),
+                terminalFact),
+            cancellationToken);
+        var corruptHistory = await service.ReadHistoryAsync(
+            new ReadHistoryRequest(thread.ThreadId),
+            cancellationToken);
+        Assert.Null(corruptHistory.Value);
+        Assert.Equal(SessionErrorCodes.RecoveryRequired, corruptHistory.Error?.Code);
+        Assert.Equal(
+            ThreadAvailability.RecoveryRequired,
+            (await service.GetThreadAsync(thread.ThreadId, cancellationToken))
+            .Value?.Availability);
+    }
+
+    [Fact]
     public async Task Agent_snapshots_usage_and_compaction_are_durable_across_restart()
     {
         var cancellationToken = TestContext.Current.CancellationToken;

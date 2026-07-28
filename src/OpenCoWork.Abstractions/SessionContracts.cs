@@ -235,7 +235,7 @@ public sealed record ToolCallItemContent : SessionItemContent
     public ToolCallItemContent(
         int providerRound,
         Guid? agentMessageItemId,
-        IEnumerable<ToolCallItemEntry> calls)
+        IReadOnlyList<ToolCallItemEntry> calls)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(providerRound);
         ArgumentNullException.ThrowIfNull(calls);

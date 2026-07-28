@@ -387,6 +387,7 @@ internal sealed partial class SessionService
     private readonly ConcurrentDictionary<Guid, Task> _executionTasks = [];
     private readonly ConcurrentDictionary<Guid, ExecutionIdempotency> _executionIdempotency = [];
     private readonly ConcurrentDictionary<Guid, InvocationRecord> _agentInvocations = [];
+    private readonly ConcurrentDictionary<Guid, ToolInvocationRecord> _toolInvocations = [];
     private readonly ConcurrentDictionary<ProviderUsageKey, UsageRecord> _providerUsage = [];
     private readonly ConcurrentDictionary<Guid, CompactionRecord> _compactionCheckpoints = [];
     private readonly ConcurrentDictionary<Guid, byte> _loadedExecutionThreads = [];
@@ -1160,6 +1161,30 @@ internal sealed partial class SessionService
                         turn,
                         compaction,
                         cancellationToken),
+                RecordToolCallIntent toolCall =>
+                    await RecordToolCallAsync(
+                        thread,
+                        turn,
+                        toolCall,
+                        cancellationToken),
+                RecordToolInvocationStartedIntent toolStarted =>
+                    await RecordToolInvocationStartedAsync(
+                        thread,
+                        turn,
+                        toolStarted,
+                        cancellationToken),
+                RecordToolInvocationAttemptStartedIntent toolAttempt =>
+                    await RecordToolInvocationAttemptStartedAsync(
+                        thread,
+                        turn,
+                        toolAttempt,
+                        cancellationToken),
+                RecordToolInvocationTerminalIntent toolTerminal =>
+                    await RecordToolInvocationTerminalAsync(
+                        thread,
+                        turn,
+                        toolTerminal,
+                        cancellationToken),
                 WaitForInteractionIntent waiting =>
                     await WaitForInteractionAsync(
                         thread,
@@ -1381,6 +1406,342 @@ internal sealed partial class SessionService
         return sequence;
     }
 
+    private async ValueTask<long> RecordToolCallAsync(
+        ThreadSnapshot thread,
+        TurnSnapshot turn,
+        RecordToolCallIntent intent,
+        CancellationToken cancellationToken)
+    {
+        RequireId(intent.ItemId, nameof(intent.ItemId), "Item ID");
+        ArgumentNullException.ThrowIfNull(intent.Content);
+        if (_items.TryGetValue(intent.ItemId, out var existingItem))
+        {
+            if (existingItem.TurnId == turn.TurnId &&
+                existingItem.Type == SessionItemType.ToolCall &&
+                existingItem.Status == SessionItemStatus.Completed &&
+                existingItem.Content is ToolCallItemContent existingContent &&
+                ThreadJournal.Canonicalize(SerializeContent(existingContent))
+                    .AsSpan()
+                    .SequenceEqual(
+                        ThreadJournal.Canonicalize(
+                            SerializeContent(intent.Content))))
+            {
+                return existingItem.Sequence;
+            }
+
+            throw ExecutionError(
+                SessionErrorCodes.InvalidState,
+                "Tool Call Item ID already has different content.");
+        }
+
+        if (turn.Status != TurnStatus.Running ||
+            !IsValidToolCallContent(intent.Content) ||
+            intent.Content.AgentMessageItemId is { } agentMessageItemId &&
+            (!_items.TryGetValue(agentMessageItemId, out var agentMessage) ||
+             agentMessage.TurnId != turn.TurnId ||
+             agentMessage.Type != SessionItemType.AgentMessage ||
+             agentMessage.Status != SessionItemStatus.Completed))
+        {
+            throw ExecutionError(
+                SessionErrorCodes.InvalidState,
+                "Executor emitted an invalid Tool Call frame.");
+        }
+
+        var timestamp = _timeProvider.GetUtcNow();
+        var content = SerializeContent(intent.Content);
+        var bytes = ThreadJournal.Canonicalize(content);
+        var item = new SessionItemSnapshot(
+            intent.ItemId,
+            turn.TurnId,
+            SessionItemType.ToolCall,
+            SessionItemStatus.Completed,
+            intent.Content,
+            thread.CurrentSequence + 1,
+            timestamp,
+            timestamp);
+        var hash = InternalRequestHash(
+            SessionEventType.ToolCallRecorded,
+            new { intent.ItemId, turn.TurnId, Content = content });
+        var sequence = await CommitExecutionFactAsync(
+            thread,
+            new ToolCallRecordedFact(
+                intent.ItemId,
+                turn.TurnId,
+                content,
+                bytes.Length,
+                Hash(bytes),
+                hash.RequestSha256),
+            SessionEventType.ToolCallRecorded,
+            new SessionEventPayload(Turn: turn, Item: item),
+            hash,
+            cancellationToken);
+        _items[intent.ItemId] = item;
+        _itemText[intent.ItemId] = string.Empty;
+        return sequence;
+    }
+
+    private async ValueTask<long> RecordToolInvocationStartedAsync(
+        ThreadSnapshot thread,
+        TurnSnapshot turn,
+        RecordToolInvocationStartedIntent intent,
+        CancellationToken cancellationToken)
+    {
+        RequireId(
+            intent.ToolInvocationId,
+            nameof(intent.ToolInvocationId),
+            "Tool Invocation ID");
+        if (_toolInvocations.TryGetValue(intent.ToolInvocationId, out var existing))
+        {
+            if (StartedIntentMatches(existing, thread, turn, intent))
+            {
+                return existing.Sequence;
+            }
+
+            throw ExecutionError(
+                SessionErrorCodes.InvalidState,
+                "Tool Invocation already has a different start.");
+        }
+
+        if (turn.Status != TurnStatus.Running ||
+            !_items.TryGetValue(intent.ToolCallItemId, out var callItem) ||
+            callItem.TurnId != turn.TurnId ||
+            callItem.Type != SessionItemType.ToolCall ||
+            callItem.Status != SessionItemStatus.Completed ||
+            callItem.Content is not ToolCallItemContent callContent ||
+            intent.CallIndex < 0 ||
+            intent.CallIndex >= callContent.Calls.Count ||
+            !CallMatches(callContent.Calls[intent.CallIndex], intent) ||
+            _toolInvocations.Values.Any(invocation =>
+                invocation.ToolCallItemId == intent.ToolCallItemId &&
+                invocation.CallIndex == intent.CallIndex) ||
+            (intent.ToolDefinitionId is null) != (intent.RuntimeBindingId is null) ||
+            !IsLowerSha256(intent.SnapshotSha256) ||
+            !IsLowerSha256(intent.ArgumentsSha256))
+        {
+            throw ExecutionError(
+                SessionErrorCodes.InvalidState,
+                "Tool Invocation start does not match the recorded Tool Call.");
+        }
+
+        var timestamp = _timeProvider.GetUtcNow();
+        var snapshot = new ToolInvocationSnapshot(
+            intent.ToolInvocationId,
+            thread.ThreadId,
+            turn.TurnId,
+            intent.ProviderToolCallId,
+            intent.ProviderToolName,
+            intent.ToolDefinitionId,
+            intent.RuntimeBindingId,
+            intent.SnapshotSha256,
+            intent.ArgumentsSha256,
+            ToolInvocationStatus.Started,
+            AttemptCount: 0,
+            ResultItemId: null,
+            ErrorCode: null,
+            timestamp,
+            timestamp,
+            CompletedAt: null);
+        var hash = InternalRequestHash(
+            SessionEventType.ToolInvocationStarted,
+            new { turn.TurnId, Intent = intent });
+        var sequence = await CommitExecutionFactAsync(
+            thread,
+            new ToolInvocationStartedFact(
+                intent.ToolInvocationId,
+                turn.TurnId,
+                intent.ToolCallItemId,
+                intent.CallIndex,
+                intent.ProviderToolCallId,
+                intent.ProviderToolName,
+                intent.ToolDefinitionId,
+                intent.RuntimeBindingId,
+                intent.SnapshotSha256,
+                intent.ArgumentsSha256,
+                hash.RequestSha256),
+            SessionEventType.ToolInvocationStarted,
+            new SessionEventPayload(Turn: turn, ToolInvocation: snapshot),
+            hash,
+            cancellationToken);
+        _toolInvocations[intent.ToolInvocationId] =
+            new ToolInvocationRecord(
+                snapshot,
+                intent.ToolCallItemId,
+                intent.CallIndex,
+                sequence);
+        return sequence;
+    }
+
+    private async ValueTask<long> RecordToolInvocationAttemptStartedAsync(
+        ThreadSnapshot thread,
+        TurnSnapshot turn,
+        RecordToolInvocationAttemptStartedIntent intent,
+        CancellationToken cancellationToken)
+    {
+        if (!_toolInvocations.TryGetValue(intent.ToolInvocationId, out var existing))
+        {
+            throw ExecutionError(
+                SessionErrorCodes.InvalidState,
+                "Tool Invocation attempt has no start.");
+        }
+
+        if (existing.Snapshot.CompletedAt is null &&
+            existing.Snapshot.AttemptCount == intent.AttemptNumber &&
+            existing.Snapshot.Status == ToolInvocationStatus.Started)
+        {
+            return existing.Sequence;
+        }
+
+        if (turn.Status != TurnStatus.Running ||
+            existing.Snapshot.TurnId != turn.TurnId ||
+            existing.Snapshot.CompletedAt is not null ||
+            intent.AttemptNumber != existing.Snapshot.AttemptCount + 1 ||
+            intent.AttemptNumber is < 1 or > 2)
+        {
+            throw ExecutionError(
+                SessionErrorCodes.InvalidState,
+                "Tool Invocation attempt is out of order.");
+        }
+
+        var timestamp = _timeProvider.GetUtcNow();
+        var snapshot = existing.Snapshot with
+        {
+            Status = ToolInvocationStatus.Started,
+            AttemptCount = intent.AttemptNumber,
+            UpdatedAt = timestamp,
+        };
+        var hash = InternalRequestHash(
+            SessionEventType.ToolInvocationAttemptStarted,
+            new { turn.TurnId, Intent = intent });
+        var sequence = await CommitExecutionFactAsync(
+            thread,
+            new ToolInvocationAttemptStartedFact(
+                intent.ToolInvocationId,
+                intent.AttemptNumber,
+                hash.RequestSha256),
+            SessionEventType.ToolInvocationAttemptStarted,
+            new SessionEventPayload(Turn: turn, ToolInvocation: snapshot),
+            hash,
+            cancellationToken);
+        _toolInvocations[intent.ToolInvocationId] =
+            existing with { Snapshot = snapshot, Sequence = sequence };
+        return sequence;
+    }
+
+    private async ValueTask<long> RecordToolInvocationTerminalAsync(
+        ThreadSnapshot thread,
+        TurnSnapshot turn,
+        RecordToolInvocationTerminalIntent intent,
+        CancellationToken cancellationToken)
+    {
+        RequireId(intent.ResultItemId, nameof(intent.ResultItemId), "Result Item ID");
+        ArgumentNullException.ThrowIfNull(intent.Result);
+        var result = intent.Result;
+        if (!_toolInvocations.TryGetValue(result.ToolInvocationId, out var existing))
+        {
+            throw ExecutionError(
+                SessionErrorCodes.InvalidState,
+                "Tool Invocation terminal has no start.");
+        }
+
+        if (existing.Snapshot.CompletedAt is not null)
+        {
+            if (existing.Snapshot.ResultItemId == intent.ResultItemId &&
+                existing.Snapshot.Status == result.Status &&
+                existing.Snapshot.AttemptCount == result.AttemptCount &&
+                string.Equals(
+                    existing.Snapshot.ErrorCode,
+                    result.Error?.Code,
+                    StringComparison.Ordinal) &&
+                _items.TryGetValue(intent.ResultItemId, out var replayedItem) &&
+                replayedItem.Content is ToolResultItemContent replayedResult &&
+                string.Equals(
+                    replayedResult.Result.ResultSha256,
+                    result.ResultSha256,
+                    StringComparison.Ordinal))
+            {
+                return existing.Sequence;
+            }
+
+            throw ExecutionError(
+                SessionErrorCodes.InvalidState,
+                "Tool Invocation already has a different terminal.");
+        }
+
+        if (turn.Status != TurnStatus.Running ||
+            _items.ContainsKey(intent.ResultItemId) ||
+            existing.Snapshot.TurnId != turn.TurnId ||
+            !IsValidToolResultContent(result) ||
+            !IsTerminalToolStatus(result.Status) ||
+            result.AttemptCount != existing.Snapshot.AttemptCount ||
+            !string.Equals(
+                result.ProviderToolCallId,
+                existing.Snapshot.ProviderToolCallId,
+                StringComparison.Ordinal) ||
+            !IsLowerSha256(result.ResultSha256) ||
+            result.Status == ToolInvocationStatus.Completed && result.Error is not null)
+        {
+            throw ExecutionError(
+                SessionErrorCodes.InvalidState,
+                "Tool Invocation terminal result is invalid.");
+        }
+
+        var timestamp = _timeProvider.GetUtcNow();
+        var contentValue = new ToolResultItemContent(result);
+        var content = SerializeContent(contentValue);
+        var bytes = ThreadJournal.Canonicalize(content);
+        var item = new SessionItemSnapshot(
+            intent.ResultItemId,
+            turn.TurnId,
+            SessionItemType.ToolResult,
+            SessionItemStatus.Completed,
+            contentValue,
+            thread.CurrentSequence + 1,
+            timestamp,
+            timestamp);
+        var snapshot = existing.Snapshot with
+        {
+            Status = result.Status,
+            ResultItemId = intent.ResultItemId,
+            ErrorCode = result.Error?.Code,
+            UpdatedAt = timestamp,
+            CompletedAt = timestamp,
+        };
+        var terminal = new ToolInvocationTerminalFact(
+            result.ToolInvocationId,
+            result.Status,
+            result.Error?.Code,
+            result.ResultSha256,
+            intent.ResultItemId);
+        var resultItem = new ToolResultItemFact(
+            intent.ResultItemId,
+            turn.TurnId,
+            content,
+            bytes.Length,
+            Hash(bytes));
+        var hash = InternalRequestHash(
+            SessionEventType.ToolInvocationTerminal,
+            new { turn.TurnId, Invocation = terminal, ResultItem = resultItem });
+        var sequence = await CommitExecutionFactAsync(
+            thread,
+            new ToolInvocationTerminalJournalFact(
+                terminal,
+                resultItem,
+                hash.RequestSha256),
+            SessionEventType.ToolInvocationTerminal,
+            new SessionEventPayload(
+                Turn: turn,
+                Item: item,
+                ToolInvocation: snapshot,
+                ToolResult: result),
+            hash,
+            cancellationToken);
+        _items[intent.ResultItemId] = item;
+        _itemText[intent.ResultItemId] = string.Empty;
+        _toolInvocations[result.ToolInvocationId] =
+            existing with { Snapshot = snapshot, Sequence = sequence };
+        return sequence;
+    }
+
     private async ValueTask<long> StartItemAsync(
         ThreadSnapshot thread,
         TurnSnapshot turn,
@@ -1558,6 +1919,11 @@ internal sealed partial class SessionService
         if (turn.Status != TurnStatus.Running ||
             _interactions.ContainsKey(intent.InteractionId) ||
             HasActiveItems(turn.TurnId) ||
+            intent.ToolInvocationId is { } toolInvocationId &&
+            (intent.Type != SessionInteractionType.Approval ||
+             !_toolInvocations.TryGetValue(toolInvocationId, out var toolInvocation) ||
+             toolInvocation.Snapshot.TurnId != turn.TurnId ||
+             toolInvocation.Snapshot.CompletedAt is not null) ||
             string.IsNullOrWhiteSpace(_executorKind) ||
             !SessionExecutionCheckpointCodec.IsValid(
                 intent.Checkpoint,
@@ -1596,7 +1962,8 @@ internal sealed partial class SessionService
             intent.Type,
             IsResolved: false,
             timestamp,
-            intent.TimeoutAt?.ToUniversalTime());
+            intent.TimeoutAt?.ToUniversalTime(),
+            intent.ToolInvocationId);
         var hash = InternalRequestHash(
             intent.Type == SessionInteractionType.Approval
                 ? SessionEventType.TurnWaitingApproval
@@ -1608,6 +1975,7 @@ internal sealed partial class SessionService
                 Request = request,
                 intent.Checkpoint,
                 intent.TimeoutAt,
+                intent.ToolInvocationId,
             });
         var eventType = intent.Type == SessionInteractionType.Approval
             ? SessionEventType.TurnWaitingApproval
@@ -1626,7 +1994,8 @@ internal sealed partial class SessionService
                 Hash(contentBytes),
                 intent.Checkpoint,
                 intent.TimeoutAt?.ToUniversalTime(),
-                hash.RequestSha256),
+                hash.RequestSha256,
+                intent.ToolInvocationId),
             eventType,
             new SessionEventPayload(
                 Turn: waitingTurn,
@@ -2019,6 +2388,18 @@ internal sealed partial class SessionService
                 case SessionEventType.ItemCancelled:
                     RestoreItemTerminal(entry, SessionItemStatus.Cancelled);
                     break;
+                case SessionEventType.ToolCallRecorded:
+                    RestoreToolCall(entry);
+                    break;
+                case SessionEventType.ToolInvocationStarted:
+                    RestoreToolInvocationStarted(entry);
+                    break;
+                case SessionEventType.ToolInvocationAttemptStarted:
+                    RestoreToolInvocationAttemptStarted(entry);
+                    break;
+                case SessionEventType.ToolInvocationTerminal:
+                    RestoreToolInvocationTerminal(entry);
+                    break;
                 case SessionEventType.AgentInvocationSnapshotRecorded:
                     var invocation = ReadFact<AgentInvocationSnapshotRecordedFact>(entry);
                     _agentInvocations[invocation.TurnId] =
@@ -2130,6 +2511,7 @@ internal sealed partial class SessionService
         var texts = new Dictionary<Guid, string>();
         var interactions = new Dictionary<Guid, PendingInteractionSnapshot>();
         var queueItems = new Dictionary<Guid, QueuedTurnInputSnapshot>();
+        var toolInvocations = new Dictionary<Guid, ToolInvocationRecord>();
         ThreadSnapshot? thread = null;
         foreach (var entry in entries)
         {
@@ -2142,23 +2524,28 @@ internal sealed partial class SessionService
             AgentInvocationSnapshot? invocation = null;
             ProviderUsageSnapshot? usage = null;
             CompactionCheckpointSnapshot? compaction = null;
+            ToolInvocationSnapshot? toolInvocation = null;
             switch (entry.EntryType)
             {
                 case SessionEventType.ThreadForked:
                     ReplaceHistory(
+                        entry.ThreadId,
                         ReadFact<ThreadForkedFact>(entry).History,
                         turns,
                         items,
                         texts,
-                        interactions);
+                        interactions,
+                        toolInvocations);
                     break;
                 case SessionEventType.ThreadRolledBack:
                     ReplaceHistory(
+                        entry.ThreadId,
                         ReadFact<ThreadRolledBackFact>(entry).History,
                         turns,
                         items,
                         texts,
-                        interactions);
+                        interactions,
+                        toolInvocations);
                     break;
                 case SessionEventType.TurnQueued:
                     var queued = ReadFact<TurnQueuedFact>(entry);
@@ -2317,6 +2704,210 @@ internal sealed partial class SessionService
                     turn = turns.GetValueOrDefault(item.TurnId);
                     error = itemTerminal.Error;
                     break;
+                case SessionEventType.ToolCallRecorded:
+                    var toolCall = ReadFact<ToolCallRecordedFact>(entry);
+                    if (!HasValidToolItemDigest(
+                            toolCall.Content,
+                            toolCall.ContentLength,
+                            toolCall.ContentSha256))
+                    {
+                        throw new InvalidDataException(
+                            "Journal Tool Call Item digest is invalid.");
+                    }
+
+                    if (!turns.TryGetValue(toolCall.TurnId, out var toolCallTurn) ||
+                        toolCallTurn.Status != TurnStatus.Running)
+                    {
+                        throw new InvalidDataException(
+                            "Journal Tool Call Item has no running turn.");
+                    }
+
+                    item = new SessionItemSnapshot(
+                        toolCall.ItemId,
+                        toolCall.TurnId,
+                        SessionItemType.ToolCall,
+                        SessionItemStatus.Completed,
+                        DeserializeContent(SessionItemType.ToolCall, toolCall.Content),
+                        entry.Sequence,
+                        entry.Timestamp,
+                        entry.Timestamp);
+                    if (item.Content is not ToolCallItemContent toolCallFrame ||
+                        !IsValidToolCallContent(toolCallFrame) ||
+                        !HasValidAgentMessageReference(
+                            items,
+                            item.TurnId,
+                            toolCallFrame) ||
+                        !items.TryAdd(item.ItemId, item))
+                    {
+                        throw new InvalidDataException(
+                            "Journal contains a duplicate Tool Call Item.");
+                    }
+
+                    texts[item.ItemId] = string.Empty;
+                    turn = turns.GetValueOrDefault(item.TurnId);
+                    break;
+                case SessionEventType.ToolInvocationStarted:
+                    var toolStarted = ReadFact<ToolInvocationStartedFact>(entry);
+                    if (toolInvocations.ContainsKey(toolStarted.ToolInvocationId) ||
+                        !items.TryGetValue(toolStarted.ToolCallItemId, out var toolCallItem) ||
+                        toolCallItem.Type != SessionItemType.ToolCall ||
+                        toolCallItem.Status != SessionItemStatus.Completed ||
+                        toolCallItem.Content is not ToolCallItemContent toolCallContent ||
+                        toolCallItem.TurnId != toolStarted.TurnId ||
+                        toolStarted.CallIndex < 0 ||
+                        toolStarted.CallIndex >= toolCallContent.Calls.Count ||
+                        !CallMatches(
+                            toolCallContent.Calls[toolStarted.CallIndex],
+                            toolStarted) ||
+                        toolInvocations.Values.Any(invocation =>
+                            invocation.ToolCallItemId ==
+                            toolStarted.ToolCallItemId &&
+                            invocation.CallIndex == toolStarted.CallIndex) ||
+                        (toolStarted.ToolDefinitionId is null) !=
+                        (toolStarted.RuntimeBindingId is null) ||
+                        !IsLowerSha256(toolStarted.SnapshotSha256) ||
+                        !IsLowerSha256(toolStarted.ArgumentsSha256))
+                    {
+                        throw new InvalidDataException(
+                            "Journal contains an invalid Tool Invocation start.");
+                    }
+
+                    toolInvocation = new ToolInvocationSnapshot(
+                        toolStarted.ToolInvocationId,
+                        entry.ThreadId,
+                        toolStarted.TurnId,
+                        toolStarted.ProviderToolCallId,
+                        toolStarted.ProviderToolName,
+                        toolStarted.ToolDefinitionId,
+                        toolStarted.RuntimeBindingId,
+                        toolStarted.SnapshotSha256,
+                        toolStarted.ArgumentsSha256,
+                        ToolInvocationStatus.Started,
+                        AttemptCount: 0,
+                        ResultItemId: null,
+                        ErrorCode: null,
+                        entry.Timestamp,
+                        entry.Timestamp,
+                        CompletedAt: null);
+                    toolInvocations[toolStarted.ToolInvocationId] =
+                        new ToolInvocationRecord(
+                            toolInvocation,
+                            toolStarted.ToolCallItemId,
+                            toolStarted.CallIndex,
+                            entry.Sequence);
+                    turn = turns.GetValueOrDefault(toolStarted.TurnId);
+                    break;
+                case SessionEventType.ToolInvocationAttemptStarted:
+                    var toolAttempt =
+                        ReadFact<ToolInvocationAttemptStartedFact>(entry);
+                    if (!toolInvocations.TryGetValue(
+                            toolAttempt.ToolInvocationId,
+                            out var attemptRecord) ||
+                        attemptRecord.Snapshot.CompletedAt is not null ||
+                        toolAttempt.AttemptNumber !=
+                        attemptRecord.Snapshot.AttemptCount + 1 ||
+                        toolAttempt.AttemptNumber is < 1 or > 2)
+                    {
+                        throw new InvalidDataException(
+                            "Journal contains an invalid Tool Invocation attempt.");
+                    }
+
+                    toolInvocation = attemptRecord.Snapshot with
+                    {
+                        Status = ToolInvocationStatus.Started,
+                        AttemptCount = toolAttempt.AttemptNumber,
+                        UpdatedAt = entry.Timestamp,
+                    };
+                    toolInvocations[toolAttempt.ToolInvocationId] =
+                        attemptRecord with
+                        {
+                            Snapshot = toolInvocation,
+                            Sequence = entry.Sequence,
+                        };
+                    turn = turns.GetValueOrDefault(toolInvocation.TurnId);
+                    break;
+                case SessionEventType.ToolInvocationTerminal:
+                    var toolTerminal =
+                        ReadFact<ToolInvocationTerminalJournalFact>(entry);
+                    if (!toolInvocations.TryGetValue(
+                            toolTerminal.Invocation.ToolInvocationId,
+                            out var terminalRecord) ||
+                        terminalRecord.Snapshot.CompletedAt is not null ||
+                        toolTerminal.Invocation.ResultItemId !=
+                        toolTerminal.ResultItem.ItemId)
+                    {
+                        throw new InvalidDataException(
+                            "Journal contains an invalid Tool Invocation terminal.");
+                    }
+
+                    var resultContent = DeserializeContent(
+                        SessionItemType.ToolResult,
+                        toolTerminal.ResultItem.Content);
+                    if (!HasValidToolItemDigest(
+                            toolTerminal.ResultItem.Content,
+                            toolTerminal.ResultItem.ContentLength,
+                            toolTerminal.ResultItem.ContentSha256) ||
+                        !IsTerminalToolStatus(toolTerminal.Invocation.Status) ||
+                        resultContent is not ToolResultItemContent resultItemContent ||
+                        toolTerminal.ResultItem.TurnId !=
+                        terminalRecord.Snapshot.TurnId ||
+                        resultItemContent.Result.ToolInvocationId !=
+                        toolTerminal.Invocation.ToolInvocationId ||
+                        resultItemContent.Result.Status !=
+                        toolTerminal.Invocation.Status ||
+                        resultItemContent.Result.AttemptCount !=
+                        terminalRecord.Snapshot.AttemptCount ||
+                        !IsValidToolResultContent(resultItemContent.Result) ||
+                        !string.Equals(
+                            resultItemContent.Result.ResultSha256,
+                            toolTerminal.Invocation.ResultSha256,
+                            StringComparison.Ordinal) ||
+                        !string.Equals(
+                            resultItemContent.Result.ProviderToolCallId,
+                            terminalRecord.Snapshot.ProviderToolCallId,
+                            StringComparison.Ordinal) ||
+                        !string.Equals(
+                            resultItemContent.Result.Error?.Code,
+                            toolTerminal.Invocation.ErrorCode,
+                            StringComparison.Ordinal))
+                    {
+                        throw new InvalidDataException(
+                            "Journal Tool Result does not match its terminal.");
+                    }
+
+                    item = new SessionItemSnapshot(
+                        toolTerminal.ResultItem.ItemId,
+                        toolTerminal.ResultItem.TurnId,
+                        SessionItemType.ToolResult,
+                        SessionItemStatus.Completed,
+                        resultContent,
+                        entry.Sequence,
+                        entry.Timestamp,
+                        entry.Timestamp);
+                    if (!items.TryAdd(item.ItemId, item))
+                    {
+                        throw new InvalidDataException(
+                            "Journal contains a duplicate Tool Result Item.");
+                    }
+
+                    texts[item.ItemId] = string.Empty;
+                    toolInvocation = terminalRecord.Snapshot with
+                    {
+                        Status = toolTerminal.Invocation.Status,
+                        ResultItemId = toolTerminal.ResultItem.ItemId,
+                        ErrorCode = toolTerminal.Invocation.ErrorCode,
+                        UpdatedAt = entry.Timestamp,
+                        CompletedAt = entry.Timestamp,
+                    };
+                    toolInvocations[toolTerminal.Invocation.ToolInvocationId] =
+                        terminalRecord with
+                        {
+                            Snapshot = toolInvocation,
+                            Sequence = entry.Sequence,
+                        };
+                    turn = turns.GetValueOrDefault(toolInvocation.TurnId);
+                    error = resultItemContent.Result.Error;
+                    break;
                 case SessionEventType.AgentInvocationSnapshotRecorded:
                     var invocationFact =
                         ReadFact<AgentInvocationSnapshotRecordedFact>(entry);
@@ -2337,6 +2928,18 @@ internal sealed partial class SessionService
                 case SessionEventType.TurnWaitingApproval:
                 case SessionEventType.TurnWaitingInput:
                     var waiting = ReadFact<TurnWaitingFact>(entry);
+                    if (waiting.ToolInvocationId is { } waitingInvocationId &&
+                        (waiting.InteractionType != SessionInteractionType.Approval ||
+                         !toolInvocations.TryGetValue(
+                             waitingInvocationId,
+                             out var waitingInvocation) ||
+                         waitingInvocation.Snapshot.TurnId != waiting.TurnId ||
+                         waitingInvocation.Snapshot.CompletedAt is not null))
+                    {
+                        throw new InvalidDataException(
+                            "Journal waiting interaction has an invalid Tool Invocation.");
+                    }
+
                     turn = UpdateHistoryTurn(
                         turns,
                         waiting.TurnId,
@@ -2361,7 +2964,8 @@ internal sealed partial class SessionService
                         waiting.InteractionType,
                         IsResolved: false,
                         entry.Timestamp,
-                        waiting.TimeoutAt);
+                        waiting.TimeoutAt,
+                        waiting.ToolInvocationId);
                     interactions[interaction.InteractionId] = interaction;
                     break;
                 case SessionEventType.InteractionResolved:
@@ -2428,7 +3032,11 @@ internal sealed partial class SessionService
                     Error: error,
                     Invocation: invocation,
                     Usage: usage,
-                    Compaction: compaction)));
+                    Compaction: compaction,
+                    ToolInvocation: toolInvocation,
+                    ToolResult: item?.Content is ToolResultItemContent toolResult
+                        ? toolResult.Result
+                        : null)));
         }
 
         return events.ToArray();
@@ -2462,14 +3070,25 @@ internal sealed partial class SessionService
             _turns.TryRemove(turnId, out _);
         }
 
+        foreach (var invocation in _toolInvocations
+                     .Where(pair => pair.Value.Snapshot.ThreadId == threadId)
+                     .Select(pair => pair.Key))
+        {
+            _toolInvocations.TryRemove(invocation, out _);
+        }
+
         foreach (var turn in checkpoint.Turns)
         {
-            _turns[turn.TurnId] = turn;
+            if (!_turns.TryAdd(turn.TurnId, turn))
+            {
+                throw new InvalidDataException(
+                    "History checkpoint contains a duplicate Turn.");
+            }
         }
 
         foreach (var item in checkpoint.Items)
         {
-            _items[item.ItemId] = new SessionItemSnapshot(
+            var snapshot = new SessionItemSnapshot(
                 item.ItemId,
                 item.TurnId,
                 item.ItemType,
@@ -2478,31 +3097,64 @@ internal sealed partial class SessionService
                 item.Sequence,
                 item.CreatedAt,
                 item.UpdatedAt);
+            if (!_items.TryAdd(item.ItemId, snapshot))
+            {
+                throw new InvalidDataException(
+                    "History checkpoint contains a duplicate Item.");
+            }
+
             _itemText[item.ItemId] = item.ContentText ?? string.Empty;
         }
+
+        var checkpointItemIds = checkpoint.Items.Select(item => item.ItemId).ToArray();
+        ValidateCheckpointToolItems(
+            threadId,
+            _turns,
+            _items,
+            checkpointItemIds);
+        foreach (var invocation in checkpoint.ToolInvocations ?? [])
+        {
+            RestoreCheckpointToolInvocation(
+                threadId,
+                invocation,
+                _items,
+                _toolInvocations);
+        }
+        ValidateCheckpointToolResults(
+            threadId,
+            _items,
+            checkpointItemIds,
+            _toolInvocations.Values);
 
         _loadedExecutionThreads[threadId] = 0;
     }
 
     private static void ReplaceHistory(
+        Guid threadId,
         HistoryCheckpointFact checkpoint,
         Dictionary<Guid, TurnSnapshot> turns,
         Dictionary<Guid, SessionItemSnapshot> items,
         Dictionary<Guid, string> texts,
-        Dictionary<Guid, PendingInteractionSnapshot> interactions)
+        Dictionary<Guid, PendingInteractionSnapshot> interactions,
+        Dictionary<Guid, ToolInvocationRecord> toolInvocations)
     {
         turns.Clear();
         items.Clear();
         texts.Clear();
         interactions.Clear();
+        toolInvocations.Clear();
         foreach (var turn in checkpoint.Turns)
         {
-            turns[turn.TurnId] = turn;
+            if (!turns.TryAdd(turn.TurnId, turn))
+            {
+                throw new InvalidDataException(
+                    "History checkpoint contains a duplicate Turn.");
+            }
         }
 
         foreach (var item in checkpoint.Items)
         {
-            items[item.ItemId] = new SessionItemSnapshot(
+            var snapshot = new SessionItemSnapshot(
                 item.ItemId,
                 item.TurnId,
                 item.ItemType,
@@ -2511,7 +3163,150 @@ internal sealed partial class SessionService
                 item.Sequence,
                 item.CreatedAt,
                 item.UpdatedAt);
+            if (!items.TryAdd(item.ItemId, snapshot))
+            {
+                throw new InvalidDataException(
+                    "History checkpoint contains a duplicate Item.");
+            }
+
             texts[item.ItemId] = item.ContentText ?? string.Empty;
+        }
+
+        var checkpointItemIds = checkpoint.Items.Select(item => item.ItemId).ToArray();
+        ValidateCheckpointToolItems(
+            threadId,
+            turns,
+            items,
+            checkpointItemIds);
+        foreach (var invocation in checkpoint.ToolInvocations ?? [])
+        {
+            RestoreCheckpointToolInvocation(
+                threadId,
+                invocation,
+                items,
+                toolInvocations);
+        }
+        ValidateCheckpointToolResults(
+            threadId,
+            items,
+            checkpointItemIds,
+            toolInvocations.Values);
+    }
+
+    private static void RestoreCheckpointToolInvocation(
+        Guid threadId,
+        HistoryCheckpointToolInvocationFact fact,
+        IReadOnlyDictionary<Guid, SessionItemSnapshot> items,
+        IDictionary<Guid, ToolInvocationRecord> invocations)
+    {
+        var snapshot = fact.Snapshot;
+        if (snapshot.ThreadId != threadId ||
+            snapshot.CompletedAt is null ||
+            !IsTerminalToolStatus(snapshot.Status) ||
+            snapshot.ResultItemId is not { } resultItemId ||
+            !items.TryGetValue(fact.ToolCallItemId, out var callItem) ||
+            callItem.Type != SessionItemType.ToolCall ||
+            callItem.Status != SessionItemStatus.Completed ||
+            callItem.TurnId != snapshot.TurnId ||
+            callItem.Content is not ToolCallItemContent calls ||
+            !IsValidToolCallContent(calls) ||
+            fact.CallIndex < 0 ||
+            fact.CallIndex >= calls.Calls.Count ||
+            !string.Equals(
+                calls.Calls[fact.CallIndex].ProviderToolCallId,
+                snapshot.ProviderToolCallId,
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                calls.Calls[fact.CallIndex].ProviderToolName,
+                snapshot.ProviderToolName,
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                calls.Calls[fact.CallIndex].ArgumentsSha256,
+                snapshot.ArgumentsSha256,
+                StringComparison.Ordinal) ||
+            !IsLowerSha256(snapshot.SnapshotSha256) ||
+            !IsLowerSha256(snapshot.ArgumentsSha256) ||
+            (snapshot.ToolDefinitionId is null) !=
+            (snapshot.RuntimeBindingId is null) ||
+            !items.TryGetValue(resultItemId, out var resultItem) ||
+            resultItem.Type != SessionItemType.ToolResult ||
+            resultItem.Status != SessionItemStatus.Completed ||
+            resultItem.TurnId != snapshot.TurnId ||
+            resultItem.Content is not ToolResultItemContent result ||
+            !IsValidToolResultContent(result.Result) ||
+            result.Result.ToolInvocationId != snapshot.ToolInvocationId ||
+            result.Result.Status != snapshot.Status ||
+            result.Result.AttemptCount != snapshot.AttemptCount ||
+            !string.Equals(
+                result.Result.ProviderToolCallId,
+                snapshot.ProviderToolCallId,
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                result.Result.Error?.Code,
+                snapshot.ErrorCode,
+                StringComparison.Ordinal) ||
+            invocations.Values.Any(invocation =>
+                invocation.ToolCallItemId == fact.ToolCallItemId &&
+                invocation.CallIndex == fact.CallIndex) ||
+            !invocations.TryAdd(
+                snapshot.ToolInvocationId,
+                new ToolInvocationRecord(
+                    snapshot,
+                    fact.ToolCallItemId,
+                    fact.CallIndex,
+                    resultItem.Sequence)))
+        {
+            throw new InvalidDataException(
+                "History checkpoint contains an invalid Tool Invocation.");
+        }
+    }
+
+    private static void ValidateCheckpointToolItems(
+        Guid threadId,
+        IReadOnlyDictionary<Guid, TurnSnapshot> turns,
+        IReadOnlyDictionary<Guid, SessionItemSnapshot> items,
+        IEnumerable<Guid> itemIds)
+    {
+        foreach (var item in itemIds
+                     .Select(itemId => items[itemId])
+                     .Where(item =>
+                         item.Type is
+                             SessionItemType.ToolCall or
+                             SessionItemType.ToolResult))
+        {
+            if (!turns.TryGetValue(item.TurnId, out var turn) ||
+                turn.ThreadId != threadId ||
+                item.Status != SessionItemStatus.Completed ||
+                item.Type == SessionItemType.ToolCall &&
+                (item.Content is not ToolCallItemContent call ||
+                 !IsValidToolCallContent(call) ||
+                 !HasValidAgentMessageReference(items, item.TurnId, call)) ||
+                item.Type == SessionItemType.ToolResult &&
+                (item.Content is not ToolResultItemContent result ||
+                 !IsValidToolResultContent(result.Result)))
+            {
+                throw new InvalidDataException(
+                    "History checkpoint contains an invalid Tool Item.");
+            }
+        }
+    }
+
+    private static void ValidateCheckpointToolResults(
+        Guid threadId,
+        IReadOnlyDictionary<Guid, SessionItemSnapshot> items,
+        IEnumerable<Guid> itemIds,
+        IEnumerable<ToolInvocationRecord> invocations)
+    {
+        var resultItemIds = invocations
+            .Where(invocation => invocation.Snapshot.ThreadId == threadId)
+            .Select(invocation => invocation.Snapshot.ResultItemId)
+            .ToHashSet();
+        if (itemIds.Select(itemId => items[itemId]).Any(item =>
+                item.Type == SessionItemType.ToolResult &&
+                !resultItemIds.Contains(item.ItemId)))
+        {
+            throw new InvalidDataException(
+                "History checkpoint contains an orphan Tool Result Item.");
         }
     }
 
@@ -2603,9 +3398,194 @@ internal sealed partial class SessionService
         }
     }
 
+    private void RestoreToolCall(ThreadJournalEntry entry)
+    {
+        var fact = ReadFact<ToolCallRecordedFact>(entry);
+        if (!HasValidToolItemDigest(
+                fact.Content,
+                fact.ContentLength,
+                fact.ContentSha256))
+        {
+            throw new InvalidDataException(
+                "Journal Tool Call Item digest is invalid.");
+        }
+
+        var content = DeserializeContent(SessionItemType.ToolCall, fact.Content);
+        if (!_turns.TryGetValue(fact.TurnId, out var turn) ||
+            turn.Status != TurnStatus.Running ||
+            content is not ToolCallItemContent toolCall ||
+            !IsValidToolCallContent(toolCall) ||
+            !HasValidAgentMessageReference(_items, fact.TurnId, toolCall) ||
+            _items.ContainsKey(fact.ItemId))
+        {
+            throw new InvalidDataException(
+                "Journal contains a duplicate Tool Call Item.");
+        }
+
+        _items[fact.ItemId] = new SessionItemSnapshot(
+            fact.ItemId,
+            fact.TurnId,
+            SessionItemType.ToolCall,
+            SessionItemStatus.Completed,
+            content,
+            entry.Sequence,
+            entry.Timestamp,
+            entry.Timestamp);
+        _itemText[fact.ItemId] = string.Empty;
+    }
+
+    private void RestoreToolInvocationStarted(ThreadJournalEntry entry)
+    {
+        var fact = ReadFact<ToolInvocationStartedFact>(entry);
+        if (_toolInvocations.ContainsKey(fact.ToolInvocationId) ||
+            !_items.TryGetValue(fact.ToolCallItemId, out var item) ||
+            item.TurnId != fact.TurnId ||
+            item.Type != SessionItemType.ToolCall ||
+            item.Status != SessionItemStatus.Completed ||
+            item.Content is not ToolCallItemContent content ||
+            fact.CallIndex < 0 ||
+            fact.CallIndex >= content.Calls.Count ||
+            !CallMatches(content.Calls[fact.CallIndex], fact) ||
+            _toolInvocations.Values.Any(invocation =>
+                invocation.ToolCallItemId == fact.ToolCallItemId &&
+                invocation.CallIndex == fact.CallIndex) ||
+            (fact.ToolDefinitionId is null) != (fact.RuntimeBindingId is null) ||
+            !IsLowerSha256(fact.SnapshotSha256) ||
+            !IsLowerSha256(fact.ArgumentsSha256))
+        {
+            throw new InvalidDataException(
+                "Journal contains an invalid Tool Invocation start.");
+        }
+
+        var snapshot = new ToolInvocationSnapshot(
+            fact.ToolInvocationId,
+            entry.ThreadId,
+            fact.TurnId,
+            fact.ProviderToolCallId,
+            fact.ProviderToolName,
+            fact.ToolDefinitionId,
+            fact.RuntimeBindingId,
+            fact.SnapshotSha256,
+            fact.ArgumentsSha256,
+            ToolInvocationStatus.Started,
+            AttemptCount: 0,
+            ResultItemId: null,
+            ErrorCode: null,
+            entry.Timestamp,
+            entry.Timestamp,
+            CompletedAt: null);
+        _toolInvocations[fact.ToolInvocationId] =
+            new ToolInvocationRecord(
+                snapshot,
+                fact.ToolCallItemId,
+                fact.CallIndex,
+                entry.Sequence);
+    }
+
+    private void RestoreToolInvocationAttemptStarted(ThreadJournalEntry entry)
+    {
+        var fact = ReadFact<ToolInvocationAttemptStartedFact>(entry);
+        if (!_toolInvocations.TryGetValue(fact.ToolInvocationId, out var existing) ||
+            existing.Snapshot.CompletedAt is not null ||
+            fact.AttemptNumber != existing.Snapshot.AttemptCount + 1 ||
+            fact.AttemptNumber is < 1 or > 2)
+        {
+            throw new InvalidDataException(
+                "Journal contains an invalid Tool Invocation attempt.");
+        }
+
+        _toolInvocations[fact.ToolInvocationId] = existing with
+        {
+            Snapshot = existing.Snapshot with
+            {
+                Status = ToolInvocationStatus.Started,
+                AttemptCount = fact.AttemptNumber,
+                UpdatedAt = entry.Timestamp,
+            },
+            Sequence = entry.Sequence,
+        };
+    }
+
+    private void RestoreToolInvocationTerminal(ThreadJournalEntry entry)
+    {
+        var fact = ReadFact<ToolInvocationTerminalJournalFact>(entry);
+        var terminal = fact.Invocation;
+        var resultItem = fact.ResultItem;
+        if (!HasValidToolItemDigest(
+                resultItem.Content,
+                resultItem.ContentLength,
+                resultItem.ContentSha256))
+        {
+            throw new InvalidDataException(
+                "Journal Tool Result Item digest is invalid.");
+        }
+
+        var content = DeserializeContent(SessionItemType.ToolResult, resultItem.Content);
+        if (!_toolInvocations.TryGetValue(terminal.ToolInvocationId, out var existing) ||
+            existing.Snapshot.CompletedAt is not null ||
+            terminal.ResultItemId != resultItem.ItemId ||
+            resultItem.TurnId != existing.Snapshot.TurnId ||
+            _items.ContainsKey(resultItem.ItemId) ||
+            content is not ToolResultItemContent toolResult ||
+            toolResult.Result.ToolInvocationId != terminal.ToolInvocationId ||
+            toolResult.Result.Status != terminal.Status ||
+            toolResult.Result.AttemptCount != existing.Snapshot.AttemptCount ||
+            !IsValidToolResultContent(toolResult.Result) ||
+            !string.Equals(
+                toolResult.Result.ProviderToolCallId,
+                existing.Snapshot.ProviderToolCallId,
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                toolResult.Result.ResultSha256,
+                terminal.ResultSha256,
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                toolResult.Result.Error?.Code,
+                terminal.ErrorCode,
+                StringComparison.Ordinal) ||
+            !IsTerminalToolStatus(terminal.Status))
+        {
+            throw new InvalidDataException(
+                "Journal contains an invalid Tool Invocation terminal.");
+        }
+
+        _items[resultItem.ItemId] = new SessionItemSnapshot(
+            resultItem.ItemId,
+            resultItem.TurnId,
+            SessionItemType.ToolResult,
+            SessionItemStatus.Completed,
+            content,
+            entry.Sequence,
+            entry.Timestamp,
+            entry.Timestamp);
+        _itemText[resultItem.ItemId] = string.Empty;
+        _toolInvocations[terminal.ToolInvocationId] = existing with
+        {
+            Snapshot = existing.Snapshot with
+            {
+                Status = terminal.Status,
+                ResultItemId = resultItem.ItemId,
+                ErrorCode = terminal.ErrorCode,
+                UpdatedAt = entry.Timestamp,
+                CompletedAt = entry.Timestamp,
+            },
+            Sequence = entry.Sequence,
+        };
+    }
+
     private void RestoreWaiting(ThreadJournalEntry entry)
     {
         var fact = ReadFact<TurnWaitingFact>(entry);
+        if (fact.ToolInvocationId is { } toolInvocationId &&
+            (fact.InteractionType != SessionInteractionType.Approval ||
+             !_toolInvocations.TryGetValue(toolInvocationId, out var toolInvocation) ||
+             toolInvocation.Snapshot.TurnId != fact.TurnId ||
+             toolInvocation.Snapshot.CompletedAt is not null))
+        {
+            throw new InvalidDataException(
+                "Journal waiting interaction has an invalid Tool Invocation.");
+        }
+
         var content = DeserializeContent(fact.RequestItemType, fact.Request);
         var item = new SessionItemSnapshot(
             fact.ItemId,
@@ -2625,7 +3605,8 @@ internal sealed partial class SessionService
             fact.InteractionType,
             IsResolved: false,
             entry.Timestamp,
-            fact.TimeoutAt);
+            fact.TimeoutAt,
+            fact.ToolInvocationId);
         _interactions[fact.InteractionId] = new InteractionRuntime(
             snapshot,
             fact.ItemId,
@@ -2876,6 +3857,10 @@ internal sealed partial class SessionService
                 content.Deserialize<ErrorItemContent>(JsonOptions),
             SessionItemType.SystemNotice =>
                 content.Deserialize<SystemNoticeContent>(JsonOptions),
+            SessionItemType.ToolCall =>
+                content.Deserialize<ToolCallItemContent>(JsonOptions),
+            SessionItemType.ToolResult =>
+                content.Deserialize<ToolResultItemContent>(JsonOptions),
             _ => null,
         };
         return result ?? throw ExecutionError(
@@ -2953,6 +3938,117 @@ internal sealed partial class SessionService
         value.All(character =>
             character is >= '0' and <= '9' or >= 'a' and <= 'f');
 
+    private static bool CallMatches(
+        ToolCallItemEntry call,
+        RecordToolInvocationStartedIntent intent) =>
+        string.Equals(
+            call.ProviderToolCallId,
+            intent.ProviderToolCallId,
+            StringComparison.Ordinal) &&
+        string.Equals(
+            call.ProviderToolName,
+            intent.ProviderToolName,
+            StringComparison.Ordinal) &&
+        string.Equals(
+            call.ArgumentsSha256,
+            intent.ArgumentsSha256,
+            StringComparison.Ordinal);
+
+    private static bool CallMatches(
+        ToolCallItemEntry call,
+        ToolInvocationStartedFact fact) =>
+        string.Equals(
+            call.ProviderToolCallId,
+            fact.ProviderToolCallId,
+            StringComparison.Ordinal) &&
+        string.Equals(
+            call.ProviderToolName,
+            fact.ProviderToolName,
+            StringComparison.Ordinal) &&
+        string.Equals(
+            call.ArgumentsSha256,
+            fact.ArgumentsSha256,
+            StringComparison.Ordinal);
+
+    private static bool StartedIntentMatches(
+        ToolInvocationRecord existing,
+        ThreadSnapshot thread,
+        TurnSnapshot turn,
+        RecordToolInvocationStartedIntent intent) =>
+        existing.Snapshot.ThreadId == thread.ThreadId &&
+        existing.Snapshot.TurnId == turn.TurnId &&
+        existing.ToolCallItemId == intent.ToolCallItemId &&
+        existing.CallIndex == intent.CallIndex &&
+        string.Equals(
+            existing.Snapshot.ProviderToolCallId,
+            intent.ProviderToolCallId,
+            StringComparison.Ordinal) &&
+        string.Equals(
+            existing.Snapshot.ProviderToolName,
+            intent.ProviderToolName,
+            StringComparison.Ordinal) &&
+        existing.Snapshot.ToolDefinitionId == intent.ToolDefinitionId &&
+        existing.Snapshot.RuntimeBindingId == intent.RuntimeBindingId &&
+        string.Equals(
+            existing.Snapshot.SnapshotSha256,
+            intent.SnapshotSha256,
+            StringComparison.Ordinal) &&
+        string.Equals(
+            existing.Snapshot.ArgumentsSha256,
+            intent.ArgumentsSha256,
+            StringComparison.Ordinal);
+
+    private static bool IsTerminalToolStatus(ToolInvocationStatus status) =>
+        status is
+            ToolInvocationStatus.Completed or
+            ToolInvocationStatus.Rejected or
+            ToolInvocationStatus.Failed or
+            ToolInvocationStatus.Cancelled or
+            ToolInvocationStatus.TimedOut or
+            ToolInvocationStatus.OutcomeUnknown;
+
+    private static bool HasValidToolItemDigest(
+        JsonElement content,
+        int contentLength,
+        string contentSha256)
+    {
+        var bytes = ThreadJournal.Canonicalize(content);
+        return contentLength == bytes.Length &&
+               IsLowerSha256(contentSha256) &&
+               string.Equals(Hash(bytes), contentSha256, StringComparison.Ordinal);
+    }
+
+    private static bool IsValidToolCallContent(ToolCallItemContent content) =>
+        content.Calls.Count > 0 &&
+        content.Calls.All(call =>
+            !string.IsNullOrWhiteSpace(call.ProviderToolCallId) &&
+            !string.IsNullOrWhiteSpace(call.ProviderToolName) &&
+            call.Arguments.ValueKind == JsonValueKind.Object &&
+            IsLowerSha256(call.ArgumentsSha256)) &&
+        content.Calls
+            .Select(call => call.ProviderToolCallId)
+            .Distinct(StringComparer.Ordinal)
+            .Count() == content.Calls.Count;
+
+    private static bool HasValidAgentMessageReference(
+        IReadOnlyDictionary<Guid, SessionItemSnapshot> items,
+        Guid turnId,
+        ToolCallItemContent content) =>
+        content.AgentMessageItemId is not { } itemId ||
+        items.TryGetValue(itemId, out var item) &&
+        item.TurnId == turnId &&
+        item.Type == SessionItemType.AgentMessage &&
+        item.Status == SessionItemStatus.Completed;
+
+    private static bool IsValidToolResultContent(ToolResultSnapshot result) =>
+        IsLowerSha256(result.ResultSha256) &&
+        (result.Status == ToolInvocationStatus.Completed
+            ? result.Output is { ValueKind: not JsonValueKind.Undefined } &&
+              result.Error is null
+            : IsTerminalToolStatus(result.Status) &&
+              result.Output is null &&
+              result.Error is { Code.Length: > 0 });
+
     private sealed record InteractionRuntime(
         PendingInteractionSnapshot Snapshot,
         Guid RequestItemId,
@@ -2967,6 +4063,12 @@ internal sealed partial class SessionService
 
     private sealed record InvocationRecord(
         AgentInvocationSnapshot Snapshot,
+        long Sequence);
+
+    private sealed record ToolInvocationRecord(
+        ToolInvocationSnapshot Snapshot,
+        Guid ToolCallItemId,
+        int CallIndex,
         long Sequence);
 
     private sealed record ProviderUsageKey(

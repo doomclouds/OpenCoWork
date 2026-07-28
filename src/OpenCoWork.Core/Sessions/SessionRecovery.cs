@@ -1253,6 +1253,7 @@ internal sealed partial class SessionService
     {
         var turns = new Dictionary<Guid, TurnSnapshot>();
         var items = new Dictionary<Guid, SessionItemSnapshot>();
+        var toolInvocations = new Dictionary<Guid, ToolInvocationRecord>();
         var checkpointEntry = entries.LastOrDefault(entry =>
             entry.EntryType is (
                 SessionEventType.ThreadForked or
@@ -1279,6 +1280,92 @@ internal sealed partial class SessionService
                     item.Sequence,
                     item.CreatedAt,
                     item.UpdatedAt);
+            }
+
+            foreach (var invocation in checkpoint.ToolInvocations ?? [])
+            {
+                toolInvocations[invocation.Snapshot.ToolInvocationId] =
+                    new ToolInvocationRecord(
+                        invocation.Snapshot,
+                        invocation.ToolCallItemId,
+                        invocation.CallIndex,
+                        invocation.Snapshot.ResultItemId is { } resultItemId
+                            ? items.GetValueOrDefault(resultItemId)?.Sequence ?? 0
+                            : 0);
+            }
+        }
+
+        foreach (var entry in entries.Where(entry => entry.Sequence > checkpointSequence))
+        {
+            switch (entry.EntryType)
+            {
+                case SessionEventType.ToolInvocationStarted:
+                    var started = ReadFact<ToolInvocationStartedFact>(entry);
+                    toolInvocations[started.ToolInvocationId] =
+                        new ToolInvocationRecord(
+                            new ToolInvocationSnapshot(
+                                started.ToolInvocationId,
+                                entry.ThreadId,
+                                started.TurnId,
+                                started.ProviderToolCallId,
+                                started.ProviderToolName,
+                                started.ToolDefinitionId,
+                                started.RuntimeBindingId,
+                                started.SnapshotSha256,
+                                started.ArgumentsSha256,
+                                ToolInvocationStatus.Started,
+                                AttemptCount: 0,
+                                ResultItemId: null,
+                                ErrorCode: null,
+                                entry.Timestamp,
+                                entry.Timestamp,
+                                CompletedAt: null),
+                            started.ToolCallItemId,
+                            started.CallIndex,
+                            entry.Sequence);
+                    break;
+                case SessionEventType.ToolInvocationAttemptStarted:
+                    var attempt = ReadFact<ToolInvocationAttemptStartedFact>(entry);
+                    if (toolInvocations.TryGetValue(
+                            attempt.ToolInvocationId,
+                            out var attemptRecord))
+                    {
+                        toolInvocations[attempt.ToolInvocationId] =
+                            attemptRecord with
+                            {
+                                Snapshot = attemptRecord.Snapshot with
+                                {
+                                    AttemptCount = attempt.AttemptNumber,
+                                    UpdatedAt = entry.Timestamp,
+                                },
+                                Sequence = entry.Sequence,
+                            };
+                    }
+
+                    break;
+                case SessionEventType.ToolInvocationTerminal:
+                    var terminal =
+                        ReadFact<ToolInvocationTerminalJournalFact>(entry);
+                    if (toolInvocations.TryGetValue(
+                            terminal.Invocation.ToolInvocationId,
+                            out var terminalRecord))
+                    {
+                        toolInvocations[terminal.Invocation.ToolInvocationId] =
+                            terminalRecord with
+                            {
+                                Snapshot = terminalRecord.Snapshot with
+                                {
+                                    Status = terminal.Invocation.Status,
+                                    ResultItemId = terminal.ResultItem.ItemId,
+                                    ErrorCode = terminal.Invocation.ErrorCode,
+                                    UpdatedAt = entry.Timestamp,
+                                    CompletedAt = entry.Timestamp,
+                                },
+                                Sequence = entry.Sequence,
+                            };
+                    }
+
+                    break;
             }
         }
 
@@ -1320,22 +1407,93 @@ internal sealed partial class SessionService
                 ThreadId = targetThreadId,
             })
             .ToArray();
-        var targetItems = items.Values
+        var completedInvocations = toolInvocations.Values
+            .Where(invocation =>
+                invocation.Snapshot.CompletedAt is not null &&
+                invocation.Snapshot.ResultItemId is not null)
+            .ToArray();
+        var invocationMap = completedInvocations.ToDictionary(
+            invocation => invocation.Snapshot.ToolInvocationId,
+            invocation => remapIds
+                ? Guid.CreateVersion7()
+                : invocation.Snapshot.ToolInvocationId);
+        var includedItems = items.Values
             .Where(item => turnMap.ContainsKey(item.TurnId))
+            .Where(item =>
+                item.Content is not ToolResultItemContent result ||
+                invocationMap.ContainsKey(result.Result.ToolInvocationId))
+            .ToArray();
+        var itemMap = includedItems.ToDictionary(
+            item => item.ItemId,
+            item => remapIds ? Guid.CreateVersion7() : item.ItemId);
+        var targetItems = includedItems
             .OrderBy(item => item.Sequence)
             .ThenBy(item => item.ItemId)
             .Select(item => new HistoryCheckpointItemFact(
-                remapIds ? Guid.CreateVersion7() : item.ItemId,
+                itemMap[item.ItemId],
                 turnMap[item.TurnId],
                 item.Type,
                 item.Status,
-                SerializeContent(item.Content),
+                SerializeContent(RemapToolResult(item.Content, invocationMap)),
                 ContentText(item.Content),
                 item.Sequence,
                 item.CreatedAt,
                 item.UpdatedAt))
             .ToArray();
-        return new HistoryCheckpointFact(targetTurns, targetItems);
+        var targetInvocations = completedInvocations
+            .Where(invocation =>
+                turnMap.ContainsKey(invocation.Snapshot.TurnId) &&
+                itemMap.ContainsKey(invocation.ToolCallItemId) &&
+                invocation.Snapshot.ResultItemId is { } resultItemId &&
+                itemMap.ContainsKey(resultItemId))
+            .OrderBy(invocation => invocation.Snapshot.StartedAt)
+            .ThenBy(invocation => invocation.Snapshot.ToolInvocationId)
+            .Select(invocation =>
+            {
+                var snapshot = invocation.Snapshot;
+                return new HistoryCheckpointToolInvocationFact(
+                    snapshot with
+                    {
+                        ToolInvocationId =
+                            invocationMap[snapshot.ToolInvocationId],
+                        ThreadId = targetThreadId,
+                        TurnId = turnMap[snapshot.TurnId],
+                        ResultItemId = itemMap[snapshot.ResultItemId!.Value],
+                    },
+                    itemMap[invocation.ToolCallItemId],
+                    invocation.CallIndex);
+            })
+            .ToArray();
+        return new HistoryCheckpointFact(
+            targetTurns,
+            targetItems,
+            targetInvocations);
+    }
+
+    private static SessionItemContent RemapToolResult(
+        SessionItemContent content,
+        IReadOnlyDictionary<Guid, Guid> invocationMap)
+    {
+        if (content is not ToolResultItemContent toolResult ||
+            !invocationMap.TryGetValue(
+                toolResult.Result.ToolInvocationId,
+                out var invocationId))
+        {
+            return content;
+        }
+
+        var result = toolResult.Result;
+        return new ToolResultItemContent(
+            new ToolResultSnapshot(
+                invocationId,
+                result.ProviderToolCallId,
+                result.Status,
+                result.Output,
+                result.Error,
+                result.IsTruncated,
+                result.OriginalByteCount,
+                result.ResultSha256,
+                result.AttemptCount));
     }
 
     private static ThreadDeletionRecoveryIntent DeletionIntent(

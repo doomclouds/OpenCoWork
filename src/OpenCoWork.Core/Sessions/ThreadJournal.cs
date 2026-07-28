@@ -1248,6 +1248,15 @@ internal sealed class ThreadJournal
         }
     }
 
+    internal static byte[] Canonicalize(JsonElement value)
+    {
+        var buffer = new ArrayBufferWriter<byte>();
+        using var writer = new Utf8JsonWriter(buffer);
+        WriteCanonical(writer, value);
+        writer.Flush();
+        return buffer.WrittenSpan.ToArray();
+    }
+
     private static void ValidateDraft(ThreadJournalDraft draft)
     {
         SessionIds.RequireVersion7(draft.ThreadId, nameof(draft.ThreadId), "Thread ID");
