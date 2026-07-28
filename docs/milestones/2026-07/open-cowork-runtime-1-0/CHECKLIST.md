@@ -7,9 +7,9 @@ Milestone standard: [README.md](README.md)
 ## Progress Summary
 
 - Status: In Progress
-- Progress: 4/11
-- Done: 4
-- In progress: 1
+- Progress: 5/11
+- Done: 5
+- In progress: 0
 - Not started: 6
 - Deferred: 0
 - Split: 0
@@ -40,12 +40,12 @@ Milestone standard: [README.md](README.md)
   - Related plan: docs/superpowers/plans/2026-07-27-open-cowork-m3-agent-runtime-alpha-implementation-plan.md
   - Related archive: docs/superpowers/archives/2026-07/2026-07-27-open-cowork-m3-agent-runtime-alpha-archives.md
   - Completion signal: 真实多轮对话、重启恢复、流式重试和上下文压缩通过完整离线回归；DeepSeek 官方 Pro/Flash 在 osx-arm64 通过真实冒烟，其他 Provider 已登记延期。
-- [ ] 5. M4 - Tool Runtime Alpha
-  - Status: In Progress
+- [x] 5. M4 - Tool Runtime Alpha
+  - Status: Done
   - Related spec: docs/superpowers/specs/2026-07-28-open-cowork-m4-tool-runtime-alpha-design.md
   - Related plan: docs/superpowers/plans/2026-07-28-open-cowork-m4-tool-runtime-alpha-implementation-plan.md
-  - Related archive: None yet.
-  - Completion signal: 固定工具管线、稳定错误、审批、模式限制和副作用保护验收通过。
+  - Related archive: docs/superpowers/archives/2026-07/2026-07-28-open-cowork-m4-tool-runtime-alpha-archives.md
+  - Completion signal: 固定工具管线、稳定错误、审批恢复、模式限制和副作用保护已完成；Windows 真机证据按用户确认保留在双平台台账后续补验。
 - [ ] 6. M5 - OpenCoWork Wire Alpha
   - Status: Not Started
   - Related spec: docs/superpowers/specs/2026-07-25-open-cowork-runtime-1-0-roadmap.md

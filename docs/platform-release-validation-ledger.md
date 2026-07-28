@@ -46,14 +46,15 @@ Passed`，不得把目标平台状态改为 `Passed`。M10 必须在最终发布
 | M2 Durable Session Core | `osx-arm64` | Passed | `7ae53f2de59f4959b2097f1837e28a95d6db81ae` + Source Patch SHA-256 `c2d3a54e9455d16f90db1f5fb21f8923dbb2a120101e773ed54f54335b761010` | Apple Silicon macOS 26.5.2；.NET SDK `10.0.302`；Runtime `10.0.10` | 默认与大小写敏感 APFS 各 139 项测试、Journal/SQLite/并发/恢复/Symlink、Mach-O arm64 发布目录 `doctor --json` | [M2 交付归档](superpowers/archives/2026-07/2026-07-26-open-cowork-m2-durable-session-core-archives.md) |
 | M3 Agent Runtime Alpha | `win-x64` | Not Required | — | — | M3 冻结边界只要求首个真实 Provider；Windows Provider 兼容性进入独立待验证清单 | [M3 交付归档](superpowers/archives/2026-07/2026-07-27-open-cowork-m3-agent-runtime-alpha-archives.md) |
 | M3 Agent Runtime Alpha | `osx-arm64` | Passed | `3da2e47f1a917529e3264535b7f9efed66d1b2bb` | Apple Silicon macOS；.NET SDK `10.0.302`；Runtime `10.0.10` | 183 项离线测试、`osx-arm64` publish、DeepSeek Pro/Flash 真实冒烟、Usage 对账与 Secret Canary | [M3 交付归档](superpowers/archives/2026-07/2026-07-27-open-cowork-m3-agent-runtime-alpha-archives.md) |
-| M4 Tool Runtime Alpha | `win-x64` | Pending | 产品基线 `d236f29`；交叉发布已通过 | 真实环境待登记 | 待完成完整离线回归、PowerShell Host、File/Shell/Web 发布目录 Smoke、输出超限/取消后的进程树残留和 Secret Canary；交叉发布不计真机通过 | [M4 实施计划](superpowers/plans/2026-07-28-open-cowork-m4-tool-runtime-alpha-implementation-plan.md) |
-| M4 Tool Runtime Alpha | `osx-arm64` | Passed | 产品基线 `d236f29` | Apple Silicon macOS 26.5.2；.NET SDK `10.0.302`；Runtime `10.0.10` | 259 项离线测试、Release build 0/0、Mach-O arm64 发布目录真实 CLI 审批链、File 原子写、`/bin/zsh`、Web 私网拒绝、进程树清理与全表面 Secret Canary | [M4 实施计划](superpowers/plans/2026-07-28-open-cowork-m4-tool-runtime-alpha-implementation-plan.md) |
+| M4 Tool Runtime Alpha | `win-x64` | Pending | 产品基线 `d236f29`；交叉发布已通过 | 真实环境待登记 | M4 已按用户确认的延期边界归档；仍待完整离线回归、PowerShell Host、File/Shell/Web 发布目录 Smoke、输出超限/取消后的进程树残留和 Secret Canary，交叉发布不计真机通过 | [M4 交付归档](superpowers/archives/2026-07/2026-07-28-open-cowork-m4-tool-runtime-alpha-archives.md) |
+| M4 Tool Runtime Alpha | `osx-arm64` | Passed | 产品基线 `d236f29` | Apple Silicon macOS 26.5.2；.NET SDK `10.0.302`；Runtime `10.0.10` | 259 项离线测试、Release build 0/0、Mach-O arm64 发布目录真实 CLI 审批链、File 原子写、`/bin/zsh`、Web 私网拒绝、进程树清理与全表面 Secret Canary | [M4 交付归档](superpowers/archives/2026-07/2026-07-28-open-cowork-m4-tool-runtime-alpha-archives.md) |
 | M10 OpenCoWork 1.0 Closure | `win-x64` | Pending | 最终发布候选待定 | 待登记 | 安装、升级、迁移、恢复、安全、性能、签名和完整发布候选验收 | [Runtime 1.0 里程碑](milestones/2026-07/open-cowork-runtime-1-0/README.md) |
 | M10 OpenCoWork 1.0 Closure | `osx-arm64` | Pending | 最终发布候选待定 | 待登记 | 安装、升级、迁移、恢复、安全、性能、签名/公证和完整发布候选验收 | [Runtime 1.0 里程碑](milestones/2026-07/open-cowork-runtime-1-0/README.md) |
 
-## M4 当前阻断项
+## M4 Windows 后续验证项
 
-M4 只有 `win-x64` 真机证据尚未完成。Windows 验证必须至少包含：
+M4 功能需求已按用户确认的延期边界关闭，`win-x64` 真机状态仍为 `Pending`。
+后续集中验证必须至少包含：
 
 1. `dotnet test OpenCoWork.slnx -c Release`
 2. `dotnet build OpenCoWork.slnx -c Release --no-restore`
@@ -66,8 +67,9 @@ M4 只有 `win-x64` 真机证据尚未完成。Windows 验证必须至少包含�
    stderr 和测试目录执行 Secret Canary 零命中扫描；
 9. 记录 Windows 版本、CPU 架构、SDK/Runtime、Commit SHA、测试计数和执行时间。
 
-完成后才能把 M4 的 `M4-ACC-006`、`M4-ACC-009`、Outcome 9 和 Slice 状态改为
-`Passed` / `Done`，创建唯一 M4 交付归档，并同步里程碑 CHECKLIST/INDEX。
+完成后才能把 `M4-ACC-006`、`M4-ACC-009` 从 `Deferred` 改为 `Passed`，并回写
+M4 交付归档和本台账。该缺口不再阻止 M4 功能需求归档，但在补验前不得声明
+Windows 真机通过，也不能关闭 M10 双平台发布候选。
 
 ## 更新规则
 

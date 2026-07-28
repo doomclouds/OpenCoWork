@@ -40,9 +40,11 @@ Platform 标签：
 - “存在一个测试文件”不等于通过，必须有可复现的执行结果；
 - `DualPlatform` 不接受在同一平台模拟另一平台；
 - 每个 Slice 的证据必须包含此前已完成 Slice 的累计回归；
-- 任一 P0/P1 缺陷、失败验收或缺失硬证据都会阻止 Slice 标记 Done。
+- 任一 P0/P1 缺陷、失败验收或未分类的缺失硬证据都会阻止 Slice 标记 Done。
 
-Status 使用 `Passed`、`Planned`、`Failed`、`Superseded`。
+Status 使用 `Passed`、`Planned`、`Failed`、`Deferred`、`Superseded`。
+`Deferred` 只允许用于用户明确接受的 Slice 边界变更，必须链接后续台账；它不代表
+通过，也不能用于绕过 M10 发布候选关闭门禁。
 
 2026-07-25 用户确认 M1 先以 `win-x64` 正式证据关闭；M1 的 macOS 真机项不作
 伪通过，统一滚动登记到仓库 `AGENTS.md`，并在 M10 / OpenCoWork 1.0 发布前清零。
@@ -53,6 +55,12 @@ Status 使用 `Passed`、`Planned`、`Failed`、`Superseded`。
 `win-x64` 真实 Provider 兼容性统一进入
 [`docs/provider-validation-backlog.md`](../../provider-validation-backlog.md)，
 并由 M10 的双平台兼容矩阵继续约束；未验证项不得对外宣称支持。
+
+2026-07-28 用户确认关闭 M4 功能需求，并将 `M4-ACC-006`、`M4-ACC-009` 缺少的
+`win-x64` 真机维度标记为 `Deferred`，统一进入
+[`docs/platform-release-validation-ledger.md`](../../platform-release-validation-ledger.md)
+后续集中补验。平台状态保持 `Pending`，不得对外宣称 Windows 已通过，且 M10
+关闭前必须补齐。
 
 ## 2. M0 - Contract Freeze（8）
 
@@ -112,16 +120,16 @@ Status 使用 `Passed`、`Planned`、`Failed`、`Superseded`。
 
 | AcceptanceId | Requirement | CapabilityIds | EvidenceType | Platforms | ExpectedEvidence | Status | SupersededBy |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| M4-ACC-001 | Tool Definition、Binding、Registration 与来源标识彼此独立。 | CAP-031 | ContractSnapshot | All | 工具契约快照和重复来源测试。 | Planned | — |
-| M4-ACC-002 | 每个 Turn 冻结 EffectiveToolSnapshot 和 Provider 名称双向映射。 | CAP-032 | AutomatedTest | All | 热更新竞态与名称冲突测试。 | Planned | — |
-| M4-ACC-003 | ToolInvocationPipeline 的阶段顺序不可旁路，所有阶段可观测。 | CAP-033 | AutomatedTest | All | 逐阶段 Trace Snapshot 和顺序断言。 | Planned | — |
-| M4-ACC-004 | Audience、Exposure、Lease、Authority、Schema、Policy 拒绝均有稳定错误码。 | CAP-033, CAP-034 | SecurityTest | All | 拒绝矩阵与错误契约快照。 | Planned | — |
-| M4-ACC-005 | Hook 和 Approval 不能扩大权限，拒绝调用同样产生 Started/Terminal 审计。 | CAP-034 | SecurityTest | All | 权限交集、恶意 Hook 和重复审批测试。 | Planned | — |
-| M4-ACC-006 | Timeout 与 Cancellation 贯穿 Provider、Tool 和子进程并进入单一终态。 | CAP-035 | FaultInjection | DualPlatform | 超时/取消阶段矩阵与进程树残留检查。 | Planned | — |
-| M4-ACC-007 | 非幂等副作用在结果不明时不自动重试，并产生 `tool.outcomeUnknown`。 | CAP-035 | FaultInjection | All | 提交前后断连测试与副作用计数。 | Planned | — |
-| M4-ACC-008 | Plan 模式不能调用写入、执行或网络副作用工具。 | CAP-030 | SecurityTest | All | Mode/Authority 组合矩阵。 | Planned | — |
-| M4-ACC-009 | 最小 File、Shell、Web 工具在双平台遵守路径、进程、权限和输出限制。 | CAP-036 | RealPlatformValidation | DualPlatform | Windows PowerShell 与 macOS Shell 实跑证据。 | Planned | — |
-| M4-ACC-010 | 模型重试、恢复和重复 Tool Call ID 不会重复已提交副作用。 | CAP-032, CAP-033, CAP-035 | FaultInjection | All | Idempotency 与 Journal 重放测试。 | Planned | — |
+| M4-ACC-001 | Tool Definition、Binding、Registration 与来源标识彼此独立。 | CAP-031 | ContractSnapshot | All | `ToolContractTests`、`ToolSnapshotTests` 和架构测试。 | Passed | — |
+| M4-ACC-002 | 每个 Turn 冻结 EffectiveToolSnapshot 和 Provider 名称双向映射。 | CAP-032 | AutomatedTest | All | `ToolSnapshotTests`、热更新竞态、名称限制和碰撞隔离测试。 | Passed | — |
+| M4-ACC-003 | ToolInvocationPipeline 的阶段顺序不可旁路，所有阶段可观测。 | CAP-033 | AutomatedTest | All | `ToolInvocationPipelineTests` 的逐阶段 Trace、顺序与旁路防护。 | Passed | — |
+| M4-ACC-004 | Audience、Exposure、Lease、Authority、Schema、Policy 拒绝均有稳定错误码。 | CAP-033, CAP-034 | SecurityTest | All | 拒绝矩阵、Schema/Policy 失败和稳定错误契约测试。 | Passed | — |
+| M4-ACC-005 | Hook 和 Approval 不能扩大权限，拒绝调用同样产生 Started/Terminal 审计。 | CAP-034 | SecurityTest | All | Authority 交集、恶意 Hook、重复审批和 CLI Approval/Resume 测试。 | Passed | — |
+| M4-ACC-006 | Timeout 与 Cancellation 贯穿 Provider、Tool 和子进程并进入单一终态。 | CAP-035 | FaultInjection | DualPlatform | 全阶段故障注入与 `osx-arm64` 进程树残留通过；`win-x64` 真机部分见双平台台账，保持 `Pending`。 | Deferred | — |
+| M4-ACC-007 | 非幂等副作用在结果不明时不自动重试，并产生 `tool.outcomeUnknown`。 | CAP-035 | FaultInjection | All | Safe/Unsafe 恢复、提交窗口和副作用唯一性故障注入。 | Passed | — |
+| M4-ACC-008 | Plan 模式不能调用写入、执行或网络副作用工具。 | CAP-030 | SecurityTest | All | `ToolSnapshotTests` 的 Mode、Effect、Authority 和 Provider 名称矩阵。 | Passed | — |
+| M4-ACC-009 | 最小 File、Shell、Web 工具在双平台遵守路径、进程、权限和输出限制。 | CAP-036 | RealPlatformValidation | DualPlatform | `osx-arm64` 发布目录 File/zsh/Web 实跑通过；Windows PowerShell 真机部分见双平台台账，保持 `Pending`。 | Deferred | — |
+| M4-ACC-010 | 模型重试、恢复和重复 Tool Call ID 不会重复已提交副作用。 | CAP-032, CAP-033, CAP-035 | FaultInjection | All | 重复 Call ID、Journal 重放、Checkpoint 恢复和副作用计数测试。 | Passed | — |
 
 ## 7. M5 - OpenCoWork Wire Alpha（9）
 
@@ -215,26 +223,28 @@ Status 使用 `Passed`、`Planned`、`Failed`、`Superseded`。
 
 ## 13. 数量与关闭规则
 
-| Slice | Acceptance 数量 | M0 状态 |
+| Slice | Acceptance 数量 | 当前状态 |
 | --- | ---: | --- |
 | M0 | 8 | Passed |
-| M1 | 8 | Planned |
-| M2 | 10 | Planned |
-| M3 | 8 | Planned |
-| M4 | 10 | Planned |
+| M1 | 8 | Passed |
+| M2 | 10 | Passed |
+| M3 | 8 | Passed |
+| M4 | 10 | 8 Passed / 2 Deferred |
 | M5 | 9 | Planned |
 | M6 | 10 | Planned |
 | M7 | 10 | Planned |
 | M8 | 9 | Planned |
 | M9 | 10 | Planned |
 | M10 | 12 | Planned |
-| **Total** | **104** | **8 Passed / 96 Planned** |
+| **Total** | **104** | **42 Passed / 2 Deferred / 60 Planned** |
 
 每个 Slice 标记 Done 前必须：
 
-1. 将该 Slice 的全部 Planned 改为 Passed，或以 Superseded 明确替代；
+1. 将该 Slice 的全部 Planned 改为 Passed，或以用户明确接受并有台账的 Deferred、
+   Superseded 明确处理；
 2. 链接实际证据；
 3. 执行此前 Slice 的累计回归；
 4. 确认没有 P0/P1 缺陷；
-5. 对 `DualPlatform` 项提供两台真实平台的独立证据；
+5. 对 `DualPlatform` 项提供两台真实平台的独立证据，或明确记录已接受的延期平台；
+   M10 不允许保留该延期；
 6. 更新能力台账、里程碑 Checklist 和交付归档。

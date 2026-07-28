@@ -1,6 +1,6 @@
 # OpenCoWork M4 Tool Runtime Alpha 实施计划
 
-**Status:** In Progress；Outcome 1-8 已完成，Outcome 9 尚未开始。
+**Status:** Completed；Outcome 1-9 已完成。
 
 **Goal:** 在 M3 Agent Runtime 上交付 Provider 中立、可审计、可审批、可取消、
 可恢复且不会重复已提交副作用的最小 Tool Runtime。
@@ -10,11 +10,17 @@ Schema v4、ThreadJournal 事实、Provider 流协议、模型历史与 Compacti
 和审批、机密信息边界、跨平台文件/进程/网络执行以及崩溃恢复，属于跨模块、数据迁移、
 公共契约和安全敏感工作，必须按依赖闭包推进。
 
-**Acceptance:** `M4-ACC-001` 至 `M4-ACC-010` 全部具备自动化、故障注入或真实平台
-证据；默认测试完全离线；File、Shell、Web 在 `win-x64` 和 `osx-arm64` 真机通过；
-同一 Provider Tool Call、重试和恢复不会重复已提交副作用；Secret 不进入 Journal、
-SQLite、Session Event、Provider Tool Message、日志、stdout、stderr 或测试产物；
-最终只生成一份 M4 交付归档。
+**Acceptance:** `M4-ACC-001` 至 `M4-ACC-010` 均有可定位的自动化、故障注入、
+真实平台证据或明确延期结论；默认测试完全离线；同一 Provider Tool Call、重试和
+恢复不会重复已提交副作用；Secret 不进入 Journal、SQLite、Session Event、
+Provider Tool Message、日志、stdout、stderr 或测试产物；最终只生成一份 M4
+交付归档。
+
+**Closeout boundary update（2026-07-28）:** 用户明确接受关闭 M4 功能需求，并将
+`M4-ACC-006`、`M4-ACC-009` 的 `win-x64` 真机部分保留在
+`docs/platform-release-validation-ledger.md` 后续集中补验。两项状态为
+`Deferred`，Windows 平台行为仍为 `Pending`，不得解释为已通过；该决定只调整 M4
+关闭时点，不改变工具安全契约，并且不豁免 M10 的双平台发布候选验收。
 
 ## Source Documents
 
@@ -379,9 +385,9 @@ AgentFactory/Provider/Compaction。不得新增项目、第二套 Session 状态
     要求的 Contract、Security、FaultInjection 或 RealPlatform 证据。
   - 完整回归 v3→v4 迁移、Projection Rebuild、Fork/Rollback、重复 ID、审批恢复、
     Safe/Unsafe 断连、64 Round、Context Budget 和副作用计数。
-  - 在 Apple Silicon macOS 与 Windows x64 真机分别运行完整离线测试和
-    ToolRuntimeIntegrationTests；发布目录实跑 File/Shell/Web，不以 cross-publish
-    代替真实平台证据。
+  - 在 Apple Silicon macOS 完成完整离线测试、ToolRuntimeIntegrationTests 和发布
+    目录 File/Shell/Web 实跑；`win-x64` 真机部分按关闭边界变更登记为后续集中补验，
+    不以 cross-publish 代替真实平台证据。
   - 对 Journal、SQLite、Session Event、Provider Tool Message、日志、stdout、
     stderr 和测试临时目录执行 Secret Canary 扫描；命中即阻断交付。
   - 运行架构测试确认零新增项目、只有 `JsonSchema.Net 9.4.0` 一个 M4 新依赖，且
@@ -389,8 +395,9 @@ AgentFactory/Provider/Compaction。不得新增项目、第二套 Session 状态
   - M4 不要求新增真实 Provider 支持证据；只有用户按
     `docs/provider-validation-backlog.md` 显式激活 Provider/Model/平台时，才增加
     独立真实 Tool Call 发布验证。
-  - 全部证据满足后创建唯一 M4 交付归档，更新 Milestone CHECKLIST/INDEX；未满足的
-    平台或 Provider 证据必须明确保持 In Progress 或进入待验证清单。
+  - 自动化和 macOS 证据满足、Windows 延期已明确登记后，创建唯一 M4 交付归档并
+    更新 Milestone CHECKLIST/INDEX；未执行的真实平台证据必须保持
+    `Deferred` / `Pending`。
 - Current validation evidence（2026-07-28）:
   - 产品实现基线为提交 `d236f29`；Apple Silicon macOS 26.5.2、
     `osx-arm64`、.NET SDK `10.0.302`、Runtime `10.0.10`。
@@ -407,8 +414,9 @@ AgentFactory/Provider/Compaction。不得新增项目、第二套 Session 状态
   - Secret Canary 未命中该发布 Smoke 的 Journal、SQLite、Session Event、Provider
     请求体、日志、stdout/stderr 或测试目录；Shell 进程确认未继承冻结 Credential。
   - `win-x64` 真机完整回归、PowerShell Host、输出超限/取消后的进程树残留和发布
-    目录 File/Shell/Web Smoke 尚未执行；因此 `M4-ACC-006`、`M4-ACC-009`、
-    Outcome 9 和 M4 均保持 In Progress，不创建交付归档、不更新里程碑完成状态。
+    目录 File/Shell/Web Smoke 尚未执行；用户已接受将 `M4-ACC-006`、
+    `M4-ACC-009` 标记为 `Deferred` 并保留平台行 `Pending`，因此 M4 功能需求关闭，
+    但不得宣称 Windows 真机通过。
 - Risks/open questions:
   - 单一平台通过、Fake Provider 通过或 cross-publish 成功都不能替代双平台真实工具
     证据。
@@ -437,11 +445,13 @@ AgentFactory/Provider/Compaction。不得新增项目、第二套 Session 状态
 
 ## M4 Completion Gate
 
-只有以下条件同时满足时，M4 才能从 `In Progress` 改为 `Done`：
+按 2026-07-28 用户确认的关闭边界，以下条件同时满足时，M4 从
+`In Progress` 改为 `Done`：
 
 - Outcome 1-9 全部完成，默认测试、架构测试和 Release Build 全绿；
-- `M4-ACC-001` 至 `M4-ACC-010` 均有可定位证据；
-- `win-x64` 与 `osx-arm64` 真机 File/Shell/Web 验证和进程树残留检查通过；
+- `M4-ACC-001` 至 `M4-ACC-010` 均有可定位证据或明确延期结论；
+- `osx-arm64` 真机 File/Shell/Web 验证和进程树残留检查通过；
+- `win-x64` 真机缺口以 `Deferred` / `Pending` 保存在双平台台账，未被误报为通过；
 - v3→v4、Journal 重放、Projection Rebuild、Approval/Checkpoint、重复 Call ID 和
   Unsafe OutcomeUnknown 故障注入通过；
 - Secret Canary 在所有持久化、事件、Provider、日志、进程输出和测试产物表面为零；
