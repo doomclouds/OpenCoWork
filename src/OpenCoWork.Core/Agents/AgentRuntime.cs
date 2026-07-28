@@ -5,6 +5,7 @@ using Microsoft.Extensions.DependencyInjection.Extensions;
 using OpenCoWork.Abstractions;
 using OpenCoWork.Core.Configuration;
 using OpenCoWork.Core.Logging;
+using OpenCoWork.Core.Tools;
 using OpenCoWork.Core.Workspaces;
 
 namespace OpenCoWork.Core.Agents;
@@ -26,6 +27,8 @@ public static class OpenCoWorkAgentExtensions
     {
         ArgumentNullException.ThrowIfNull(services);
         services.TryAddSingleton<ModelsConfig>();
+        services.TryAddSingleton<ToolsConfig>();
+        services.TryAddSingleton(static _ => new ToolRuntime());
         services.TryAddSingleton(serviceProvider =>
             FrozenProviderCredentials.Capture(
                 serviceProvider.GetRequiredService<ModelsConfig>()));
@@ -48,7 +51,9 @@ public static class OpenCoWorkAgentExtensions
         services.TryAddSingleton(serviceProvider =>
             new AgentFactory(
                 serviceProvider.GetRequiredService<ProviderRegistry>(),
-                serviceProvider.GetRequiredService<OpenCoWorkPaths>()));
+                serviceProvider.GetRequiredService<OpenCoWorkPaths>(),
+                serviceProvider.GetRequiredService<ToolRuntime>(),
+                serviceProvider.GetRequiredService<ToolsConfig>()));
         services.TryAddSingleton(static _ =>
             OpenAiCompatibleChatClient.CreateSharedHttpClient());
         services.TryAddSingleton(serviceProvider =>
@@ -188,18 +193,22 @@ internal sealed record AgentInvocationDraft(
     AgentPromptMaterialization ResponsePrompt,
     AgentPromptMaterialization CompactionPrompt,
     IReadOnlyList<ChatCompletionMessage> Messages,
-    IReadOnlyList<string> ToolIds,
+    IReadOnlyList<ChatCompletionToolDefinition> Tools,
     int InputTokenCount,
     int UsableInputBudgetTokens);
 
 internal sealed class AgentFactory(
     ProviderRegistry providers,
-    OpenCoWorkPaths paths)
+    OpenCoWorkPaths paths,
+    ToolRuntime? tools = null,
+    ToolsConfig? toolsConfig = null)
 {
     private readonly ProviderRegistry _providers =
         providers ?? throw new ArgumentNullException(nameof(providers));
     private readonly OpenCoWorkPaths _paths =
         paths ?? throw new ArgumentNullException(nameof(paths));
+    private readonly ToolRuntime _tools = tools ?? new ToolRuntime();
+    private readonly ToolsConfig _toolsConfig = toolsConfig ?? new ToolsConfig();
 
     public AgentInvocationDraft Create(
         AgentSession session,
@@ -222,6 +231,19 @@ internal sealed class AgentFactory(
         var provider = _providers.Resolve(
             session.Thread.ProviderId,
             session.Thread.ModelId);
+        EffectiveToolSnapshot toolSnapshot;
+        try
+        {
+            toolSnapshot = _tools.BuildSnapshot(
+                session.Turn.EffectiveAgentMode,
+                _toolsConfig);
+        }
+        catch (ToolRuntimeException exception)
+        {
+            throw new AgentPreparationException(exception.Code, exception.Message);
+        }
+
+        var tools = _tools.CreateProviderDefinitions(toolSnapshot);
         var workspaceName = new DirectoryInfo(_paths.WorkspaceRoot).Name;
         if (string.IsNullOrEmpty(workspaceName))
         {
@@ -279,7 +301,8 @@ internal sealed class AgentFactory(
             responsePrompt.WorkspaceInstructions,
             provider.ContextWindowTokens,
             provider.MaxOutputTokens,
-            provider.ConfigurationSha256);
+            provider.ConfigurationSha256,
+            toolSnapshot);
         return new AgentInvocationDraft(
             disposition,
             provider,
@@ -287,7 +310,7 @@ internal sealed class AgentFactory(
             responsePrompt,
             compactionPrompt,
             Array.AsReadOnly(messages),
-            Array.Empty<string>(),
+            tools,
             inputTokenCount,
             usableInputBudget);
     }
@@ -549,7 +572,8 @@ internal sealed class AgentRuntimeExecutor : ISessionExecutor
                         draft.Provider.MaxOutputTokens,
                         draft.Snapshot.InvocationId,
                         attempt,
-                        ChatCompletionInvocationPurpose.Response);
+                        ChatCompletionInvocationPurpose.Response,
+                        draft.Tools);
                     await foreach (var item in _clients(draft.Provider)
                                        .StreamAsync(request, invocationToken)
                                        .WithCancellation(invocationToken))

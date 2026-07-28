@@ -180,11 +180,16 @@ public sealed record ToolSnapshotDiagnostic(
     ToolDefinitionId? DefinitionId,
     string? CanonicalName);
 
+public sealed record ToolAuthorityPolicy(
+    ToolEffect Effect,
+    ToolAuthorityDecision Decision);
+
 public sealed class EffectiveToolSnapshot
 {
     public EffectiveToolSnapshot(
         int schemaVersion,
         AgentMode effectiveAgentMode,
+        IEnumerable<ToolAuthorityPolicy> authority,
         IEnumerable<ToolRegistration> registrations,
         IReadOnlyDictionary<string, string> canonicalToProviderNames,
         IReadOnlyDictionary<string, string> providerToCanonicalNames,
@@ -192,6 +197,7 @@ public sealed class EffectiveToolSnapshot
         string snapshotSha256)
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(schemaVersion, 1);
+        ArgumentNullException.ThrowIfNull(authority);
         ArgumentNullException.ThrowIfNull(registrations);
         ArgumentNullException.ThrowIfNull(canonicalToProviderNames);
         ArgumentNullException.ThrowIfNull(providerToCanonicalNames);
@@ -200,6 +206,7 @@ public sealed class EffectiveToolSnapshot
 
         SchemaVersion = schemaVersion;
         EffectiveAgentMode = effectiveAgentMode;
+        Authority = Array.AsReadOnly(authority.ToArray());
         Registrations = Array.AsReadOnly(registrations.ToArray());
         CanonicalToProviderNames = ReadOnly(canonicalToProviderNames);
         ProviderToCanonicalNames = ReadOnly(providerToCanonicalNames);
@@ -210,6 +217,8 @@ public sealed class EffectiveToolSnapshot
     public int SchemaVersion { get; }
 
     public AgentMode EffectiveAgentMode { get; }
+
+    public IReadOnlyList<ToolAuthorityPolicy> Authority { get; }
 
     public IReadOnlyList<ToolRegistration> Registrations { get; }
 

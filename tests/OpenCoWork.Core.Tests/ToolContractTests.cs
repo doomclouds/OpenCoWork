@@ -136,6 +136,7 @@ public sealed class ToolContractTests
         var snapshot = new EffectiveToolSnapshot(
             schemaVersion: 1,
             effectiveAgentMode: AgentMode.Agent,
+            authority: [],
             registrations,
             canonicalToProvider,
             providerToCanonical,

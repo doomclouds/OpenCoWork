@@ -343,7 +343,11 @@ public sealed class AgentFactoryTests
             Assert.Single(
                 first.Messages,
                 message => message.Content == "Current question");
-            Assert.Empty(first.ToolIds);
+            Assert.Equal(5, first.Tools.Count);
+            Assert.NotNull(first.Snapshot.Tools);
+            Assert.Equal(
+                first.Tools.Select(tool => tool.ProviderName),
+                first.Snapshot.Tools!.CanonicalToProviderNames.Values.Order());
             Assert.DoesNotContain(secret, firstJson, StringComparison.Ordinal);
             Assert.DoesNotContain(secret, first.ResponsePrompt.SystemMessage, StringComparison.Ordinal);
             Assert.Equal(64, first.Snapshot.ConfigurationSha256.Length);
