@@ -646,6 +646,11 @@ public sealed record SessionExecutionCheckpoint(
     string Payload,
     string Checksum);
 
+public sealed record AgentToolInvocationSnapshot(
+    ToolInvocationSnapshot Invocation,
+    Guid ToolCallItemId,
+    int CallIndex);
+
 public sealed class AgentSession
 {
     public AgentSession(
@@ -653,7 +658,10 @@ public sealed class AgentSession
         TurnSnapshot turn,
         IEnumerable<SessionItemSnapshot> modelHistory,
         SessionExecutionCheckpoint? checkpoint = null,
-        CompactionCheckpointSnapshot? compactionCheckpoint = null)
+        CompactionCheckpointSnapshot? compactionCheckpoint = null,
+        AgentInvocationSnapshot? invocation = null,
+        IEnumerable<AgentToolInvocationSnapshot>? toolInvocations = null,
+        IEnumerable<ProviderUsageSnapshot>? providerUsage = null)
     {
         ArgumentNullException.ThrowIfNull(thread);
         ArgumentNullException.ThrowIfNull(turn);
@@ -663,6 +671,9 @@ public sealed class AgentSession
         ModelHistory = Array.AsReadOnly(modelHistory.ToArray());
         Checkpoint = checkpoint;
         CompactionCheckpoint = compactionCheckpoint;
+        Invocation = invocation;
+        ToolInvocations = Array.AsReadOnly((toolInvocations ?? []).ToArray());
+        ProviderUsage = Array.AsReadOnly((providerUsage ?? []).ToArray());
     }
 
     public ThreadSnapshot Thread { get; }
@@ -674,6 +685,12 @@ public sealed class AgentSession
     public SessionExecutionCheckpoint? Checkpoint { get; }
 
     public CompactionCheckpointSnapshot? CompactionCheckpoint { get; }
+
+    public AgentInvocationSnapshot? Invocation { get; }
+
+    public IReadOnlyList<AgentToolInvocationSnapshot> ToolInvocations { get; }
+
+    public IReadOnlyList<ProviderUsageSnapshot> ProviderUsage { get; }
 }
 
 public abstract record SessionExecutionIntent;

@@ -572,6 +572,46 @@ public sealed class ToolInvocationPipelineTests
         Assert.Equal(1, harness.Counter.Value);
     }
 
+    [Fact]
+    public async Task Duplicate_replay_and_conflict_never_invoke_the_binding()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var harness = CreateHarness();
+        var pipeline = new ToolInvocationPipeline(
+            harness.Runtime,
+            new SecretRedactor([]));
+        using var output = JsonDocument.Parse("""{"ok":true}""");
+        var replay = new ToolResultSnapshot(
+            Guid.CreateVersion7(),
+            "call-1",
+            ToolInvocationStatus.Completed,
+            output.RootElement,
+            Error: null,
+            IsTruncated: false,
+            OriginalByteCount: 11,
+            new string('b', 64),
+            AttemptCount: 1);
+
+        var replayResult = await pipeline.InvokeAsync(
+            harness.Context with { ReplayResult = replay },
+            new RecordingSink(),
+            cancellationToken);
+        var conflictResult = await pipeline.InvokeAsync(
+            harness.Context with
+            {
+                ToolInvocationId = Guid.CreateVersion7(),
+                ProviderCallIdConflict = true,
+            },
+            new RecordingSink(),
+            cancellationToken);
+
+        Assert.Equal(0, harness.Counter.Value);
+        Assert.Equal(ToolInvocationStatus.Completed, replayResult.Status);
+        Assert.Equal(replay.ResultSha256, replayResult.ResultSha256);
+        Assert.Equal(ToolInvocationStatus.Rejected, conflictResult.Status);
+        Assert.Equal(ToolErrorCodes.CallIdConflict, conflictResult.Error!.Code);
+    }
+
     private static Harness CreateHarness(
         ToolEffect effects = ToolEffect.None,
         ToolReplaySafety replaySafety = ToolReplaySafety.Safe,

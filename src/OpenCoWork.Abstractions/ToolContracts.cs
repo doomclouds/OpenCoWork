@@ -189,11 +189,11 @@ public sealed class EffectiveToolSnapshot
     public EffectiveToolSnapshot(
         int schemaVersion,
         AgentMode effectiveAgentMode,
-        IEnumerable<ToolAuthorityPolicy> authority,
-        IEnumerable<ToolRegistration> registrations,
+        IReadOnlyList<ToolAuthorityPolicy> authority,
+        IReadOnlyList<ToolRegistration> registrations,
         IReadOnlyDictionary<string, string> canonicalToProviderNames,
         IReadOnlyDictionary<string, string> providerToCanonicalNames,
-        IEnumerable<ToolSnapshotDiagnostic> diagnostics,
+        IReadOnlyList<ToolSnapshotDiagnostic> diagnostics,
         string snapshotSha256)
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(schemaVersion, 1);
@@ -252,7 +252,9 @@ public sealed record ToolInvocationContext(
     DateTimeOffset? ApprovalTimeoutAt = null,
     bool? ApprovalGranted = null,
     int PriorAttemptCount = 0,
-    TimeSpan? RemainingExecutionBudget = null);
+    TimeSpan? RemainingExecutionBudget = null,
+    ToolResultSnapshot? ReplayResult = null,
+    bool ProviderCallIdConflict = false);
 
 public sealed class ToolBindingResult
 {

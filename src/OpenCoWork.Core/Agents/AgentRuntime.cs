@@ -57,6 +57,11 @@ public static class OpenCoWorkAgentExtensions
                 serviceProvider.GetRequiredService<OpenCoWorkPaths>(),
                 serviceProvider.GetRequiredService<ToolRuntime>(),
                 serviceProvider.GetRequiredService<ToolsConfig>()));
+        services.TryAddSingleton<IToolInvocationPipeline>(serviceProvider =>
+            new ToolInvocationPipeline(
+                serviceProvider.GetRequiredService<ToolRuntime>(),
+                serviceProvider.GetRequiredService<SecretRedactor>(),
+                timeProvider: serviceProvider.GetService<TimeProvider>()));
         services.TryAddSingleton(static _ =>
             OpenAiCompatibleChatClient.CreateSharedHttpClient());
         services.TryAddSingleton(serviceProvider =>
@@ -64,6 +69,8 @@ public static class OpenCoWorkAgentExtensions
                 serviceProvider.GetRequiredService<AgentFactory>(),
                 serviceProvider.GetRequiredService<OpenCoWorkPaths>(),
                 serviceProvider.GetRequiredService<HttpClient>(),
+                serviceProvider.GetRequiredService<IToolInvocationPipeline>(),
+                serviceProvider.GetRequiredService<SecretRedactor>(),
                 serviceProvider.GetService<TimeProvider>()));
         services.TryAddSingleton<ISessionExecutor>(serviceProvider =>
             serviceProvider.GetRequiredService<AgentRuntimeExecutor>());
@@ -198,7 +205,8 @@ internal static class ProviderMessageHistory
     };
 
     public static IReadOnlyList<ChatCompletionMessage> Build(
-        IEnumerable<SessionItemSnapshot> source)
+        IEnumerable<SessionItemSnapshot> source,
+        bool allowIncompleteFinalToolGroup = false)
     {
         var items = source
             .Where(item =>
@@ -241,13 +249,20 @@ internal static class ProviderMessageHistory
 
                     break;
                 case SessionItemType.ToolCall:
+                    var allowIncomplete = allowIncompleteFinalToolGroup &&
+                                          !items.Skip(index + 1).Any(candidate =>
+                                              candidate.Type is
+                                                  SessionItemType.UserMessage or
+                                                  SessionItemType.AgentMessage or
+                                                  SessionItemType.ToolCall);
                     AddToolGroup(
                         items,
                         byId,
                         item,
                         index,
                         consumedResults,
-                        messages);
+                        messages,
+                        allowIncomplete);
                     break;
                 case SessionItemType.ToolResult:
                     if (!consumedResults.Contains(item.ItemId))
@@ -275,7 +290,8 @@ internal static class ProviderMessageHistory
         SessionItemSnapshot item,
         int itemIndex,
         HashSet<Guid> consumedResults,
-        List<ChatCompletionMessage> messages)
+        List<ChatCompletionMessage> messages,
+        bool allowIncomplete)
     {
         if (item.Content is not ToolCallItemContent toolCall ||
             toolCall.Calls.Count == 0 ||
@@ -346,7 +362,7 @@ internal static class ProviderMessageHistory
             }
         }
 
-        if (resultIndex != toolCall.Calls.Count)
+        if (resultIndex != toolCall.Calls.Count && !allowIncomplete)
         {
             throw InvalidHistory();
         }
@@ -408,16 +424,31 @@ internal sealed class AgentFactory(
         var provider = _providers.Resolve(
             session.Thread.ProviderId,
             session.Thread.ModelId);
+        var frozen = session.Invocation;
         EffectiveToolSnapshot toolSnapshot;
-        try
+        if (frozen is not null)
         {
-            toolSnapshot = _tools.BuildSnapshot(
-                session.Turn.EffectiveAgentMode,
-                _toolsConfig);
+            if (frozen.InvocationId != invocationId || frozen.Tools is null)
+            {
+                throw new AgentPreparationException(
+                    AgentErrorCodes.ContextInputInvalid,
+                    "The frozen agent invocation is invalid.");
+            }
+
+            toolSnapshot = frozen.Tools;
         }
-        catch (ToolRuntimeException exception)
+        else
         {
-            throw new AgentPreparationException(exception.Code, exception.Message);
+            try
+            {
+                toolSnapshot = _tools.BuildSnapshot(
+                    session.Turn.EffectiveAgentMode,
+                    _toolsConfig);
+            }
+            catch (ToolRuntimeException exception)
+            {
+                throw new AgentPreparationException(exception.Code, exception.Message);
+            }
         }
 
         var tools = _tools.CreateProviderDefinitions(toolSnapshot);
@@ -434,6 +465,20 @@ internal sealed class AgentFactory(
             provider.Tokenizer);
         var compactionPrompt =
             AgentPrompts.CreateCompaction(provider.Tokenizer);
+        if (frozen is not null &&
+            !FrozenInvocationMatches(
+                frozen,
+                session,
+                provider,
+                responsePrompt,
+                compactionPrompt,
+                toolSnapshot))
+        {
+            throw new AgentPreparationException(
+                AgentErrorCodes.ContextInputInvalid,
+                "The frozen agent invocation no longer matches the runtime.");
+        }
+
         if (session.CompactionCheckpoint is { } checkpoint &&
             !IsValidCheckpoint(
                 checkpoint,
@@ -446,9 +491,22 @@ internal sealed class AgentFactory(
                 "The compaction checkpoint is invalid.");
         }
 
+        var hasIncompleteToolInvocation = session.ModelHistory
+            .Where(item =>
+                item.TurnId == session.Turn.TurnId &&
+                item.Type == SessionItemType.ToolCall &&
+                item.Status == SessionItemStatus.Completed)
+            .Any(item =>
+                item.Content is ToolCallItemContent toolCall &&
+                Enumerable.Range(0, toolCall.Calls.Count).Any(callIndex =>
+                    !session.ToolInvocations.Any(state =>
+                        state.ToolCallItemId == item.ItemId &&
+                        state.CallIndex == callIndex &&
+                        state.Invocation.CompletedAt is not null)));
         var messages = BuildMessages(
             session,
-            responsePrompt.SystemMessage);
+            responsePrompt.SystemMessage,
+            hasIncompleteToolInvocation);
         var inputTokenCount = CountPromptTokens(
             provider.Tokenizer,
             messages,
@@ -457,7 +515,8 @@ internal sealed class AgentFactory(
             provider.ContextWindowTokens - provider.MaxOutputTokens;
         var currentMessages = ProviderMessageHistory.Build(
             session.ModelHistory.Where(item =>
-                item.TurnId == session.Turn.TurnId));
+                item.TurnId == session.Turn.TurnId),
+            hasIncompleteToolInvocation);
         var fixedInputCount = CountPromptTokens(
             provider.Tokenizer,
             [messages[0], .. currentMessages],
@@ -472,7 +531,7 @@ internal sealed class AgentFactory(
         var disposition = inputTokenCount > usableInputBudget * 8L / 10L
             ? AgentInvocationDraftDisposition.CompactionRequired
             : AgentInvocationDraftDisposition.Ready;
-        var snapshot = new AgentInvocationSnapshot(
+        var snapshot = frozen ?? new AgentInvocationSnapshot(
             invocationId,
             provider.ProviderId,
             provider.ModelId,
@@ -498,9 +557,56 @@ internal sealed class AgentFactory(
             usableInputBudget);
     }
 
+    private static bool FrozenInvocationMatches(
+        AgentInvocationSnapshot frozen,
+        AgentSession session,
+        ProviderModelRegistration provider,
+        AgentPromptMaterialization responsePrompt,
+        AgentPromptMaterialization compactionPrompt,
+        EffectiveToolSnapshot tools) =>
+        string.Equals(frozen.ProviderId, provider.ProviderId, StringComparison.Ordinal) &&
+        string.Equals(frozen.ModelId, provider.ModelId, StringComparison.Ordinal) &&
+        string.Equals(
+            frozen.TokenizerProfileId,
+            provider.TokenizerProfileId,
+            StringComparison.Ordinal) &&
+        string.Equals(
+            frozen.TokenizerProfileVersion,
+            provider.TokenizerProfileVersion,
+            StringComparison.Ordinal) &&
+        frozen.EffectiveAgentMode == session.Turn.EffectiveAgentMode &&
+        frozen.ContextWindowTokens == provider.ContextWindowTokens &&
+        frozen.MaxOutputTokens == provider.MaxOutputTokens &&
+        string.Equals(
+            frozen.ConfigurationSha256,
+            provider.ConfigurationSha256,
+            StringComparison.Ordinal) &&
+        string.Equals(
+            frozen.ResponsePrompt.Version,
+            responsePrompt.Snapshot.Version,
+            StringComparison.Ordinal) &&
+        string.Equals(
+            frozen.ResponsePrompt.SystemMessageSha256,
+            responsePrompt.Snapshot.SystemMessageSha256,
+            StringComparison.Ordinal) &&
+        string.Equals(
+            frozen.CompactionPrompt.Version,
+            compactionPrompt.Snapshot.Version,
+            StringComparison.Ordinal) &&
+        string.Equals(
+            frozen.CompactionPrompt.SystemMessageSha256,
+            compactionPrompt.Snapshot.SystemMessageSha256,
+            StringComparison.Ordinal) &&
+        frozen.WorkspaceInstructions == responsePrompt.WorkspaceInstructions &&
+        string.Equals(
+            tools.SnapshotSha256,
+            frozen.Tools?.SnapshotSha256,
+            StringComparison.Ordinal);
+
     private static ChatCompletionMessage[] BuildMessages(
         AgentSession session,
-        string systemMessage)
+        string systemMessage,
+        bool allowIncompleteFinalToolGroup)
     {
         var messages = new List<ChatCompletionMessage>
         {
@@ -533,11 +639,16 @@ internal sealed class AgentFactory(
             }
         }
 
-        messages.AddRange(ProviderMessageHistory.Build(history));
+        messages.AddRange(ProviderMessageHistory.Build(
+            history,
+            allowIncompleteFinalToolGroup));
         if (currentUserMessageCount != 1 ||
             messages[^1].Role is not (
                 ChatCompletionMessageRole.User or
-                ChatCompletionMessageRole.Tool))
+                ChatCompletionMessageRole.Tool) &&
+            !(allowIncompleteFinalToolGroup &&
+              messages[^1].Role == ChatCompletionMessageRole.Assistant &&
+              messages[^1].ToolCalls is { Count: > 0 }))
         {
             throw new AgentPreparationException(
                 AgentErrorCodes.ContextInputInvalid,
@@ -653,12 +764,16 @@ internal sealed class AgentRuntimeExecutor : ISessionExecutor
     private readonly AgentFactory _factory;
     private readonly OpenCoWorkPaths _paths;
     private readonly Func<ProviderModelRegistration, IChatCompletionClient> _clients;
+    private readonly IToolInvocationPipeline _toolPipeline;
+    private readonly SecretRedactor _redactor;
     private readonly TimeProvider _timeProvider;
 
     public AgentRuntimeExecutor(
         AgentFactory factory,
         OpenCoWorkPaths paths,
         HttpClient httpClient,
+        IToolInvocationPipeline toolPipeline,
+        SecretRedactor redactor,
         TimeProvider? timeProvider = null)
         : this(
             factory,
@@ -668,7 +783,9 @@ internal sealed class AgentRuntimeExecutor : ISessionExecutor
                 provider.BaseUri,
                 provider.ApiKey,
                 timeProvider),
-            timeProvider)
+            timeProvider,
+            toolPipeline,
+            redactor)
     {
     }
 
@@ -676,12 +793,20 @@ internal sealed class AgentRuntimeExecutor : ISessionExecutor
         AgentFactory factory,
         OpenCoWorkPaths paths,
         Func<ProviderModelRegistration, IChatCompletionClient> clients,
-        TimeProvider? timeProvider = null)
+        TimeProvider? timeProvider = null,
+        IToolInvocationPipeline? toolPipeline = null,
+        SecretRedactor? redactor = null)
     {
         _factory = factory ?? throw new ArgumentNullException(nameof(factory));
         _paths = paths ?? throw new ArgumentNullException(nameof(paths));
         _clients = clients ?? throw new ArgumentNullException(nameof(clients));
         _timeProvider = timeProvider ?? TimeProvider.System;
+        _redactor = redactor ?? new SecretRedactor([]);
+        _toolPipeline = toolPipeline ??
+                        new ToolInvocationPipeline(
+                            new ToolRuntime(),
+                            _redactor,
+                            timeProvider: _timeProvider);
     }
 
     public async ValueTask ExecuteAsync(
@@ -691,8 +816,28 @@ internal sealed class AgentRuntimeExecutor : ISessionExecutor
     {
         ArgumentNullException.ThrowIfNull(context);
         ArgumentNullException.ThrowIfNull(sink);
+        ToolLoopCheckpoint? resumeCheckpoint;
+        try
+        {
+            resumeCheckpoint = ReadToolCheckpoint(context.Checkpoint);
+        }
+        catch (AgentPreparationException exception)
+        {
+            await sink.EmitAsync(
+                new FailTurnIntent(new SessionError(
+                    exception.Code,
+                    exception.Message,
+                    IsRetryable: false)),
+                cancellationToken);
+            return;
+        }
+
+        var invocationBudget = resumeCheckpoint is null
+            ? InvocationTimeout
+            : TimeSpan.FromTicks(resumeCheckpoint.RemainingBudgetTicks);
+        var activityStarted = _timeProvider.GetTimestamp();
         using var deadline = new CancellationTokenSource(
-            InvocationTimeout,
+            invocationBudget,
             _timeProvider);
         using var invocationCancellation =
             CancellationTokenSource.CreateLinkedTokenSource(
@@ -701,16 +846,30 @@ internal sealed class AgentRuntimeExecutor : ISessionExecutor
         var invocationToken = invocationCancellation.Token;
         WorkspaceInstructionDocument? instructions;
         AgentInvocationDraft draft;
+        Dictionary<string, KnownToolCall> knownToolCalls;
+        PendingToolFrame? pendingToolFrame;
         try
         {
             instructions = WorkspaceInstructionDocument.Read(_paths);
             draft = _factory.Create(
                 context,
+                context.Invocation?.InvocationId ??
                 Guid.CreateVersion7(_timeProvider.GetUtcNow()),
                 instructions);
-            await sink.EmitAsync(
-                new RecordAgentInvocationSnapshotIntent(draft.Snapshot),
-                cancellationToken);
+            if (context.Invocation is null)
+            {
+                await sink.EmitAsync(
+                    new RecordAgentInvocationSnapshotIntent(draft.Snapshot),
+                    cancellationToken);
+            }
+
+            knownToolCalls = BuildKnownToolCalls(context, draft.Snapshot);
+            pendingToolFrame = FindPendingToolFrame(context);
+            ValidateToolCheckpoint(
+                context,
+                draft.Snapshot,
+                pendingToolFrame,
+                resumeCheckpoint);
         }
         catch (AgentPreparationException exception)
         {
@@ -735,23 +894,37 @@ internal sealed class AgentRuntimeExecutor : ISessionExecutor
             return;
         }
 
-        var contentItemId = Guid.Empty;
-        var reasoningItemId = Guid.Empty;
-        var visible = false;
-        var content = new StringBuilder();
-        var reasoning = new StringBuilder();
+        var activeContentItemId = Guid.Empty;
+        var activeReasoningItemId = Guid.Empty;
         try
         {
             var session = context;
-            var nextAttempt = 1;
-            if (draft.Disposition == AgentInvocationDraftDisposition.CompactionRequired)
+            var nextAttempt = context.ProviderUsage
+                .Where(item =>
+                    item.InvocationId == draft.Snapshot.InvocationId)
+                .Select(item => item.AttemptNumber)
+                .DefaultIfEmpty()
+                .Max() + 1;
+            var providerRound = context.ModelHistory
+                .Where(item =>
+                    item.TurnId == context.Turn.TurnId &&
+                    item.Content is ToolCallItemContent)
+                .Select(item => ((ToolCallItemContent)item.Content).ProviderRound)
+                .DefaultIfEmpty()
+                .Max();
+            if (draft.Disposition == AgentInvocationDraftDisposition.CompactionRequired &&
+                pendingToolFrame is null)
             {
+                var maximumAttempt = providerRound == 0
+                    ? 3
+                    : checked(nextAttempt + 2);
                 var compacted = await CompactAsync(
                     session,
                     draft,
                     instructions,
                     sink,
                     nextAttempt,
+                    maximumAttempt,
                     targetPercent: 60,
                     invocationToken,
                     cancellationToken);
@@ -764,229 +937,433 @@ internal sealed class AgentRuntimeExecutor : ISessionExecutor
                 session = compacted.Session;
                 draft = compacted.Draft;
                 nextAttempt = compacted.NextAttempt;
-                if (nextAttempt > 3)
+                if (providerRound == 0 && nextAttempt > 3)
                 {
                     await FailCompactionAsync(sink, cancellationToken);
                     return;
                 }
             }
 
-            var reactiveCompactionUsed = false;
-            while (nextAttempt <= 3)
+            var messages = draft.Messages.ToList();
+            var anyToolAttempted = false;
+            if (pendingToolFrame is not null)
             {
-                var attempt = nextAttempt++;
-                var usageRecorded = false;
-                ChatCompletionFinishReason? finishReason = null;
-                try
+                anyToolAttempted = await ResumeToolFrameAsync(
+                    context,
+                    draft,
+                    pendingToolFrame,
+                    resumeCheckpoint,
+                    knownToolCalls,
+                    messages,
+                    nextAttempt,
+                    activityStarted,
+                    invocationBudget,
+                    sink,
+                    invocationToken);
+                if (providerRound >= 64)
                 {
-                    var request = new ChatCompletionRequest(
-                        draft.Provider.ModelId,
-                        draft.Messages,
-                        draft.Provider.MaxOutputTokens,
-                        draft.Snapshot.InvocationId,
-                        attempt,
-                        ChatCompletionInvocationPurpose.Response,
-                        draft.Tools);
-                    await foreach (var item in _clients(draft.Provider)
-                                       .StreamAsync(request, invocationToken)
-                                       .WithCancellation(invocationToken))
-                    {
-                        switch (item)
-                        {
-                            case ChatCompletionContentDeltaEvent delta
-                                when delta.Delta.Length != 0:
-                                if (contentItemId == Guid.Empty)
-                                {
-                                    contentItemId =
-                                        Guid.CreateVersion7(_timeProvider.GetUtcNow());
-                                    await sink.EmitAsync(
-                                        new StartItemIntent(
-                                            contentItemId,
-                                            SessionItemType.AgentMessage,
-                                            new TextItemContent(string.Empty)),
-                                        cancellationToken);
-                                }
-
-                                await sink.EmitAsync(
-                                    new AppendItemDeltaIntent(
-                                        contentItemId,
-                                        delta.Delta,
-                                        Flush: !visible),
-                                    cancellationToken);
-                                content.Append(delta.Delta);
-                                visible = true;
-                                break;
-                            case ChatCompletionReasoningDeltaEvent delta
-                                when delta.Delta.Length != 0:
-                                if (reasoningItemId == Guid.Empty)
-                                {
-                                    reasoningItemId =
-                                        Guid.CreateVersion7(_timeProvider.GetUtcNow());
-                                    await sink.EmitAsync(
-                                        new StartItemIntent(
-                                            reasoningItemId,
-                                            SessionItemType.Reasoning,
-                                            new TextItemContent(string.Empty)),
-                                        cancellationToken);
-                                }
-
-                                await sink.EmitAsync(
-                                    new AppendItemDeltaIntent(
-                                        reasoningItemId,
-                                        delta.Delta,
-                                        Flush: !visible),
-                                    cancellationToken);
-                                reasoning.Append(delta.Delta);
-                                visible = true;
-                                break;
-                            case ChatCompletionUsageEvent usage:
-                                await sink.EmitAsync(
-                                    new RecordProviderUsageIntent(
-                                        new ProviderUsageSnapshot(
-                                            draft.Snapshot.InvocationId,
-                                            attempt,
-                                            ChatCompletionInvocationPurpose.Response,
-                                            usage.Usage.PromptTokens,
-                                            usage.Usage.CompletionTokens,
-                                            usage.Usage.TotalTokens,
-                                            ProviderUsageSource.Provider,
-                                            IsEstimate: false)),
-                                    cancellationToken);
-                                usageRecorded = true;
-                                break;
-                            case ChatCompletionCompletedEvent completed:
-                                finishReason = completed.FinishReason;
-                                break;
-                        }
-                    }
-
-                    if (!usageRecorded)
-                    {
-                        var completionTokens = draft.Provider.Tokenizer.CountTokens(
-                            content.ToString() + reasoning);
-                        await sink.EmitAsync(
-                            new RecordProviderUsageIntent(
-                                new ProviderUsageSnapshot(
-                                    draft.Snapshot.InvocationId,
-                                    attempt,
-                                    ChatCompletionInvocationPurpose.Response,
-                                    draft.InputTokenCount,
-                                    completionTokens,
-                                    checked(draft.InputTokenCount + completionTokens),
-                                    ProviderUsageSource.LocalEstimate,
-                                    IsEstimate: true)),
-                            cancellationToken);
-                    }
-
-                    var error = FinishError(finishReason, content.Length != 0);
-                    if (error is not null)
-                    {
-                        await FailAsync(
-                            sink,
-                            contentItemId,
-                            reasoningItemId,
-                            error,
-                            cancellationToken);
-                        return;
-                    }
-
-                    if (reasoningItemId != Guid.Empty)
-                    {
-                        await sink.EmitAsync(
-                            new CompleteItemIntent(reasoningItemId),
-                            cancellationToken);
-                    }
-
-                    if (contentItemId != Guid.Empty)
-                    {
-                        await sink.EmitAsync(
-                            new CompleteItemIntent(contentItemId),
-                            cancellationToken);
-                    }
-
-                    if (finishReason == ChatCompletionFinishReason.Length)
-                    {
-                        var noticeId =
-                            Guid.CreateVersion7(_timeProvider.GetUtcNow());
-                        await sink.EmitAsync(
-                            new StartItemIntent(
-                                noticeId,
-                                SessionItemType.SystemNotice,
-                                new SystemNoticeContent("response.truncated")),
-                            cancellationToken);
-                        await sink.EmitAsync(
-                            new CompleteItemIntent(noticeId),
-                            cancellationToken);
-                    }
-
-                    await sink.EmitAsync(
-                        new CompleteTurnIntent(),
-                        cancellationToken);
-                    return;
-                }
-                catch (ChatCompletionException exception)
-                {
-                    if (!visible &&
-                        exception.IsPromptTooLong &&
-                        !reactiveCompactionUsed)
-                    {
-                        reactiveCompactionUsed = true;
-                        var compacted = await CompactAsync(
-                            session,
-                            draft,
-                            instructions,
-                            sink,
-                            nextAttempt,
-                            targetPercent: 50,
-                            invocationToken,
-                            cancellationToken);
-                        if (compacted is null)
-                        {
-                            await FailCompactionAsync(sink, cancellationToken);
-                            return;
-                        }
-
-                        session = compacted.Session;
-                        draft = compacted.Draft;
-                        nextAttempt = compacted.NextAttempt;
-                        if (nextAttempt > 3)
-                        {
-                            await FailCompactionAsync(sink, cancellationToken);
-                            return;
-                        }
-
-                        continue;
-                    }
-
-                    if (!visible &&
-                        exception.IsTransient &&
-                        nextAttempt <= 3)
-                    {
-                        await DelayRetryAsync(
-                            exception,
-                            attempt,
-                            invocationToken);
-                        continue;
-                    }
-
-                    if (!visible && exception.IsPromptTooLong)
-                    {
-                        await FailCompactionAsync(sink, cancellationToken);
-                        return;
-                    }
-
-                    await FailAsync(
-                        sink,
-                        contentItemId,
-                        reasoningItemId,
-                        new SessionError(
-                            exception.Code,
-                            exception.Message,
-                            exception.IsTransient),
-                        cancellationToken);
+                    await FailToolIterationLimitAsync(sink, cancellationToken);
                     return;
                 }
             }
+
+            var reactiveCompactionUsed = false;
+            while (true)
+            {
+                var toolFrameCompleted = false;
+                for (var stepAttempt = 1; stepAttempt <= 3; stepAttempt++)
+                {
+                    var attempt = nextAttempt++;
+                    var usageRecorded = false;
+                    var stepVisible = false;
+                    var content = new StringBuilder();
+                    var reasoning = new StringBuilder();
+                    var toolCalls =
+                        new List<ChatCompletionToolCallCompletedEvent>();
+                    activeContentItemId = Guid.Empty;
+                    activeReasoningItemId = Guid.Empty;
+                    ChatCompletionFinishReason? finishReason = null;
+                    var inputTokenCount = AgentFactory.CountPromptTokens(
+                        draft.Provider.Tokenizer,
+                        messages,
+                        draft.Tools);
+                    if (inputTokenCount > draft.UsableInputBudgetTokens)
+                    {
+                        await sink.EmitAsync(
+                            new FailTurnIntent(new SessionError(
+                                AgentErrorCodes.ContextInputTooLarge,
+                                "The current input exceeds the model context budget.",
+                                IsRetryable: false)),
+                            cancellationToken);
+                        return;
+                    }
+
+                    try
+                    {
+                        var request = new ChatCompletionRequest(
+                            draft.Provider.ModelId,
+                            messages,
+                            draft.Provider.MaxOutputTokens,
+                            draft.Snapshot.InvocationId,
+                            attempt,
+                            ChatCompletionInvocationPurpose.Response,
+                            draft.Tools);
+                        await foreach (var item in _clients(draft.Provider)
+                                           .StreamAsync(request, invocationToken)
+                                           .WithCancellation(invocationToken))
+                        {
+                            switch (item)
+                            {
+                                case ChatCompletionContentDeltaEvent delta
+                                    when delta.Delta.Length != 0:
+                                    if (activeContentItemId == Guid.Empty)
+                                    {
+                                        activeContentItemId =
+                                            Guid.CreateVersion7(
+                                                _timeProvider.GetUtcNow());
+                                        await sink.EmitAsync(
+                                            new StartItemIntent(
+                                                activeContentItemId,
+                                                SessionItemType.AgentMessage,
+                                                new TextItemContent(string.Empty)),
+                                            cancellationToken);
+                                    }
+
+                                    await sink.EmitAsync(
+                                        new AppendItemDeltaIntent(
+                                            activeContentItemId,
+                                            delta.Delta,
+                                            Flush: !stepVisible),
+                                        cancellationToken);
+                                    content.Append(delta.Delta);
+                                    stepVisible = true;
+                                    break;
+                                case ChatCompletionReasoningDeltaEvent delta
+                                    when delta.Delta.Length != 0:
+                                    if (activeReasoningItemId == Guid.Empty)
+                                    {
+                                        activeReasoningItemId =
+                                            Guid.CreateVersion7(
+                                                _timeProvider.GetUtcNow());
+                                        await sink.EmitAsync(
+                                            new StartItemIntent(
+                                                activeReasoningItemId,
+                                                SessionItemType.Reasoning,
+                                                new TextItemContent(string.Empty)),
+                                            cancellationToken);
+                                    }
+
+                                    await sink.EmitAsync(
+                                        new AppendItemDeltaIntent(
+                                            activeReasoningItemId,
+                                            delta.Delta,
+                                            Flush: !stepVisible),
+                                        cancellationToken);
+                                    reasoning.Append(delta.Delta);
+                                    stepVisible = true;
+                                    break;
+                                case ChatCompletionToolCallCompletedEvent toolCall:
+                                    toolCalls.Add(toolCall);
+                                    break;
+                                case ChatCompletionUsageEvent usage:
+                                    await RecordUsageAsync(
+                                        sink,
+                                        draft.Snapshot.InvocationId,
+                                        attempt,
+                                        ChatCompletionInvocationPurpose.Response,
+                                        usage.Usage,
+                                        cancellationToken);
+                                    usageRecorded = true;
+                                    break;
+                                case ChatCompletionCompletedEvent completed:
+                                    finishReason = completed.FinishReason;
+                                    break;
+                            }
+                        }
+
+                        if (!usageRecorded)
+                        {
+                            var completionTokens =
+                                draft.Provider.Tokenizer.CountTokens(
+                                    content.ToString() + reasoning);
+                            await RecordEstimatedUsageAsync(
+                                sink,
+                                draft.Snapshot.InvocationId,
+                                attempt,
+                                ChatCompletionInvocationPurpose.Response,
+                                inputTokenCount,
+                                completionTokens,
+                                cancellationToken);
+                        }
+
+                        if (finishReason == ChatCompletionFinishReason.ToolCall)
+                        {
+                            if (toolCalls.Count == 0)
+                            {
+                                throw new ChatCompletionException(
+                                    AgentErrorCodes.ProviderInvalidStream,
+                                    "Provider returned an incomplete tool call frame.");
+                            }
+
+                            if (activeReasoningItemId != Guid.Empty)
+                            {
+                                await sink.EmitAsync(
+                                    new CompleteItemIntent(activeReasoningItemId),
+                                    cancellationToken);
+                            }
+
+                            if (activeContentItemId != Guid.Empty)
+                            {
+                                await sink.EmitAsync(
+                                    new CompleteItemIntent(activeContentItemId),
+                                    cancellationToken);
+                            }
+
+                            providerRound++;
+                            var frame = PreflightToolFrame(
+                                providerRound,
+                                activeContentItemId == Guid.Empty
+                                    ? null
+                                    : activeContentItemId,
+                                toolCalls);
+                            var toolCallItemId =
+                                Guid.CreateVersion7(_timeProvider.GetUtcNow());
+                            await sink.EmitAsync(
+                                new RecordToolCallIntent(toolCallItemId, frame),
+                                cancellationToken);
+                            messages.Add(new ChatCompletionMessage(
+                                ChatCompletionMessageRole.Assistant,
+                                content.ToString(),
+                                frame.Calls
+                                    .Select(call => new ChatCompletionToolCall(
+                                        call.ProviderToolCallId,
+                                        call.ProviderToolName,
+                                        Encoding.UTF8.GetString(
+                                            ThreadJournal.Canonicalize(
+                                                call.Arguments))))
+                                    .ToArray()));
+                            for (var callIndex = 0;
+                                 callIndex < frame.Calls.Count;
+                                 callIndex++)
+                            {
+                                var call = frame.Calls[callIndex];
+                                knownToolCalls.TryGetValue(
+                                    call.ProviderToolCallId,
+                                    out var known);
+                                var sameCall = known is not null &&
+                                               string.Equals(
+                                                   known.ProviderToolName,
+                                                   call.ProviderToolName,
+                                                   StringComparison.Ordinal) &&
+                                               string.Equals(
+                                                   known.ArgumentsSha256,
+                                                   call.ArgumentsSha256,
+                                                   StringComparison.Ordinal);
+                                var toolInvocationId =
+                                    Guid.CreateVersion7(_timeProvider.GetUtcNow());
+                                var remaining = RemainingActivityBudget(
+                                    activityStarted,
+                                    invocationBudget);
+                                var checkpoint = CreateToolCheckpoint(
+                                    draft.Snapshot,
+                                    providerRound,
+                                    nextAttempt,
+                                    toolCallItemId,
+                                    callIndex,
+                                    toolInvocationId,
+                                    call.ArgumentsSha256,
+                                    remaining);
+                                var result = await _toolPipeline.InvokeAsync(
+                                    new ToolInvocationContext(
+                                        context.Thread.ThreadId,
+                                        context.Turn.TurnId,
+                                        toolInvocationId,
+                                        toolCallItemId,
+                                        callIndex,
+                                        call.ProviderToolCallId,
+                                        call.ProviderToolName,
+                                        call.Arguments,
+                                        call.ArgumentsSha256,
+                                        call.SensitiveInputDetected,
+                                        draft.Snapshot.Tools!,
+                                        checkpoint,
+                                        ApprovalTimeoutAt: null,
+                                        ApprovalGranted: null,
+                                        PriorAttemptCount: 0,
+                                        RemainingExecutionBudget: remaining,
+                                        ReplayResult: sameCall
+                                            ? known?.Result
+                                            : null,
+                                        ProviderCallIdConflict:
+                                        known is not null && !sameCall),
+                                    sink,
+                                    invocationToken);
+                                anyToolAttempted |= result.AttemptCount > 0;
+                                if (known is null)
+                                {
+                                    knownToolCalls.Add(
+                                        call.ProviderToolCallId,
+                                        new KnownToolCall(
+                                            call.ProviderToolName,
+                                            call.ArgumentsSha256,
+                                            result));
+                                }
+
+                                messages.Add(new ChatCompletionMessage(
+                                    ChatCompletionMessageRole.Tool,
+                                    ProviderMessageHistory.ToolResultEnvelope(result),
+                                    ToolCallId: call.ProviderToolCallId));
+                            }
+
+                            if (providerRound >= 64)
+                            {
+                                await FailToolIterationLimitAsync(
+                                    sink,
+                                    cancellationToken);
+                                return;
+                            }
+
+                            toolFrameCompleted = true;
+                            break;
+                        }
+
+                        if (toolCalls.Count != 0)
+                        {
+                            throw new ChatCompletionException(
+                                AgentErrorCodes.ProviderInvalidStream,
+                                "Provider returned tool calls with an invalid finish reason.");
+                        }
+
+                        var error = FinishError(
+                            finishReason,
+                            content.Length != 0);
+                        if (error is not null)
+                        {
+                            await FailAsync(
+                                sink,
+                                activeContentItemId,
+                                activeReasoningItemId,
+                                error,
+                                cancellationToken);
+                            return;
+                        }
+
+                        if (activeReasoningItemId != Guid.Empty)
+                        {
+                            await sink.EmitAsync(
+                                new CompleteItemIntent(activeReasoningItemId),
+                                cancellationToken);
+                        }
+
+                        if (activeContentItemId != Guid.Empty)
+                        {
+                            await sink.EmitAsync(
+                                new CompleteItemIntent(activeContentItemId),
+                                cancellationToken);
+                        }
+
+                        if (finishReason == ChatCompletionFinishReason.Length)
+                        {
+                            var noticeId =
+                                Guid.CreateVersion7(_timeProvider.GetUtcNow());
+                            await sink.EmitAsync(
+                                new StartItemIntent(
+                                    noticeId,
+                                    SessionItemType.SystemNotice,
+                                    new SystemNoticeContent("response.truncated")),
+                                cancellationToken);
+                            await sink.EmitAsync(
+                                new CompleteItemIntent(noticeId),
+                                cancellationToken);
+                        }
+
+                        await sink.EmitAsync(
+                            new CompleteTurnIntent(),
+                            cancellationToken);
+                        return;
+                    }
+                    catch (ChatCompletionException exception)
+                    {
+                        if (!stepVisible &&
+                            !anyToolAttempted &&
+                            providerRound == 0 &&
+                            exception.IsPromptTooLong &&
+                            !reactiveCompactionUsed)
+                        {
+                            reactiveCompactionUsed = true;
+                            var compacted = await CompactAsync(
+                                session,
+                                draft,
+                                instructions,
+                                sink,
+                                nextAttempt,
+                                maximumAttempt: 3,
+                                targetPercent: 50,
+                                invocationToken,
+                                cancellationToken);
+                            if (compacted is null)
+                            {
+                                await FailCompactionAsync(
+                                    sink,
+                                    cancellationToken);
+                                return;
+                            }
+
+                            session = compacted.Session;
+                            draft = compacted.Draft;
+                            messages = draft.Messages.ToList();
+                            nextAttempt = compacted.NextAttempt;
+                            if (nextAttempt > 3)
+                            {
+                                await FailCompactionAsync(
+                                    sink,
+                                    cancellationToken);
+                                return;
+                            }
+
+                            break;
+                        }
+
+                        if (!stepVisible &&
+                            !anyToolAttempted &&
+                            exception.IsTransient &&
+                            stepAttempt < 3)
+                        {
+                            await DelayRetryAsync(
+                                exception,
+                                attempt,
+                                invocationToken);
+                            continue;
+                        }
+
+                        if (!stepVisible && exception.IsPromptTooLong)
+                        {
+                            await FailCompactionAsync(sink, cancellationToken);
+                            return;
+                        }
+
+                        await FailAsync(
+                            sink,
+                            activeContentItemId,
+                            activeReasoningItemId,
+                            new SessionError(
+                                exception.Code,
+                                exception.Message,
+                                exception.IsTransient),
+                            cancellationToken);
+                        return;
+                    }
+                }
+
+                if (toolFrameCompleted)
+                {
+                    continue;
+                }
+            }
+        }
+        catch (ToolInvocationSuspendedException)
+        {
+            return;
         }
         catch (OperationCanceledException) when (
             deadline.IsCancellationRequested &&
@@ -994,8 +1371,8 @@ internal sealed class AgentRuntimeExecutor : ISessionExecutor
         {
             await FailAsync(
                 sink,
-                contentItemId,
-                reasoningItemId,
+                activeContentItemId,
+                activeReasoningItemId,
                 new SessionError(
                     AgentErrorCodes.ProviderTimeout,
                     "Provider invocation timed out.",
@@ -1004,12 +1381,523 @@ internal sealed class AgentRuntimeExecutor : ISessionExecutor
         }
     }
 
+    private static ToolLoopCheckpoint? ReadToolCheckpoint(
+        SessionExecutionCheckpoint? checkpoint)
+    {
+        if (checkpoint is null)
+        {
+            return null;
+        }
+
+        try
+        {
+            var executorKind = typeof(AgentRuntimeExecutor).FullName!;
+            if (checkpoint.SchemaVersion != 1 ||
+                !SessionExecutionCheckpointCodec.IsValid(
+                    checkpoint,
+                    executorKind))
+            {
+                throw InvalidToolCheckpoint();
+            }
+
+            var value = JsonSerializer.Deserialize<ToolLoopCheckpoint>(
+                checkpoint.Payload);
+            if (value is null ||
+                value.AgentInvocationId == Guid.Empty ||
+                value.ProviderRound is < 1 or > 64 ||
+                value.NextAttemptNumber <= 0 ||
+                value.ToolCallItemId == Guid.Empty ||
+                value.CallIndex < 0 ||
+                value.ToolInvocationId == Guid.Empty ||
+                !CompactionCheckpointIntegrity.IsLowerSha256(
+                    value.ToolSnapshotSha256) ||
+                !CompactionCheckpointIntegrity.IsLowerSha256(
+                    value.ArgumentsSha256) ||
+                !string.Equals(
+                    value.NextPipelineStage,
+                    "approval",
+                    StringComparison.Ordinal) ||
+                value.RemainingBudgetTicks < 0 ||
+                value.RemainingBudgetTicks > InvocationTimeout.Ticks)
+            {
+                throw InvalidToolCheckpoint();
+            }
+
+            return value;
+        }
+        catch (AgentPreparationException)
+        {
+            throw;
+        }
+        catch (Exception exception) when (
+            exception is JsonException or NotSupportedException or
+                InvalidOperationException or OverflowException)
+        {
+            throw InvalidToolCheckpoint();
+        }
+    }
+
+    private static void ValidateToolCheckpoint(
+        AgentSession session,
+        AgentInvocationSnapshot invocation,
+        PendingToolFrame? pending,
+        ToolLoopCheckpoint? checkpoint)
+    {
+        if (checkpoint is null)
+        {
+            return;
+        }
+
+        var expectedAttempt = session.ProviderUsage
+            .Where(item => item.InvocationId == invocation.InvocationId)
+            .Select(item => item.AttemptNumber)
+            .DefaultIfEmpty()
+            .Max() + 1;
+        var state = pending is not null &&
+                    checkpoint.CallIndex < pending.States.Count
+            ? pending.States[checkpoint.CallIndex]
+            : null;
+        if (pending is null ||
+            checkpoint.AgentInvocationId != invocation.InvocationId ||
+            !string.Equals(
+                checkpoint.ToolSnapshotSha256,
+                invocation.Tools?.SnapshotSha256,
+                StringComparison.Ordinal) ||
+            checkpoint.ProviderRound != pending.Content.ProviderRound ||
+            checkpoint.NextAttemptNumber != expectedAttempt ||
+            checkpoint.ToolCallItemId != pending.Item.ItemId ||
+            state is null ||
+            state.Invocation.ToolInvocationId != checkpoint.ToolInvocationId ||
+            state.Invocation.Status != ToolInvocationStatus.WaitingApproval ||
+            !string.Equals(
+                checkpoint.ArgumentsSha256,
+                state.Invocation.ArgumentsSha256,
+                StringComparison.Ordinal))
+        {
+            throw InvalidToolCheckpoint();
+        }
+
+        _ = ApprovalDecision(session, state.Invocation, required: true);
+    }
+
+    private static PendingToolFrame? FindPendingToolFrame(AgentSession session)
+    {
+        var frames = session.ModelHistory
+            .Where(item =>
+                item.TurnId == session.Turn.TurnId &&
+                item.Type == SessionItemType.ToolCall &&
+                item.Status == SessionItemStatus.Completed)
+            .OrderBy(item => item.Sequence)
+            .ThenBy(item => item.ItemId)
+            .ToArray();
+        var duplicateState = session.ToolInvocations
+            .GroupBy(state => (state.ToolCallItemId, state.CallIndex))
+            .Any(group => group.Count() != 1);
+        if (duplicateState)
+        {
+            throw InvalidKnownToolCall();
+        }
+
+        PendingToolFrame? pending = null;
+        foreach (var item in frames)
+        {
+            if (item.Content is not ToolCallItemContent content ||
+                content.Calls.Count == 0)
+            {
+                throw InvalidKnownToolCall();
+            }
+
+            var states = Enumerable.Range(0, content.Calls.Count)
+                .Select(callIndex => session.ToolInvocations.SingleOrDefault(
+                    state =>
+                        state.ToolCallItemId == item.ItemId &&
+                        state.CallIndex == callIndex))
+                .ToArray();
+            if (states.Any(state =>
+                    state is null ||
+                    state.Invocation.CompletedAt is null))
+            {
+                if (pending is not null || item != frames[^1])
+                {
+                    throw InvalidKnownToolCall();
+                }
+
+                pending = new PendingToolFrame(item, content, states);
+            }
+        }
+
+        return pending;
+    }
+
+    private async ValueTask<bool> ResumeToolFrameAsync(
+        AgentSession session,
+        AgentInvocationDraft draft,
+        PendingToolFrame frame,
+        ToolLoopCheckpoint? resumeCheckpoint,
+        Dictionary<string, KnownToolCall> knownToolCalls,
+        List<ChatCompletionMessage> messages,
+        int nextAttempt,
+        long activityStarted,
+        TimeSpan activityBudget,
+        ISessionExecutionSink sink,
+        CancellationToken cancellationToken)
+    {
+        var anyToolAttempted = false;
+        for (var callIndex = 0;
+             callIndex < frame.Content.Calls.Count;
+             callIndex++)
+        {
+            var state = frame.States[callIndex];
+            if (state?.Invocation.CompletedAt is not null)
+            {
+                continue;
+            }
+
+            var call = frame.Content.Calls[callIndex];
+            knownToolCalls.TryGetValue(
+                call.ProviderToolCallId,
+                out var known);
+            var sameCall = known is not null &&
+                           string.Equals(
+                               known.ProviderToolName,
+                               call.ProviderToolName,
+                               StringComparison.Ordinal) &&
+                           string.Equals(
+                               known.ArgumentsSha256,
+                               call.ArgumentsSha256,
+                               StringComparison.Ordinal);
+            var toolInvocationId =
+                state?.Invocation.ToolInvocationId ??
+                Guid.CreateVersion7(_timeProvider.GetUtcNow());
+            var remaining = RemainingActivityBudget(
+                activityStarted,
+                activityBudget);
+            var checkpoint = CreateToolCheckpoint(
+                draft.Snapshot,
+                frame.Content.ProviderRound,
+                nextAttempt,
+                frame.Item.ItemId,
+                callIndex,
+                toolInvocationId,
+                call.ArgumentsSha256,
+                remaining);
+            var priorAttemptCount =
+                state?.Invocation.AttemptCount ?? 0;
+            var result = await _toolPipeline.InvokeAsync(
+                new ToolInvocationContext(
+                    session.Thread.ThreadId,
+                    session.Turn.TurnId,
+                    toolInvocationId,
+                    frame.Item.ItemId,
+                    callIndex,
+                    call.ProviderToolCallId,
+                    call.ProviderToolName,
+                    call.Arguments,
+                    call.ArgumentsSha256,
+                    call.SensitiveInputDetected,
+                    draft.Snapshot.Tools!,
+                    checkpoint,
+                    ApprovalTimeoutAt: null,
+                    ApprovalGranted: state is null
+                        ? null
+                        : ApprovalDecision(
+                            session,
+                            state.Invocation,
+                            required: resumeCheckpoint is not null &&
+                                      resumeCheckpoint.CallIndex == callIndex),
+                    PriorAttemptCount: priorAttemptCount,
+                    RemainingExecutionBudget: remaining,
+                    ReplayResult: sameCall ? known?.Result : null,
+                    ProviderCallIdConflict: known is not null && !sameCall),
+                sink,
+                cancellationToken);
+            anyToolAttempted |= result.AttemptCount > 0;
+            if (known is null)
+            {
+                knownToolCalls.Add(
+                    call.ProviderToolCallId,
+                    new KnownToolCall(
+                        call.ProviderToolName,
+                        call.ArgumentsSha256,
+                        result));
+            }
+            else if (known.State?.Invocation.ToolInvocationId ==
+                     toolInvocationId)
+            {
+                knownToolCalls[call.ProviderToolCallId] =
+                    known with { Result = result };
+            }
+
+            messages.Add(new ChatCompletionMessage(
+                ChatCompletionMessageRole.Tool,
+                ProviderMessageHistory.ToolResultEnvelope(result),
+                ToolCallId: call.ProviderToolCallId));
+        }
+
+        return anyToolAttempted;
+    }
+
+    private static bool? ApprovalDecision(
+        AgentSession session,
+        ToolInvocationSnapshot invocation,
+        bool required)
+    {
+        var request = session.ModelHistory
+            .Where(item =>
+                item.TurnId == session.Turn.TurnId &&
+                item.Status == SessionItemStatus.Completed &&
+                item.Content is ToolApprovalRequestContent content &&
+                content.ToolInvocationId == invocation.ToolInvocationId)
+            .OrderByDescending(item => item.Sequence)
+            .ThenByDescending(item => item.ItemId)
+            .FirstOrDefault();
+        if (request is null)
+        {
+            if (required)
+            {
+                throw InvalidToolCheckpoint();
+            }
+
+            return null;
+        }
+
+        var content = (ToolApprovalRequestContent)request.Content;
+        if (content.ToolDefinitionId != invocation.ToolDefinitionId ||
+            !string.Equals(
+                content.SnapshotSha256,
+                invocation.SnapshotSha256,
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                content.ArgumentsSha256,
+                invocation.ArgumentsSha256,
+                StringComparison.Ordinal))
+        {
+            throw InvalidToolCheckpoint();
+        }
+
+        var response = session.ModelHistory
+            .Where(item =>
+                item.TurnId == session.Turn.TurnId &&
+                item.Sequence > request.Sequence &&
+                item.Status == SessionItemStatus.Completed &&
+                item.Content is ApprovalResponseContent)
+            .OrderByDescending(item => item.Sequence)
+            .ThenByDescending(item => item.ItemId)
+            .FirstOrDefault();
+        if (response is null && required)
+        {
+            throw InvalidToolCheckpoint();
+        }
+
+        return response?.Content is ApprovalResponseContent decision
+            ? decision.Approved
+            : null;
+    }
+
+    private static AgentPreparationException InvalidToolCheckpoint() =>
+        new(
+            AgentErrorCodes.ContextInputInvalid,
+            "Tool continuation checkpoint is invalid.");
+
+    private static ValueTask FailToolIterationLimitAsync(
+        ISessionExecutionSink sink,
+        CancellationToken cancellationToken) =>
+        sink.EmitAsync(
+            new FailTurnIntent(new SessionError(
+                ToolErrorCodes.IterationLimitExceeded,
+                "Tool call iteration limit exceeded.",
+                IsRetryable: false)),
+            cancellationToken);
+
+    private ToolCallItemContent PreflightToolFrame(
+        int providerRound,
+        Guid? agentMessageItemId,
+        IReadOnlyList<ChatCompletionToolCallCompletedEvent> calls)
+    {
+        if (calls.Count == 0 ||
+            calls.Select(call => call.Id)
+                .Distinct(StringComparer.Ordinal)
+                .Count() != calls.Count)
+        {
+            throw InvalidToolFrame();
+        }
+
+        var entries = new ToolCallItemEntry[calls.Count];
+        for (var index = 0; index < calls.Count; index++)
+        {
+            var call = calls[index];
+            if (call.Index != index ||
+                string.IsNullOrWhiteSpace(call.Id) ||
+                string.IsNullOrWhiteSpace(call.Name))
+            {
+                throw InvalidToolFrame();
+            }
+
+            try
+            {
+                using var document = JsonDocument.Parse(
+                    call.Arguments,
+                    new JsonDocumentOptions
+                    {
+                        MaxDepth = ToolRuntimeLimits.MaximumJsonDepth,
+                    });
+                if (document.RootElement.ValueKind != JsonValueKind.Object)
+                {
+                    throw InvalidToolFrame();
+                }
+
+                var arguments = _redactor.RedactJson(
+                    document.RootElement,
+                    out var sensitiveInputDetected);
+                var canonical = ThreadJournal.Canonicalize(arguments);
+                if (canonical.Length > ToolRuntimeLimits.MaximumArgumentsBytes)
+                {
+                    throw InvalidToolFrame();
+                }
+
+                entries[index] = new ToolCallItemEntry(
+                    call.Id,
+                    call.Name,
+                    arguments,
+                    Convert.ToHexString(SHA256.HashData(canonical))
+                        .ToLowerInvariant(),
+                    sensitiveInputDetected);
+            }
+            catch (ChatCompletionException)
+            {
+                throw;
+            }
+            catch (Exception exception) when (
+                exception is JsonException or InvalidOperationException or
+                    OverflowException)
+            {
+                throw InvalidToolFrame();
+            }
+        }
+
+        return new ToolCallItemContent(
+            providerRound,
+            agentMessageItemId,
+            entries);
+    }
+
+    private static Dictionary<string, KnownToolCall> BuildKnownToolCalls(
+        AgentSession session,
+        AgentInvocationSnapshot invocation)
+    {
+        var items = session.ModelHistory.ToDictionary(item => item.ItemId);
+        var known = new Dictionary<string, KnownToolCall>(StringComparer.Ordinal);
+        foreach (var state in session.ToolInvocations)
+        {
+            var snapshot = state.Invocation;
+            if (snapshot.TurnId != session.Turn.TurnId ||
+                !string.Equals(
+                    snapshot.SnapshotSha256,
+                    invocation.Tools?.SnapshotSha256,
+                    StringComparison.Ordinal) ||
+                !items.TryGetValue(state.ToolCallItemId, out var item) ||
+                item.Content is not ToolCallItemContent toolCall ||
+                state.CallIndex < 0 ||
+                state.CallIndex >= toolCall.Calls.Count)
+            {
+                throw InvalidKnownToolCall();
+            }
+
+            var call = toolCall.Calls[state.CallIndex];
+            if (!string.Equals(
+                    snapshot.ProviderToolCallId,
+                    call.ProviderToolCallId,
+                    StringComparison.Ordinal) ||
+                !string.Equals(
+                    snapshot.ProviderToolName,
+                    call.ProviderToolName,
+                    StringComparison.Ordinal) ||
+                !string.Equals(
+                    snapshot.ArgumentsSha256,
+                    call.ArgumentsSha256,
+                    StringComparison.Ordinal))
+            {
+                throw InvalidKnownToolCall();
+            }
+
+            ToolResultSnapshot? result = null;
+            if (snapshot.CompletedAt is not null)
+            {
+                if (snapshot.ResultItemId is not { } resultItemId ||
+                    !items.TryGetValue(resultItemId, out var resultItem) ||
+                    resultItem.Content is not ToolResultItemContent resultContent ||
+                    resultContent.Result.ToolInvocationId != snapshot.ToolInvocationId)
+                {
+                    throw InvalidKnownToolCall();
+                }
+
+                result = resultContent.Result;
+            }
+
+            known.TryAdd(
+                call.ProviderToolCallId,
+                new KnownToolCall(
+                    call.ProviderToolName,
+                    call.ArgumentsSha256,
+                    result,
+                    state));
+        }
+
+        return known;
+    }
+
+    private static AgentPreparationException InvalidKnownToolCall() =>
+        new(
+            AgentErrorCodes.ContextInputInvalid,
+            "Tool Invocation history is invalid.");
+
+    private TimeSpan RemainingActivityBudget(
+        long activityStarted,
+        TimeSpan budget)
+    {
+        var remaining = budget - _timeProvider.GetElapsedTime(activityStarted);
+        return remaining > TimeSpan.Zero ? remaining : TimeSpan.Zero;
+    }
+
+    private static SessionExecutionCheckpoint CreateToolCheckpoint(
+        AgentInvocationSnapshot invocation,
+        int providerRound,
+        int nextAttemptNumber,
+        Guid toolCallItemId,
+        int callIndex,
+        Guid toolInvocationId,
+        string argumentsSha256,
+        TimeSpan remainingBudget)
+    {
+        var payload = JsonSerializer.Serialize(new ToolLoopCheckpoint(
+            invocation.InvocationId,
+            invocation.Tools?.SnapshotSha256 ?? string.Empty,
+            providerRound,
+            nextAttemptNumber,
+            toolCallItemId,
+            callIndex,
+            toolInvocationId,
+            argumentsSha256,
+            "approval",
+            Math.Max(0, remainingBudget.Ticks)));
+        return SessionExecutionCheckpointCodec.Create(
+            typeof(AgentRuntimeExecutor).FullName!,
+            schemaVersion: 1,
+            payload);
+    }
+
+    private static ChatCompletionException InvalidToolFrame() =>
+        new(
+            AgentErrorCodes.ProviderInvalidStream,
+            "Provider returned an invalid tool call frame.");
+
     private async ValueTask<CompactionResult?> CompactAsync(
         AgentSession session,
         AgentInvocationDraft draft,
         WorkspaceInstructionDocument? instructions,
         ISessionExecutionSink sink,
         int nextAttempt,
+        int maximumAttempt,
         int targetPercent,
         CancellationToken invocationToken,
         CancellationToken cancellationToken)
@@ -1041,7 +1929,7 @@ internal sealed class AgentRuntimeExecutor : ISessionExecutor
             return null;
         }
 
-        while (nextAttempt <= 3)
+        while (nextAttempt <= maximumAttempt)
         {
             var attempt = nextAttempt++;
             var summary = new StringBuilder();
@@ -1126,7 +2014,10 @@ internal sealed class AgentRuntimeExecutor : ISessionExecutor
                     session.Turn,
                     session.ModelHistory,
                     session.Checkpoint,
-                    checkpoint);
+                    checkpoint,
+                    session.Invocation,
+                    session.ToolInvocations,
+                    session.ProviderUsage);
                 var compactedDraft = _factory.Create(
                     compactedSession,
                     draft.Snapshot.InvocationId,
@@ -1147,7 +2038,7 @@ internal sealed class AgentRuntimeExecutor : ISessionExecutor
             }
             catch (ChatCompletionException exception)
             {
-                if (!exception.IsTransient || nextAttempt > 3)
+                if (!exception.IsTransient || nextAttempt > maximumAttempt)
                 {
                     return null;
                 }
@@ -1361,6 +2252,29 @@ internal sealed class AgentRuntimeExecutor : ISessionExecutor
         AgentSession Session,
         AgentInvocationDraft Draft,
         int NextAttempt);
+
+    private sealed record ToolLoopCheckpoint(
+        Guid AgentInvocationId,
+        string ToolSnapshotSha256,
+        int ProviderRound,
+        int NextAttemptNumber,
+        Guid ToolCallItemId,
+        int CallIndex,
+        Guid ToolInvocationId,
+        string ArgumentsSha256,
+        string NextPipelineStage,
+        long RemainingBudgetTicks);
+
+    private sealed record KnownToolCall(
+        string ProviderToolName,
+        string ArgumentsSha256,
+        ToolResultSnapshot? Result,
+        AgentToolInvocationSnapshot? State = null);
+
+    private sealed record PendingToolFrame(
+        SessionItemSnapshot Item,
+        ToolCallItemContent Content,
+        IReadOnlyList<AgentToolInvocationSnapshot?> States);
 
     private static SessionError? FinishError(
         ChatCompletionFinishReason? finishReason,

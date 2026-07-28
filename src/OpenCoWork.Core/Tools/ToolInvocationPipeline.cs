@@ -118,6 +118,51 @@ internal sealed class ToolInvocationPipeline : IToolInvocationPipeline
                 context.ArgumentsSha256),
             cancellationToken);
 
+        if (context.ProviderCallIdConflict)
+        {
+            return await FinishErrorAsync(
+                context,
+                sink,
+                ToolInvocationStatus.Rejected,
+                ToolErrorCodes.CallIdConflict,
+                "Provider Tool Call ID conflicts with an earlier call.",
+                context.PriorAttemptCount);
+        }
+
+        if (context.ReplayResult is { } replay)
+        {
+            if (!string.Equals(
+                    replay.ProviderToolCallId,
+                    context.ProviderToolCallId,
+                    StringComparison.Ordinal) ||
+                replay.Status is
+                    ToolInvocationStatus.Started or
+                    ToolInvocationStatus.WaitingApproval)
+            {
+                return await FinishErrorAsync(
+                    context,
+                    sink,
+                    ToolInvocationStatus.Rejected,
+                    ToolErrorCodes.CallIdConflict,
+                    "Persisted Tool Result does not match the provider call.",
+                    context.PriorAttemptCount);
+            }
+
+            return await FinishAsync(
+                context,
+                sink,
+                new ToolResultSnapshot(
+                    context.ToolInvocationId,
+                    context.ProviderToolCallId,
+                    replay.Status,
+                    replay.Output,
+                    replay.Error,
+                    replay.IsTruncated,
+                    replay.OriginalByteCount,
+                    replay.ResultSha256,
+                    context.PriorAttemptCount));
+        }
+
         if (registration is null)
         {
             return await FinishErrorAsync(

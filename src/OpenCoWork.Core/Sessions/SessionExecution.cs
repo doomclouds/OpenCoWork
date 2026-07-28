@@ -906,6 +906,15 @@ internal sealed partial class SessionService
 
         if (turn.Status == TurnStatus.Running)
         {
+            if (HasRecoverableToolCursor(turn))
+            {
+                BeginExecution(
+                    turn,
+                    checkpoint: null,
+                    resumed: false);
+                return;
+            }
+
             await FailTurnAsync(
                 turnId,
                 new SessionError(
@@ -958,6 +967,113 @@ internal sealed partial class SessionService
         }
     }
 
+    private bool HasRecoverableToolCursor(TurnSnapshot turn)
+    {
+        if (!_agentInvocations.TryGetValue(turn.TurnId, out var invocation) ||
+            invocation.Snapshot.Tools is not { } tools)
+        {
+            return false;
+        }
+
+        var frames = _items.Values
+            .Where(item =>
+                item.TurnId == turn.TurnId &&
+                item.Type == SessionItemType.ToolCall &&
+                item.Status == SessionItemStatus.Completed &&
+                item.Content is ToolCallItemContent)
+            .OrderBy(item => item.Sequence)
+            .ThenBy(item => item.ItemId)
+            .ToArray();
+        if (frames.Length == 0)
+        {
+            return false;
+        }
+
+        var byFrame = frames.ToDictionary(item => item.ItemId);
+        var states = _toolInvocations.Values
+            .Where(item => item.Snapshot.TurnId == turn.TurnId)
+            .ToArray();
+        if (states.Any(state =>
+                !byFrame.TryGetValue(state.ToolCallItemId, out var item) ||
+                item.Content is not ToolCallItemContent content ||
+                state.CallIndex < 0 ||
+                state.CallIndex >= content.Calls.Count ||
+                !string.Equals(
+                    content.Calls[state.CallIndex].ProviderToolCallId,
+                    state.Snapshot.ProviderToolCallId,
+                    StringComparison.Ordinal) ||
+                !string.Equals(
+                    content.Calls[state.CallIndex].ProviderToolName,
+                    state.Snapshot.ProviderToolName,
+                    StringComparison.Ordinal) ||
+                !string.Equals(
+                    content.Calls[state.CallIndex].ArgumentsSha256,
+                    state.Snapshot.ArgumentsSha256,
+                    StringComparison.Ordinal) ||
+                !string.Equals(
+                    state.Snapshot.SnapshotSha256,
+                    tools.SnapshotSha256,
+                    StringComparison.Ordinal)) ||
+            states.GroupBy(state => (state.ToolCallItemId, state.CallIndex))
+                .Any(group => group.Count() != 1))
+        {
+            return false;
+        }
+
+        bool IsComplete(SessionItemSnapshot frame, int callIndex)
+        {
+            var state = states.SingleOrDefault(candidate =>
+                candidate.ToolCallItemId == frame.ItemId &&
+                candidate.CallIndex == callIndex);
+            return state?.Snapshot.CompletedAt is not null &&
+                   state.Snapshot.ResultItemId is { } resultItemId &&
+                   _items.TryGetValue(resultItemId, out var resultItem) &&
+                   resultItem.TurnId == turn.TurnId &&
+                   resultItem.Type == SessionItemType.ToolResult &&
+                   resultItem.Status == SessionItemStatus.Completed &&
+                   resultItem.Content is ToolResultItemContent result &&
+                   result.Result.ToolInvocationId ==
+                   state.Snapshot.ToolInvocationId;
+        }
+
+        foreach (var frame in frames[..^1])
+        {
+            var content = (ToolCallItemContent)frame.Content;
+            if (content.Calls.Count == 0 ||
+                Enumerable.Range(0, content.Calls.Count)
+                    .Any(callIndex => !IsComplete(frame, callIndex)))
+            {
+                return false;
+            }
+        }
+
+        var latest = frames[^1];
+        var latestContent = (ToolCallItemContent)latest.Content;
+        if (latestContent.Calls.Count == 0 ||
+            _items.Values.Any(item =>
+                item.TurnId == turn.TurnId &&
+                item.Sequence > latest.Sequence &&
+                item.Type is
+                    SessionItemType.UserMessage or
+                    SessionItemType.AgentMessage or
+                    SessionItemType.Reasoning or
+                    SessionItemType.ToolCall))
+        {
+            return false;
+        }
+
+        return Enumerable.Range(0, latestContent.Calls.Count)
+            .All(callIndex =>
+            {
+                var state = states.SingleOrDefault(candidate =>
+                    candidate.ToolCallItemId == latest.ItemId &&
+                    candidate.CallIndex == callIndex);
+                return state is null ||
+                       state.Snapshot.CompletedAt is null ||
+                       IsComplete(latest, callIndex);
+            });
+    }
+
     private void BeginExecution(
         TurnSnapshot turn,
         SessionExecutionCheckpoint? checkpoint,
@@ -985,7 +1101,21 @@ internal sealed partial class SessionService
             contextTurn,
             ModelHistory(turn.ThreadId),
             checkpoint,
-            _compactionCheckpoints.GetValueOrDefault(turn.ThreadId)?.Checkpoint);
+            _compactionCheckpoints.GetValueOrDefault(turn.ThreadId)?.Checkpoint,
+            _agentInvocations.GetValueOrDefault(turn.TurnId)?.Snapshot,
+            _toolInvocations.Values
+                .Where(item => item.Snapshot.TurnId == turn.TurnId)
+                .OrderBy(item => item.Sequence)
+                .Select(item => new AgentToolInvocationSnapshot(
+                    item.Snapshot,
+                    item.ToolCallItemId,
+                    item.CallIndex)),
+            _providerUsage.Values
+                .Where(item =>
+                    _agentInvocations.TryGetValue(turn.TurnId, out var invocation) &&
+                    item.Usage.InvocationId == invocation.Snapshot.InvocationId)
+                .OrderBy(item => item.Sequence)
+                .Select(item => item.Usage));
         var execution = new SessionExecution(
             _executor,
             _sessionConfig,
