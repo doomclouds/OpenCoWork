@@ -15,6 +15,98 @@ namespace OpenCoWork.IntegrationTests;
 public sealed class ToolRuntimeIntegrationTests
 {
     [Fact]
+    public async Task Chat_cli_resolves_shell_approval_and_resumes_the_turn()
+    {
+        if (!OperatingSystem.IsMacOS() && !OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var root = Path.Combine(
+            Path.GetTempPath(),
+            $"opencowork-tool-cli-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            var paths = new OpenCoWorkPaths(root);
+            var models = Models();
+            var credentials = FrozenProviderCredentials.Capture(
+                models,
+                name => name == "TOOL_RUNTIME_KEY" ? "test-secret" : null);
+            var tools = new ToolRuntime(paths);
+            var redactor = new SecretRedactor(["test-secret"]);
+            var client = new ShellApprovalClient();
+            var executor = new AgentRuntimeExecutor(
+                new AgentFactory(
+                    new ProviderRegistry(
+                        models,
+                        credentials,
+                        AppContext.BaseDirectory,
+                        root),
+                    paths,
+                    tools),
+                paths,
+                _ => client,
+                toolPipeline: new ToolInvocationPipeline(tools, redactor),
+                redactor: redactor);
+            using var host = OpenCoWorkCompositionRoot.Build(
+                [],
+                root,
+                services =>
+                {
+                    services.AddSingleton(models);
+                    services.AddSingleton(credentials);
+                    services.AddSingleton(redactor);
+                    services.AddSingleton<ISessionExecutor>(executor);
+                });
+            await host.StartAsync(cancellationToken);
+            var output = new StringWriter();
+            var error = new StringWriter();
+
+            var exitCode = await ChatCommandRunner.RunAsync(
+                host.Services,
+                requestedThreadId: null,
+                providerId: "token-plan",
+                modelId: "qwen3.8-max-preview",
+                new StringReader("run it\nyes\n/exit\n"),
+                output,
+                error,
+                isInteractive: true,
+                cancellationToken);
+
+            Assert.Equal(0, exitCode);
+            Assert.Equal("done" + Environment.NewLine, output.ToString());
+            Assert.Contains(
+                ShellApprovalClient.Command,
+                error.ToString(),
+                StringComparison.Ordinal);
+            Assert.Contains(
+                "approve [y/N]> ",
+                error.ToString(),
+                StringComparison.Ordinal);
+            Assert.Equal(2, client.Requests.Count);
+            Assert.Contains(
+                "cli-approved",
+                client.Requests[1].Messages[^1].Content,
+                StringComparison.Ordinal);
+            Assert.Contains(
+                "\"exitCode\":0",
+                client.Requests[1].Messages[^1].Content,
+                StringComparison.Ordinal);
+            await host.StopAsync(cancellationToken);
+        }
+        finally
+        {
+            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            if (Directory.Exists(root))
+            {
+                Directory.Delete(root, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
     public async Task Provider_tool_loop_commits_results_before_the_next_round()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
@@ -168,6 +260,40 @@ public sealed class ToolRuntimeIntegrationTests
                     "call-1",
                     "file__list",
                     """{"path":"."}""");
+                yield return new ChatCompletionCompletedEvent(
+                    ChatCompletionFinishReason.ToolCall);
+                yield break;
+            }
+
+            yield return new ChatCompletionContentDeltaEvent("done");
+            yield return new ChatCompletionCompletedEvent(
+                ChatCompletionFinishReason.Stop);
+        }
+    }
+
+    private sealed class ShellApprovalClient : IChatCompletionClient
+    {
+        public static string Command =>
+            OperatingSystem.IsWindows()
+                ? "[Console]::Out.Write('cli-approved')"
+                : "printf cli-approved";
+
+        public List<ChatCompletionRequest> Requests { get; } = [];
+
+        public async IAsyncEnumerable<ChatCompletionEvent> StreamAsync(
+            ChatCompletionRequest request,
+            [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            Requests.Add(request);
+            await Task.Yield();
+            cancellationToken.ThrowIfCancellationRequested();
+            if (Requests.Count == 1)
+            {
+                yield return new ChatCompletionToolCallCompletedEvent(
+                    0,
+                    "shell-call-1",
+                    "shell__run",
+                    $$"""{"command":"{{Command}}"}""");
                 yield return new ChatCompletionCompletedEvent(
                     ChatCompletionFinishReason.ToolCall);
                 yield break;

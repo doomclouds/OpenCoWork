@@ -136,6 +136,7 @@ public static class ChatCommandRunner
                 sessions,
                 thread.ThreadId,
                 text,
+                reader,
                 output,
                 error,
                 isInteractive,
@@ -261,6 +262,7 @@ public static class ChatCommandRunner
         ISessionService sessions,
         Guid threadId,
         string text,
+        BoundedLineReader reader,
         TextWriter output,
         TextWriter error,
         bool isInteractive,
@@ -293,6 +295,7 @@ public static class ChatCommandRunner
         var reasoningStarted = false;
         var cancellationObserved = false;
         var cancelRequested = false;
+        var resolvedApprovals = new HashSet<Guid>();
         var cancellation = cancellationToken.CanBeCanceled
             ? Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken)
             : null;
@@ -370,6 +373,69 @@ public static class ChatCommandRunner
                     }
 
                     await error.WriteAsync(delta);
+                }
+            }
+            else if (sessionEvent.Type == SessionEventType.TurnWaitingApproval &&
+                     sessionEvent.Payload.Interaction is { } interaction &&
+                     sessionEvent.Payload.Item?.Content is ApprovalRequestContent approval &&
+                     resolvedApprovals.Add(interaction.InteractionId))
+            {
+                var approved = false;
+                if (isInteractive)
+                {
+                    await error.WriteLineAsync(
+                        $"approval> {redactor.RedactText(approval.Prompt)}");
+                    await error.WriteAsync("approve [y/N]> ");
+                    BoundedLineResult response;
+                    try
+                    {
+                        response = await reader.ReadAsync(cancellationToken);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        await CancelActiveTurnAsync(sessions, threadId);
+                        return ChatTurnResult.Cancelled;
+                    }
+
+                    approved = response.Status == BoundedLineStatus.Line &&
+                               response.Text is not null &&
+                               (string.Equals(
+                                    response.Text.Trim(),
+                                    "y",
+                                    StringComparison.OrdinalIgnoreCase) ||
+                                string.Equals(
+                                    response.Text.Trim(),
+                                    "yes",
+                                    StringComparison.OrdinalIgnoreCase));
+                }
+                else
+                {
+                    await error.WriteLineAsync(
+                        "approval denied in non-interactive mode");
+                }
+
+                var current = await sessions.GetThreadAsync(
+                    threadId,
+                    cancellationToken);
+                if (!current.IsSuccess || current.Value is null)
+                {
+                    await WriteErrorAsync(current.Error, error, redactor);
+                    return ChatTurnResult.Failed;
+                }
+
+                var resolved = await sessions.ResolveInteractionAsync(
+                    new ResolveInteractionRequest(
+                        threadId,
+                        interaction.TurnId,
+                        interaction.InteractionId,
+                        new ApprovalResponseContent(approved, Comment: null),
+                        Guid.CreateVersion7(),
+                        current.Value.CurrentSequence),
+                    cancellationToken);
+                if (resolved.Status == SessionCommandStatus.Rejected)
+                {
+                    await WriteErrorAsync(resolved.Error, error, redactor);
+                    return ChatTurnResult.Failed;
                 }
             }
 

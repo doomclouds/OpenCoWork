@@ -1,6 +1,6 @@
 # OpenCoWork M4 Tool Runtime Alpha 实施计划
 
-**Status:** In Progress；Outcome 1-7 已完成，Outcome 8-9 尚未开始。
+**Status:** In Progress；Outcome 1-8 已完成，Outcome 9 尚未开始。
 
 **Goal:** 在 M3 Agent Runtime 上交付 Provider 中立、可审计、可审批、可取消、
 可恢复且不会重复已提交副作用的最小 Tool Runtime。

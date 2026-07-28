@@ -386,7 +386,7 @@ internal sealed class ToolInvocationPipeline : IToolInvocationPipeline
                             definition.Id,
                             context.Snapshot.SnapshotSha256,
                             context.ArgumentsSha256,
-                            $"Approve tool '{context.ProviderToolName}'?"),
+                            ApprovalPrompt(context, definition)),
                         context.ApprovalCheckpoint,
                         context.ApprovalTimeoutAt,
                         context.ToolInvocationId),
@@ -596,6 +596,20 @@ internal sealed class ToolInvocationPipeline : IToolInvocationPipeline
                 "Tool result is invalid.",
                 attemptNumber);
         }
+    }
+
+    private static string ApprovalPrompt(
+        ToolInvocationContext context,
+        ToolDefinition definition)
+    {
+        if (definition.Name is { Namespace: "shell", Name: "run" } &&
+            context.Arguments.TryGetProperty("command", out var command) &&
+            command.ValueKind == JsonValueKind.String)
+        {
+            return $"Approve shell command?{Environment.NewLine}{command.GetString()}";
+        }
+
+        return $"Approve tool '{context.ProviderToolName}'?";
     }
 
     private async ValueTask<ToolResultSnapshot> RejectAsync(

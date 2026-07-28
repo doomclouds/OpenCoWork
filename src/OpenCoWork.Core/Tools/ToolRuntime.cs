@@ -41,12 +41,27 @@ internal sealed partial class ToolRuntime
     private readonly IReadOnlyDictionary<ToolDefinitionId, JsonSchema> _schemas;
 
     public ToolRuntime()
-        : this(CreateCoreTools(fileTools: null))
+        : this(CreateCoreTools(
+            fileTools: null,
+            shellTool: null,
+            webTool: null))
     {
     }
 
     internal ToolRuntime(OpenCoWorkPaths paths)
-        : this(CreateCoreTools(new CoreFileTools(paths)))
+        : this(paths, models: null)
+    {
+    }
+
+    internal ToolRuntime(OpenCoWorkPaths paths, ModelsConfig? models)
+        : this(CreateCoreTools(
+            new CoreFileTools(paths),
+            new CoreShellTool(
+                paths,
+                models?.Providers.Values
+                    .Select(provider => provider.ApiKey.Environment) ??
+                []),
+            new CoreWebTool()))
     {
     }
 
@@ -630,7 +645,10 @@ internal sealed partial class ToolRuntime
         }
     }
 
-    private static CoreTools CreateCoreTools(CoreFileTools? fileTools)
+    private static CoreTools CreateCoreTools(
+        CoreFileTools? fileTools,
+        CoreShellTool? shellTool,
+        CoreWebTool? webTool)
     {
         var registrations = new List<ToolRegistration>();
         var bindings = new List<ToolRuntimeBinding>();
@@ -725,7 +743,9 @@ internal sealed partial class ToolRuntime
             ToolEffect.ExternalMutation,
             ToolReplaySafety.Unsafe,
             TimeSpan.FromMinutes(10),
-            PlaceholderExecutor);
+            shellTool is null
+                ? PlaceholderExecutor
+                : shellTool.RunAsync);
         Add(
             "web.fetch",
             new ToolName("web", "fetch"),
@@ -745,7 +765,9 @@ internal sealed partial class ToolRuntime
             ToolEffect.NetworkRead,
             ToolReplaySafety.Unsafe,
             TimeSpan.FromMinutes(2),
-            PlaceholderExecutor);
+            webTool is null
+                ? PlaceholderExecutor
+                : webTool.FetchAsync);
         return new CoreTools(registrations, bindings);
 
         void Add(

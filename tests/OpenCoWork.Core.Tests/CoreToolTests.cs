@@ -8,7 +8,7 @@ using Xunit;
 
 namespace OpenCoWork.Core.Tests;
 
-public sealed class CoreToolTests
+public sealed partial class CoreToolTests
 {
     [Fact]
     public async Task List_hides_blacklisted_entries_and_read_returns_a_line_window()
