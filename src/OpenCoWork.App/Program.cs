@@ -3,6 +3,7 @@ using System.CommandLine;
 using System.CommandLine.Invocation;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using OpenCoWork.Abstractions;
 using OpenCoWork.Core.Agents;
 using OpenCoWork.Core.Configuration;
@@ -12,6 +13,7 @@ using OpenCoWork.Core.Logging;
 using OpenCoWork.Core.Sessions;
 using OpenCoWork.Core.Workspaces;
 using OpenCoWork.Generated;
+using OpenCoWork.Protocol;
 
 return await OpenCoWork.App.OpenCoWorkCli.RunAsync(args);
 
@@ -22,7 +24,7 @@ namespace OpenCoWork.App
         public static Task<int> RunAsync(
             string[] args,
             CancellationToken cancellationToken = default) =>
-            RunAsync(
+            RunCoreAsync(
                 args,
                 Console.In,
                 Console.Out,
@@ -31,6 +33,8 @@ namespace OpenCoWork.App
                 Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
                 !Console.IsInputRedirected,
                 configureServices: null,
+                Console.OpenStandardInput(),
+                Console.OpenStandardOutput(),
                 cancellationToken);
 
         public static Task<int> RunAsync(
@@ -40,7 +44,7 @@ namespace OpenCoWork.App
             string workingDirectory,
             string userProfileDirectory,
             CancellationToken cancellationToken = default) =>
-            RunAsync(
+            RunCoreAsync(
                 args,
                 Console.In,
                 output,
@@ -49,9 +53,11 @@ namespace OpenCoWork.App
                 userProfileDirectory,
                 !Console.IsInputRedirected,
                 configureServices: null,
+                protocolInput: null,
+                protocolOutput: null,
                 cancellationToken);
 
-        public static async Task<int> RunAsync(
+        public static Task<int> RunAsync(
             string[] args,
             TextReader input,
             TextWriter output,
@@ -60,7 +66,32 @@ namespace OpenCoWork.App
             string userProfileDirectory,
             bool isInteractive,
             Action<IServiceCollection>? configureServices = null,
-            CancellationToken cancellationToken = default)
+            CancellationToken cancellationToken = default) =>
+            RunCoreAsync(
+                args,
+                input,
+                output,
+                error,
+                workingDirectory,
+                userProfileDirectory,
+                isInteractive,
+                configureServices,
+                protocolInput: null,
+                protocolOutput: null,
+                cancellationToken);
+
+        private static async Task<int> RunCoreAsync(
+            string[] args,
+            TextReader input,
+            TextWriter output,
+            TextWriter error,
+            string workingDirectory,
+            string userProfileDirectory,
+            bool isInteractive,
+            Action<IServiceCollection>? configureServices,
+            Stream? protocolInput,
+            Stream? protocolOutput,
+            CancellationToken cancellationToken)
         {
             ArgumentNullException.ThrowIfNull(args);
             ArgumentNullException.ThrowIfNull(input);
@@ -76,7 +107,9 @@ namespace OpenCoWork.App
                 userProfileDirectory,
                 input,
                 isInteractive,
-                configureServices);
+                configureServices,
+                protocolInput,
+                protocolOutput);
             var parseResult = root.Parse(args);
             var exitCode = await parseResult.InvokeAsync(
                 new InvocationConfiguration
@@ -95,7 +128,9 @@ namespace OpenCoWork.App
             string userProfileDirectory,
             TextReader input,
             bool isInteractive,
-            Action<IServiceCollection>? configureServices)
+            Action<IServiceCollection>? configureServices,
+            Stream? protocolInput,
+            Stream? protocolOutput)
         {
             var root = new RootCommand(
                 "OpenCoWork agent collaboration runtime.");
@@ -113,6 +148,7 @@ namespace OpenCoWork.App
                       init      Initialize an OpenCoWork workspace.
                       doctor    Inspect runtime and workspace health without modifying state.
                       chat      Run a local multi-turn agent conversation.
+                      app-server  Serve the Desktop wire protocol.
 
                     Options:
                       --version  Show version information.
@@ -248,6 +284,59 @@ namespace OpenCoWork.App
                     configureServices,
                     cancellationToken));
             root.Subcommands.Add(chat);
+
+            var serverWorkspace = CreateWorkspaceOption();
+            var serverConfig = new Option<string?>("--config")
+            {
+                Description = "Use an additional JSONC configuration file.",
+            };
+            var serverSet = new Option<string[]>("--set")
+            {
+                Description = "Override configuration with path=value; repeatable.",
+            };
+            var serverStrictConfig = new Option<bool>("--strict-config")
+            {
+                Description = "Treat unknown configuration fields as failures.",
+            };
+            var transport = new Option<string?>("--transport")
+            {
+                Description = "Protocol transport: stdio (default) or websocket.",
+            };
+            var port = new Option<int?>("--port")
+            {
+                Description = "Loopback port required by the websocket transport.",
+            };
+            var appServer = new Command(
+                "app-server",
+                "Serve the Desktop wire protocol.")
+            {
+                serverWorkspace,
+                serverConfig,
+                serverSet,
+                serverStrictConfig,
+                transport,
+                port,
+            };
+            appServer.SetAction((parseResult, cancellationToken) =>
+                RunAppServerAsync(
+                    parseResult.GetValue(serverWorkspace),
+                    ResolveOptionalPath(
+                        parseResult.GetValue(serverConfig),
+                        workingDirectory),
+                    parseResult.GetValue(serverSet) ?? [],
+                    parseResult.GetValue(serverStrictConfig),
+                    parseResult.GetValue(transport),
+                    parseResult.GetValue(port),
+                    workingDirectory,
+                    userProfileDirectory,
+                    input,
+                    parseResult.InvocationConfiguration.Output,
+                    parseResult.InvocationConfiguration.Error,
+                    configureServices,
+                    protocolInput,
+                    protocolOutput,
+                    cancellationToken));
+            root.Subcommands.Add(appServer);
             return root;
         }
 
@@ -349,20 +438,12 @@ namespace OpenCoWork.App
                 var paths = WorkspaceDiscovery.Discover(
                     workingDirectory,
                     explicitWorkspace);
-                var loaded = ConfigLoader.Load(
-                    new ConfigLoadRequest(RuntimeCatalog.ConfigSections)
-                    {
-                        UserConfigPath = Path.Combine(
-                            userProfileDirectory,
-                            ".opencowork",
-                            "config.jsonc"),
-                        WorkspaceConfigPath = paths.ConfigPath,
-                        LocalConfigPath = paths.LocalConfigPath,
-                        ExplicitConfigPath = explicitConfigPath,
-                        Environment = ReadEnvironment(),
-                        SetOverrides = setOverrides,
-                        Strict = strictConfig,
-                    });
+                var loaded = LoadConfig(
+                    paths,
+                    explicitConfigPath,
+                    setOverrides,
+                    strictConfig,
+                    userProfileDirectory);
                 if (!loaded.Validation.IsValid || loaded.Snapshot is null)
                 {
                     foreach (var diagnostic in loaded.Validation.Diagnostics)
@@ -380,18 +461,12 @@ namespace OpenCoWork.App
                 using var host = OpenCoWorkCompositionRoot.Build(
                     [],
                     paths.WorkspaceRoot,
-                    services =>
-                    {
-                        services.AddSingleton(snapshot);
-                        services.AddSingleton(
-                            snapshot.GetRequiredSection<SessionConfig>());
-                        services.AddSingleton(
-                            snapshot.GetRequiredSection<ModelsConfig>());
-                        services.AddSingleton(
-                            snapshot.GetRequiredSection<ToolsConfig>());
-                        configureServices?.Invoke(services);
-                    },
-                    runtimeConfig);
+                    services => ConfigureRuntimeServices(
+                        services,
+                        snapshot,
+                        configureServices),
+                    runtimeConfig,
+                    "cli");
                 redactor = host.Services.GetRequiredService<SecretRedactor>();
                 await host.StartAsync(cancellationToken);
                 try
@@ -419,6 +494,166 @@ namespace OpenCoWork.App
                     redactor.RedactText(exception.Message));
                 return 1;
             }
+        }
+
+        private static async Task<int> RunAppServerAsync(
+            string? explicitWorkspace,
+            string? explicitConfigPath,
+            IReadOnlyList<string> setOverrides,
+            bool strictConfig,
+            string? requestedTransport,
+            int? port,
+            string workingDirectory,
+            string userProfileDirectory,
+            TextReader input,
+            TextWriter output,
+            TextWriter error,
+            Action<IServiceCollection>? configureServices,
+            Stream? protocolInput,
+            Stream? protocolOutput,
+            CancellationToken cancellationToken)
+        {
+            var redactor = new SecretRedactor([]);
+            try
+            {
+                var transport = requestedTransport ?? "stdio";
+                if (transport is not ("stdio" or "websocket"))
+                {
+                    await error.WriteLineAsync(
+                        "--transport must be 'stdio' or 'websocket'.");
+                    return 2;
+                }
+
+                if (transport == "websocket" &&
+                    (port is null or < 1 or > 65_535))
+                {
+                    await error.WriteLineAsync(
+                        "--port must be between 1 and 65535 for websocket.");
+                    return 2;
+                }
+
+                var token = transport == "websocket"
+                    ? Environment.GetEnvironmentVariable(
+                        OpenCoWorkProtocolServer.WebSocketTokenEnvironment)
+                    : null;
+                if (transport == "websocket" && string.IsNullOrWhiteSpace(token))
+                {
+                    await error.WriteLineAsync(
+                        $"{OpenCoWorkProtocolServer.WebSocketTokenEnvironment} is required for websocket.");
+                    return 2;
+                }
+
+                var paths = WorkspaceDiscovery.Discover(
+                    workingDirectory,
+                    explicitWorkspace);
+                var loaded = LoadConfig(
+                    paths,
+                    explicitConfigPath,
+                    setOverrides,
+                    strictConfig,
+                    userProfileDirectory);
+                if (!loaded.Validation.IsValid || loaded.Snapshot is null)
+                {
+                    foreach (var diagnostic in loaded.Validation.Diagnostics)
+                    {
+                        await error.WriteLineAsync(
+                            $"{diagnostic.Code}: {diagnostic.Message}");
+                    }
+
+                    return 3;
+                }
+
+                var snapshot = loaded.Snapshot;
+                redactor = SecretRedactor.FromSnapshot(snapshot);
+                using var host = OpenCoWorkCompositionRoot.Build(
+                    [],
+                    paths.WorkspaceRoot,
+                    services => ConfigureRuntimeServices(
+                        services,
+                        snapshot,
+                        configureServices),
+                    snapshot.GetRequiredSection<RuntimeConfig>(),
+                    "app-server");
+                redactor = host.Services.GetRequiredService<SecretRedactor>();
+                await host.StartAsync(cancellationToken);
+                try
+                {
+                    var sessions = host.Services.GetRequiredService<ISessionService>();
+                    if (transport == "websocket")
+                    {
+                        await OpenCoWorkProtocolServer.RunWebSocketAsync(
+                            sessions,
+                            paths.WorkspaceRoot,
+                            port!.Value,
+                            token!,
+                            cancellationToken);
+                    }
+                    else if (protocolInput is not null && protocolOutput is not null)
+                    {
+                        await OpenCoWorkProtocolServer.RunStdioAsync(
+                            sessions,
+                            paths.WorkspaceRoot,
+                            protocolInput,
+                            protocolOutput,
+                            cancellationToken);
+                    }
+                    else
+                    {
+                        await OpenCoWorkProtocolServer.RunJsonLinesAsync(
+                            sessions,
+                            paths.WorkspaceRoot,
+                            input,
+                            output,
+                            cancellationToken);
+                    }
+
+                    return 0;
+                }
+                finally
+                {
+                    await host.StopAsync(CancellationToken.None);
+                }
+            }
+            catch (Exception exception) when (
+                exception is not OperationCanceledException)
+            {
+                await error.WriteLineAsync(
+                    redactor.RedactText(exception.Message));
+                return 1;
+            }
+        }
+
+        private static ConfigLoadResult LoadConfig(
+            OpenCoWorkPaths paths,
+            string? explicitConfigPath,
+            IReadOnlyList<string> setOverrides,
+            bool strictConfig,
+            string userProfileDirectory) =>
+            ConfigLoader.Load(
+                new ConfigLoadRequest(RuntimeCatalog.ConfigSections)
+                {
+                    UserConfigPath = Path.Combine(
+                        userProfileDirectory,
+                        ".opencowork",
+                        "config.jsonc"),
+                    WorkspaceConfigPath = paths.ConfigPath,
+                    LocalConfigPath = paths.LocalConfigPath,
+                    ExplicitConfigPath = explicitConfigPath,
+                    Environment = ReadEnvironment(),
+                    SetOverrides = setOverrides,
+                    Strict = strictConfig,
+                });
+
+        private static void ConfigureRuntimeServices(
+            IServiceCollection services,
+            EffectiveConfigSnapshot snapshot,
+            Action<IServiceCollection>? configureServices)
+        {
+            services.AddSingleton(snapshot);
+            services.AddSingleton(snapshot.GetRequiredSection<SessionConfig>());
+            services.AddSingleton(snapshot.GetRequiredSection<ModelsConfig>());
+            services.AddSingleton(snapshot.GetRequiredSection<ToolsConfig>());
+            configureServices?.Invoke(services);
         }
 
         private static IReadOnlyDictionary<string, string> ReadEnvironment()
@@ -455,13 +690,22 @@ namespace OpenCoWork.App
             string[] args,
             string? workspaceRoot = null,
             Action<IServiceCollection>? configureServices = null,
-            RuntimeConfig? effectiveRuntimeConfig = null)
+            RuntimeConfig? effectiveRuntimeConfig = null,
+            string? primaryModuleId = null)
         {
             ArgumentNullException.ThrowIfNull(args);
 
             var registry = new ModuleRegistry(RuntimeCatalog.Modules);
-            var primaryHost = registry.SelectPrimaryModule();
+            var primaryHost = registry.SelectPrimaryModule(
+                primaryModuleId ?? "cli");
             var builder = Host.CreateApplicationBuilder(args);
+            if (primaryHost.Id != "cli")
+            {
+                builder.Logging.ClearProviders();
+                builder.Logging.AddConsole(options =>
+                    options.LogToStandardErrorThreshold = LogLevel.Trace);
+            }
+
             var runtimeConfig = effectiveRuntimeConfig ?? new RuntimeConfig();
             builder.Services.AddSingleton(
                 WorkspaceDiscovery.Discover(
@@ -512,6 +756,27 @@ namespace OpenCoWork.App
         Dependencies = ["session"],
         CanBePrimaryHost = true)]
     public sealed class CliModule : IOpenCoWorkModule
+    {
+        public void ConfigureServices(IServiceCollection services)
+        {
+        }
+
+        public ValueTask StartAsync(
+            IServiceProvider services,
+            CancellationToken cancellationToken) =>
+            ValueTask.CompletedTask;
+
+        public ValueTask StopAsync(
+            IServiceProvider services,
+            CancellationToken cancellationToken) =>
+            ValueTask.CompletedTask;
+    }
+
+    [OpenCoWorkModule(
+        "app-server",
+        Dependencies = ["session"],
+        CanBePrimaryHost = true)]
+    public sealed class AppServerModule : IOpenCoWorkModule
     {
         public void ConfigureServices(IServiceCollection services)
         {
