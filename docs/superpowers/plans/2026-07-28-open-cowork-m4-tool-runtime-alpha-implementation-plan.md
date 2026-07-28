@@ -391,6 +391,24 @@ AgentFactory/Provider/Compaction。不得新增项目、第二套 Session 状态
     独立真实 Tool Call 发布验证。
   - 全部证据满足后创建唯一 M4 交付归档，更新 Milestone CHECKLIST/INDEX；未满足的
     平台或 Provider 证据必须明确保持 In Progress 或进入待验证清单。
+- Current validation evidence（2026-07-28）:
+  - 产品实现基线为提交 `d236f29`；Apple Silicon macOS 26.5.2、
+    `osx-arm64`、.NET SDK `10.0.302`、Runtime `10.0.10`。
+  - 完整离线回归为 Core `218`、Integration `22`、Generators `14`、
+    Architecture `5`，合计 `259` passed / `0` failed；显式真实 Provider Runner
+    按既有设计跳过，Protocol 测试项目仍无可发现测试。
+  - Release build 为 `0` warning / `0` error；`osx-arm64` 与 `win-x64`
+    framework-dependent publish 均成功，后者仅是交叉发布证据。
+  - `osx-arm64` 发布物确认为 Mach-O arm64；发布目录经本地 Fake Provider 和真实
+    CLI 审批链依次完成 `file.write`、`shell.run` 与 `web.fetch` 私网拒绝。
+    File 原子创建内容为 `file-ok`；Shell 宿主为 `/bin/zsh`、退出码为 `0`、
+    stdout 为 `missing|shell-ok`；Web 返回稳定
+    `tool.networkTargetDenied`，三项结果均进入后续 Provider Tool Message。
+  - Secret Canary 未命中该发布 Smoke 的 Journal、SQLite、Session Event、Provider
+    请求体、日志、stdout/stderr 或测试目录；Shell 进程确认未继承冻结 Credential。
+  - `win-x64` 真机完整回归、PowerShell Host、输出超限/取消后的进程树残留和发布
+    目录 File/Shell/Web Smoke 尚未执行；因此 `M4-ACC-006`、`M4-ACC-009`、
+    Outcome 9 和 M4 均保持 In Progress，不创建交付归档、不更新里程碑完成状态。
 - Risks/open questions:
   - 单一平台通过、Fake Provider 通过或 cross-publish 成功都不能替代双平台真实工具
     证据。

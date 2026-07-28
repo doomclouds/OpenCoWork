@@ -77,7 +77,7 @@ public sealed partial class CoreToolTests
     [Fact]
     public async Task Shell_output_limit_kills_the_process()
     {
-        if (!OperatingSystem.IsMacOS())
+        if (!OperatingSystem.IsMacOS() && !OperatingSystem.IsWindows())
         {
             return;
         }
@@ -91,7 +91,9 @@ public sealed partial class CoreToolTests
                 .RunAsync(
                     JsonSerializer.SerializeToElement(new
                     {
-                        command = "while true; do printf '0123456789'; done",
+                        command = OperatingSystem.IsWindows()
+                            ? "while ($true) { [Console]::Out.Write('0123456789') }"
+                            : "while true; do printf '0123456789'; done",
                     }),
                     TestContext.Current.CancellationToken);
 
@@ -109,7 +111,7 @@ public sealed partial class CoreToolTests
     [Fact]
     public async Task Shell_cancellation_kills_the_process_tree()
     {
-        if (!OperatingSystem.IsMacOS())
+        if (!OperatingSystem.IsMacOS() && !OperatingSystem.IsWindows())
         {
             return;
         }
@@ -122,8 +124,13 @@ public sealed partial class CoreToolTests
             var execution = tool.RunAsync(
                     JsonSerializer.SerializeToElement(new
                     {
-                        command =
-                            "sleep 30 & child=$!; printf '%s' \"$child\" > child.pid; wait",
+                        command = OperatingSystem.IsWindows()
+                            ? """
+                              $child = Start-Process -FilePath $env:ComSpec -ArgumentList '/d','/c','ping -n 31 127.0.0.1 >nul' -PassThru
+                              [IO.File]::WriteAllText((Join-Path (Get-Location) 'child.pid'), $child.Id.ToString())
+                              $child.WaitForExit()
+                              """
+                            : "sleep 30 & child=$!; printf '%s' \"$child\" > child.pid; wait",
                     }),
                     cancellation.Token)
                 .AsTask();
@@ -173,7 +180,7 @@ public sealed partial class CoreToolTests
             var registration = Assert.Single(
                 snapshot.Registrations,
                 item => item.Definition.Name is
-                    { Namespace: "shell", Name: "run" });
+                { Namespace: "shell", Name: "run" });
             const string command = "printf 'approval-bound-command'";
             var arguments = JsonSerializer.SerializeToElement(new { command });
             var context = new ToolInvocationContext(
