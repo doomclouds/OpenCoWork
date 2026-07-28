@@ -57,21 +57,28 @@ public sealed class SessionQueueTests
         var reordered = await service.ReorderQueuedInputsAsync(
             new ReorderQueuedInputsRequest(
                 thread.ThreadId,
-                [third.Value!.QueueItemId, first.Value!.QueueItemId, second.Value!.QueueItemId],
+                [
+                    third.Value!.QueueItem.QueueItemId,
+                    first.Value!.QueueItem.QueueItemId,
+                    second.Value!.QueueItem.QueueItemId,
+                ],
                 Guid.CreateVersion7(),
                 water),
             cancellationToken);
         var invalid = await service.ReorderQueuedInputsAsync(
             new ReorderQueuedInputsRequest(
                 thread.ThreadId,
-                [third.Value.QueueItemId, second.Value.QueueItemId],
+                [
+                    third.Value.QueueItem.QueueItemId,
+                    second.Value.QueueItem.QueueItemId,
+                ],
                 Guid.CreateVersion7(),
                 reordered.Value!.CurrentSequence),
             cancellationToken);
         var removed = await service.RemoveQueuedInputAsync(
             new RemoveQueuedInputRequest(
                 thread.ThreadId,
-                first.Value.QueueItemId,
+                first.Value.QueueItem.QueueItemId,
                 Guid.CreateVersion7(),
                 reordered.Value.CurrentSequence),
             cancellationToken);
@@ -92,10 +99,16 @@ public sealed class SessionQueueTests
         Assert.Equal(first, replayAfterRestart);
         Assert.Equal(SessionCommandStatus.Rejected, invalid.Status);
         Assert.Equal(
-            [third.Value.QueueItemId, second.Value.QueueItemId],
+            [
+                third.Value.QueueItem.QueueItemId,
+                second.Value.QueueItem.QueueItemId,
+            ],
             removed.Value!.Queue.Select(item => item.QueueItemId));
         Assert.Equal(
-            [third.Value.QueueItemId, second.Value.QueueItemId],
+            [
+                third.Value.QueueItem.QueueItemId,
+                second.Value.QueueItem.QueueItemId,
+            ],
             afterRestart.Value!.Queue.Select(item => item.QueueItemId));
         Assert.Equal([0, 1], afterRestart.Value.Queue.Select(item => item.Position));
     }
@@ -161,6 +174,113 @@ public sealed class SessionQueueTests
         Assert.Empty((await service.GetThreadAsync(
             thread.ThreadId,
             cancellationToken)).Value!.Queue);
+    }
+
+    [Fact]
+    public async Task Start_only_rejects_a_busy_thread_without_queueing()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        using var files = new TempWorkspace();
+        var started = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var executor = new DelegateExecutor(
+            async (_, _, token) =>
+            {
+                started.TrySetResult();
+                await Task.Delay(Timeout.InfiniteTimeSpan, token);
+            });
+        var (_, _, service) = await CreateServiceAsync(
+            files,
+            cancellationToken,
+            executor);
+        var thread = await CreateThreadAsync(service, cancellationToken);
+
+        await service.EnqueueInputAsync(
+            new EnqueueInputRequest(
+                thread.ThreadId,
+                Guid.CreateVersion7(),
+                thread.CurrentSequence,
+                "first"),
+            cancellationToken);
+        await started.Task.WaitAsync(cancellationToken);
+        var busy = (await service.GetThreadAsync(
+            thread.ThreadId,
+            cancellationToken)).Value!;
+        var result = await service.EnqueueInputAsync(
+            new EnqueueInputRequest(
+                thread.ThreadId,
+                Guid.CreateVersion7(),
+                busy.CurrentSequence,
+                "must not queue",
+                TurnAdmission.StartOnly),
+            cancellationToken);
+        var after = (await service.GetThreadAsync(
+            thread.ThreadId,
+            cancellationToken)).Value!;
+
+        Assert.Equal(SessionCommandStatus.Rejected, result.Status);
+        Assert.Equal(SessionErrorCodes.ThreadBusy, result.Error?.Code);
+        Assert.Equal(busy.CurrentSequence, after.CurrentSequence);
+        Assert.Empty(after.Queue);
+
+        await service.CancelTurnAsync(
+            new CancelTurnRequest(
+                thread.ThreadId,
+                busy.ActiveTurnId!.Value,
+                Guid.CreateVersion7(),
+                busy.CurrentSequence),
+            cancellationToken);
+    }
+
+    [Fact]
+    public async Task Start_only_returns_and_replays_the_started_turn_id()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        using var files = new TempWorkspace();
+        var started = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var executor = new DelegateExecutor(
+            async (_, _, token) =>
+            {
+                started.TrySetResult();
+                await Task.Delay(Timeout.InfiniteTimeSpan, token);
+            });
+        var (runtime, journal, service) = await CreateServiceAsync(
+            files,
+            cancellationToken,
+            executor);
+        var thread = await CreateThreadAsync(service, cancellationToken);
+        var request = new EnqueueInputRequest(
+            thread.ThreadId,
+            Guid.CreateVersion7(),
+            thread.CurrentSequence,
+            "start now",
+            TurnAdmission.StartOnly);
+
+        var result = await service.EnqueueInputAsync(request, cancellationToken);
+        await started.Task.WaitAsync(cancellationToken);
+        var running = (await service.GetThreadAsync(
+            thread.ThreadId,
+            cancellationToken)).Value!;
+
+        Assert.NotEqual(SessionCommandStatus.Rejected, result.Status);
+        Assert.Equal(running.ActiveTurnId, result.Value!.TurnId);
+
+        await service.CancelTurnAsync(
+            new CancelTurnRequest(
+                thread.ThreadId,
+                result.Value.TurnId!.Value,
+                Guid.CreateVersion7(),
+                running.CurrentSequence),
+            cancellationToken);
+        var restarted = new SessionService(
+            runtime,
+            journal,
+            new SessionProjection(runtime),
+            new SessionConfig());
+        var replay = await restarted.EnqueueInputAsync(request, cancellationToken);
+
+        Assert.Equal(result, replay);
     }
 
     [Fact]
@@ -275,7 +395,7 @@ public sealed class SessionQueueTests
             new SteerTurnRequest(
                 thread.ThreadId,
                 running.ActiveTurnId!.Value,
-                queued.Value!.QueueItemId,
+                queued.Value!.QueueItem.QueueItemId,
                 Guid.CreateVersion7(),
                 running.CurrentSequence),
             cancellationToken);
@@ -376,7 +496,7 @@ public sealed class SessionQueueTests
                         sequence,
                         $"random-{operation}"),
                     cancellationToken);
-                expected.Add(queued.Value!);
+                expected.Add(queued.Value!.QueueItem);
                 sequence = queued.Sequence!.Value;
             }
             else if (choice < 70)
@@ -435,7 +555,7 @@ public sealed class SessionQueueTests
             rebuilt.Queue.Select(item => item.Position));
     }
 
-    private static async Task<SessionCommandResult<QueuedTurnInputSnapshot>>
+    private static async Task<SessionCommandResult<SubmittedTurnInputSnapshot>>
         EnqueueAtCurrentAsync(
             SessionService service,
             Guid threadId,

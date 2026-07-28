@@ -226,15 +226,33 @@ public sealed class OpenCoWorkGenerator : IIncrementalGenerator
 
                     if (wireAttribute is not null)
                     {
-                        if (TryReadString(wireAttribute, 0, out var wireMethod))
+                        if (TryReadNonEmptyString(wireAttribute, 0, out var wireMethod) &&
+                            TryReadNonEmptyString(wireAttribute, 1, out var direction) &&
+                            TryReadNonEmptyString(wireAttribute, 2, out var owner) &&
+                            TryReadNonEmptyString(wireAttribute, 3, out var since) &&
+                            TryReadType(wireAttribute, 4, out var request) &&
+                            TryReadType(wireAttribute, 5, out var response) &&
+                            TryReadNonEmptyString(wireAttribute, 6, out var authority) &&
+                            TryReadBoolean(wireAttribute, 7, out var mutates) &&
+                            TryReadNonEmptyString(wireAttribute, 8, out var idempotency))
                         {
-                            wireMethods.Add(new WireMethodModel(method, wireMethod));
+                            wireMethods.Add(new WireMethodModel(
+                                method,
+                                wireMethod,
+                                direction,
+                                owner,
+                                since,
+                                request,
+                                response,
+                                authority,
+                                mutates,
+                                idempotency));
                         }
                         else
                         {
                             invalidDeclarations.Add(new InvalidDeclarationModel(
                                 method,
-                                "Wire method name is missing or cannot be resolved"));
+                                "Wire method metadata is incomplete or cannot be resolved"));
                         }
                     }
                 }
@@ -602,6 +620,47 @@ public sealed class OpenCoWorkGenerator : IIncrementalGenerator
         return false;
     }
 
+    private static bool TryReadNonEmptyString(
+        AttributeData attribute,
+        int argumentIndex,
+        out string value)
+    {
+        return TryReadString(attribute, argumentIndex, out value) &&
+               !string.IsNullOrWhiteSpace(value);
+    }
+
+    private static bool TryReadType(
+        AttributeData attribute,
+        int argumentIndex,
+        out ITypeSymbol type)
+    {
+        if (attribute.ConstructorArguments.Length > argumentIndex &&
+            attribute.ConstructorArguments[argumentIndex].Value is ITypeSymbol value)
+        {
+            type = value;
+            return true;
+        }
+
+        type = null!;
+        return false;
+    }
+
+    private static bool TryReadBoolean(
+        AttributeData attribute,
+        int argumentIndex,
+        out bool value)
+    {
+        if (attribute.ConstructorArguments.Length > argumentIndex &&
+            attribute.ConstructorArguments[argumentIndex].Value is bool flag)
+        {
+            value = flag;
+            return true;
+        }
+
+        value = false;
+        return false;
+    }
+
     private static bool TryReadJsonNumber(
         AttributeData attribute,
         int argumentIndex,
@@ -756,21 +815,41 @@ public sealed class OpenCoWorkGenerator : IIncrementalGenerator
     {
         var builder = CreateCatalogBuilder();
         builder.AppendLine(
-            "    internal sealed record WireMethodDescriptor(string Method, string ContainingType, string MemberName);");
-        builder.AppendLine();
+            "    internal static global::System.Collections.Generic.IReadOnlyList<global::OpenCoWork.Abstractions.WireMethodDescriptor> WireMethods { get; } =");
         builder.AppendLine(
-            "    internal static global::System.Collections.Generic.IReadOnlyList<WireMethodDescriptor> WireMethods { get; } =");
-        builder.AppendLine("        new WireMethodDescriptor[]");
+            "        new global::OpenCoWork.Abstractions.WireMethodDescriptor[]");
         builder.AppendLine("        {");
 
         foreach (var wireMethod in wireMethods)
         {
-            builder.Append("            new WireMethodDescriptor(")
+            builder.AppendLine(
+                "            new global::OpenCoWork.Abstractions.WireMethodDescriptor(");
+            builder.Append("                ")
                 .Append(ToLiteral(wireMethod.Method))
-                .Append(", ")
-                .Append(ToLiteral(wireMethod.Symbol.ContainingType.ToDisplayString()))
-                .Append(", ")
-                .Append(ToLiteral(wireMethod.Symbol.Name))
+                .AppendLine(",");
+            builder.Append("                ")
+                .Append(ToLiteral(wireMethod.Direction))
+                .AppendLine(",");
+            builder.Append("                ")
+                .Append(ToLiteral(wireMethod.Owner))
+                .AppendLine(",");
+            builder.Append("                ")
+                .Append(ToLiteral(wireMethod.Since))
+                .AppendLine(",");
+            builder.Append("                typeof(")
+                .Append(GetTypeName(wireMethod.Request))
+                .AppendLine("),");
+            builder.Append("                typeof(")
+                .Append(GetTypeName(wireMethod.Response))
+                .AppendLine("),");
+            builder.Append("                ")
+                .Append(ToLiteral(wireMethod.Authority))
+                .AppendLine(",");
+            builder.Append("                ")
+                .Append(wireMethod.Mutates ? "true" : "false")
+                .AppendLine(",");
+            builder.Append("                ")
+                .Append(ToLiteral(wireMethod.Idempotency))
                 .AppendLine("),");
         }
 
@@ -1025,7 +1104,7 @@ public sealed class OpenCoWorkGenerator : IIncrementalGenerator
                type == SpecialType.System_Decimal;
     }
 
-    private static string GetTypeName(INamedTypeSymbol type)
+    private static string GetTypeName(ITypeSymbol type)
     {
         return type.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
     }
@@ -1125,15 +1204,49 @@ public sealed class OpenCoWorkGenerator : IIncrementalGenerator
 
     private sealed class WireMethodModel
     {
-        public WireMethodModel(IMethodSymbol symbol, string method)
+        public WireMethodModel(
+            IMethodSymbol symbol,
+            string method,
+            string direction,
+            string owner,
+            string since,
+            ITypeSymbol request,
+            ITypeSymbol response,
+            string authority,
+            bool mutates,
+            string idempotency)
         {
             Symbol = symbol;
             Method = method;
+            Direction = direction;
+            Owner = owner;
+            Since = since;
+            Request = request;
+            Response = response;
+            Authority = authority;
+            Mutates = mutates;
+            Idempotency = idempotency;
         }
 
         public IMethodSymbol Symbol { get; }
 
         public string Method { get; }
+
+        public string Direction { get; }
+
+        public string Owner { get; }
+
+        public string Since { get; }
+
+        public ITypeSymbol Request { get; }
+
+        public ITypeSymbol Response { get; }
+
+        public string Authority { get; }
+
+        public bool Mutates { get; }
+
+        public string Idempotency { get; }
     }
 
     private sealed class InvalidDeclarationModel

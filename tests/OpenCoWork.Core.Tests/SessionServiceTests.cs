@@ -12,6 +12,60 @@ namespace OpenCoWork.Core.Tests;
 public sealed class SessionServiceTests
 {
     [Fact]
+    public async Task Provider_model_validation_rejects_create_and_change_before_commit()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        using var files = new TempWorkspace();
+        var (_, journal, _, service) = await CreateServiceAsync(
+            files,
+            cancellationToken,
+            providerModelValidator: (providerId, modelId) =>
+                providerId == "allowed" && modelId == "model"
+                    ? null
+                    : new SessionError(
+                        AgentErrorCodes.ContextInputInvalid,
+                        "Provider/model unavailable.",
+                        IsRetryable: false));
+
+        var rejectedCreate = await service.CreateThreadAsync(
+            new CreateThreadRequest(
+                Guid.CreateVersion7(),
+                ExpectedSequence: 0,
+                ProviderId: "missing",
+                ModelId: "model"),
+            cancellationToken);
+        var created = await service.CreateThreadAsync(
+            new CreateThreadRequest(
+                Guid.CreateVersion7(),
+                ExpectedSequence: 0,
+                ProviderId: "allowed",
+                ModelId: "model"),
+            cancellationToken);
+        var rejectedChange = await service.SetThreadModelAsync(
+            new SetThreadModelRequest(
+                created.Value!.ThreadId,
+                Guid.CreateVersion7(),
+                created.Value.CurrentSequence,
+                ProviderId: "missing",
+                ModelId: "model"),
+            cancellationToken);
+
+        Assert.Equal(SessionCommandStatus.Rejected, rejectedCreate.Status);
+        Assert.Equal(AgentErrorCodes.ContextInputInvalid, rejectedCreate.Error?.Code);
+        Assert.Equal(SessionCommandStatus.Rejected, rejectedChange.Status);
+        Assert.Equal(AgentErrorCodes.ContextInputInvalid, rejectedChange.Error?.Code);
+        Assert.Equal(
+            1,
+            (await service.GetThreadAsync(
+                created.Value.ThreadId,
+                cancellationToken)).Value!.CurrentSequence);
+        Assert.Single((await journal.ReplayAsync(
+            ThreadJournalLocation.Active,
+            created.Value.ThreadId,
+            cancellationToken)).Entries);
+    }
+
+    [Fact]
     public async Task Model_and_mode_changes_persist_while_queued_inputs_keep_their_mode()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
@@ -465,7 +519,8 @@ public sealed class SessionServiceTests
         SessionService Service)> CreateServiceAsync(
         TempWorkspace files,
         CancellationToken cancellationToken,
-        int eventBufferCapacity = 256)
+        int eventBufferCapacity = 256,
+        Func<string, string, SessionError?>? providerModelValidator = null)
     {
         var runtime = new StateRuntime(files.Paths, TimeSpan.FromSeconds(2));
         await runtime.InitializeAsync(cancellationToken);
@@ -478,7 +533,8 @@ public sealed class SessionServiceTests
             new SessionConfig
             {
                 EventBufferCapacity = eventBufferCapacity,
-            });
+            },
+            providerModelValidator: providerModelValidator);
         return (runtime, journal, projection, service);
     }
 

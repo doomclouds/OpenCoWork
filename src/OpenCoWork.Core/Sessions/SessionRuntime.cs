@@ -1,6 +1,7 @@
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using OpenCoWork.Abstractions;
+using OpenCoWork.Core.Agents;
 using OpenCoWork.Core.Configuration;
 using OpenCoWork.Core.State;
 using OpenCoWork.Core.Workspaces;
@@ -27,6 +28,26 @@ public static class OpenCoWorkSessionExtensions
         services.TryAddSingleton(serviceProvider =>
         {
             var executor = serviceProvider.GetService<ISessionExecutor>();
+            Func<string, string, SessionError?>? validateProviderModel = null;
+            if (serviceProvider.GetService<ProviderRegistry>() is { } providers)
+            {
+                validateProviderModel = (providerId, modelId) =>
+                {
+                    try
+                    {
+                        providers.Resolve(providerId, modelId);
+                        return null;
+                    }
+                    catch (AgentPreparationException exception)
+                    {
+                        return new SessionError(
+                            exception.Code,
+                            exception.Message,
+                            IsRetryable: false);
+                    }
+                };
+            }
+
             return new SessionService(
                 serviceProvider.GetRequiredService<StateRuntime>(),
                 serviceProvider.GetRequiredService<ThreadJournal>(),
@@ -34,7 +55,8 @@ public static class OpenCoWorkSessionExtensions
                 serviceProvider.GetRequiredService<SessionConfig>(),
                 serviceProvider.GetRequiredService<TimeProvider>(),
                 executor,
-                executor?.GetType().FullName);
+                executor?.GetType().FullName,
+                providerModelValidator: validateProviderModel);
         });
         services.TryAddSingleton<ISessionService>(serviceProvider =>
             serviceProvider.GetRequiredService<SessionService>());

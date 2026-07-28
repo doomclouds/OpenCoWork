@@ -239,12 +239,30 @@ public sealed class RuntimeCatalogGeneratorTests
                 {
                     public static class WireMethods
                     {
-                        [OpenCoWork.Abstractions.OpenCoWorkWireMethod("thread/start")]
+                        [OpenCoWork.Abstractions.OpenCoWorkWireMethod(
+                            "thread/start",
+                            "clientToServer",
+                            "session",
+                            "1.0",
+                            typeof(object),
+                            typeof(object),
+                            "thread",
+                            true,
+                            "required")]
                         public static void First()
                         {
                         }
 
-                        [OpenCoWork.Abstractions.OpenCoWorkWireMethod("thread/start")]
+                        [OpenCoWork.Abstractions.OpenCoWorkWireMethod(
+                            "thread/start",
+                            "clientToServer",
+                            "session",
+                            "1.0",
+                            typeof(object),
+                            typeof(object),
+                            "thread",
+                            true,
+                            "required")]
                         public static void Second()
                         {
                         }
@@ -302,6 +320,30 @@ public sealed class RuntimeCatalogGeneratorTests
                     [OpenCoWork.Abstractions.OpenCoWorkModule(null)]
                     public sealed class InvalidModule
                     {
+                    }
+                }
+                """,
+                "OCWGEN008"
+            },
+            {
+                """
+                namespace Sample
+                {
+                    public static class WireMethods
+                    {
+                        [OpenCoWork.Abstractions.OpenCoWorkWireMethod(
+                            "thread/start",
+                            "clientToServer",
+                            null,
+                            "1.0",
+                            typeof(object),
+                            typeof(object),
+                            "thread",
+                            true,
+                            "required")]
+                        public static void Start()
+                        {
+                        }
                     }
                 }
                 """,
@@ -486,8 +528,37 @@ public sealed class RuntimeCatalogGeneratorTests
             [AttributeUsage(AttributeTargets.Method)]
             public sealed class OpenCoWorkWireMethodAttribute : Attribute
             {
-                public OpenCoWorkWireMethodAttribute(string method) => Method = method;
+                public OpenCoWorkWireMethodAttribute(
+                    string method,
+                    string direction,
+                    string owner,
+                    string since,
+                    Type request,
+                    Type response,
+                    string authority,
+                    bool mutates,
+                    string idempotency)
+                {
+                    Method = method;
+                    Direction = direction;
+                    Owner = owner;
+                    Since = since;
+                    Request = request;
+                    Response = response;
+                    Authority = authority;
+                    Mutates = mutates;
+                    Idempotency = idempotency;
+                }
+
                 public string Method { get; }
+                public string Direction { get; }
+                public string Owner { get; }
+                public string Since { get; }
+                public Type Request { get; }
+                public Type Response { get; }
+                public string Authority { get; }
+                public bool Mutates { get; }
+                public string Idempotency { get; }
             }
 
             public sealed class ModuleDescriptor
@@ -512,6 +583,17 @@ public sealed class RuntimeCatalogGeneratorTests
                 {
                 }
             }
+
+            public sealed record WireMethodDescriptor(
+                string Method,
+                string Direction,
+                string Owner,
+                string Since,
+                Type Request,
+                Type Response,
+                string Authority,
+                bool Mutates,
+                string Idempotency);
         }
         """;
 
@@ -556,12 +638,30 @@ public sealed class RuntimeCatalogGeneratorTests
 
             public static class WireMethods
             {
-                [OpenCoWorkWireMethod("thread/stop")]
+                [OpenCoWorkWireMethod(
+                    "thread/stop",
+                    "clientToServer",
+                    "session",
+                    "1.0",
+                    typeof(object),
+                    typeof(object),
+                    "thread",
+                    true,
+                    "required")]
                 public static void Stop()
                 {
                 }
 
-                [OpenCoWorkWireMethod("thread/start")]
+                [OpenCoWorkWireMethod(
+                    "thread/start",
+                    "clientToServer",
+                    "session",
+                    "1.0",
+                    typeof(object),
+                    typeof(object),
+                    "thread",
+                    true,
+                    "required")]
                 public static void Start()
                 {
                 }
@@ -629,13 +729,29 @@ public sealed class RuntimeCatalogGeneratorTests
 
         internal static partial class RuntimeCatalog
         {
-            internal sealed record WireMethodDescriptor(string Method, string ContainingType, string MemberName);
-
-            internal static global::System.Collections.Generic.IReadOnlyList<WireMethodDescriptor> WireMethods { get; } =
-                new WireMethodDescriptor[]
+            internal static global::System.Collections.Generic.IReadOnlyList<global::OpenCoWork.Abstractions.WireMethodDescriptor> WireMethods { get; } =
+                new global::OpenCoWork.Abstractions.WireMethodDescriptor[]
                 {
-                    new WireMethodDescriptor("thread/start", "Sample.WireMethods", "Start"),
-                    new WireMethodDescriptor("thread/stop", "Sample.WireMethods", "Stop"),
+                    new global::OpenCoWork.Abstractions.WireMethodDescriptor(
+                        "thread/start",
+                        "clientToServer",
+                        "session",
+                        "1.0",
+                        typeof(object),
+                        typeof(object),
+                        "thread",
+                        true,
+                        "required"),
+                    new global::OpenCoWork.Abstractions.WireMethodDescriptor(
+                        "thread/stop",
+                        "clientToServer",
+                        "session",
+                        "1.0",
+                        typeof(object),
+                        typeof(object),
+                        "thread",
+                        true,
+                        "required"),
                 };
         }
         """ + "\n";

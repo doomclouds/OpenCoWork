@@ -8,7 +8,7 @@ internal sealed partial class SessionService
     private const int MaximumQueueLength = 128;
     private readonly ConcurrentDictionary<Guid, QueueIdempotency> _queueIdempotency = [];
 
-    public async Task<SessionCommandResult<QueuedTurnInputSnapshot>> EnqueueInputAsync(
+    public async Task<SessionCommandResult<SubmittedTurnInputSnapshot>> EnqueueInputAsync(
         EnqueueInputRequest request,
         CancellationToken cancellationToken = default)
     {
@@ -17,6 +17,11 @@ internal sealed partial class SessionService
         RequireId(request.ThreadId, nameof(request.ThreadId), "Thread ID");
         RequireId(request.IdempotencyKey, nameof(request.IdempotencyKey), "Idempotency key");
         ArgumentOutOfRangeException.ThrowIfNegative(request.ExpectedSequence);
+        if (!Enum.IsDefined(request.Admission))
+        {
+            throw new ArgumentOutOfRangeException(nameof(request.Admission));
+        }
+
         var operation = Wire(SessionEventType.TurnQueued);
         var requestSha256 = RequestHash(
             operation,
@@ -26,10 +31,11 @@ internal sealed partial class SessionService
                 IdempotencyKey = Wire(request.IdempotencyKey),
                 request.ExpectedSequence,
                 request.Text,
+                request.Admission,
             });
         var keyGate = GetIdempotencyGate(request.IdempotencyKey);
         await keyGate.WaitAsync(cancellationToken);
-        SessionCommandResult<QueuedTurnInputSnapshot> result;
+        SessionCommandResult<SubmittedTurnInputSnapshot> result;
         try
         {
             var replay = await TryReplayQueueCommandAsync(
@@ -44,7 +50,7 @@ internal sealed partial class SessionService
 
             if (!CanAcceptNewWork)
             {
-                return NewWorkUnavailable<QueuedTurnInputSnapshot>();
+                return NewWorkUnavailable<SubmittedTurnInputSnapshot>();
             }
 
             var threadGate = GetThreadGate(request.ThreadId);
@@ -54,14 +60,14 @@ internal sealed partial class SessionService
                 var thread = await GetSnapshotAsync(request.ThreadId, cancellationToken);
                 if (thread is null)
                 {
-                    return Rejected<QueuedTurnInputSnapshot>(
+                    return Rejected<SubmittedTurnInputSnapshot>(
                         SessionErrorCodes.NotFound,
                         "Thread was not found.");
                 }
 
                 if (thread.CurrentSequence != request.ExpectedSequence)
                 {
-                    return Rejected<QueuedTurnInputSnapshot>(
+                    return Rejected<SubmittedTurnInputSnapshot>(
                         SessionErrorCodes.SequenceConflict,
                         "Thread sequence does not match.",
                         thread.CurrentSequence);
@@ -70,15 +76,42 @@ internal sealed partial class SessionService
                 if (thread.Status == ThreadStatus.Archived ||
                     thread.Availability != ThreadAvailability.Available)
                 {
-                    return Rejected<QueuedTurnInputSnapshot>(
+                    return Rejected<SubmittedTurnInputSnapshot>(
                         SessionErrorCodes.InvalidState,
                         "Thread cannot accept queued input in its current state.",
                         thread.CurrentSequence);
                 }
 
+                if (request.Admission == TurnAdmission.StartOnly &&
+                    thread.Status != ThreadStatus.Active)
+                {
+                    return Rejected<SubmittedTurnInputSnapshot>(
+                        SessionErrorCodes.InvalidState,
+                        "Thread cannot start a turn in its current state.",
+                        thread.CurrentSequence);
+                }
+
+                if (request.Admission == TurnAdmission.StartOnly &&
+                    (thread.ActiveTurnId is not null || thread.Queue.Count != 0))
+                {
+                    return Rejected<SubmittedTurnInputSnapshot>(
+                        SessionErrorCodes.ThreadBusy,
+                        "Thread already has active or queued work.",
+                        thread.CurrentSequence);
+                }
+
+                if (request.Admission == TurnAdmission.StartOnly &&
+                    (_executor is null || string.IsNullOrWhiteSpace(_executorKind)))
+                {
+                    return Rejected<SubmittedTurnInputSnapshot>(
+                        SessionErrorCodes.RuntimeExecutorUnavailable,
+                        "Session executor is unavailable.",
+                        thread.CurrentSequence);
+                }
+
                 if (thread.Queue.Count >= MaximumQueueLength)
                 {
-                    return Rejected<QueuedTurnInputSnapshot>(
+                    return Rejected<SubmittedTurnInputSnapshot>(
                         SessionErrorCodes.QueueFull,
                         "Thread queue already contains 128 inputs.",
                         thread.CurrentSequence);
@@ -120,11 +153,11 @@ internal sealed partial class SessionService
                     SessionEventType.TurnQueued,
                     cancellationToken,
                     new SessionEventPayload(QueueItem: queueItem));
-                result = ConvertResult(committed, queueItem);
+                result = ConvertResult(
+                    committed,
+                    new SubmittedTurnInputSnapshot(queueItem, TurnId: null));
                 if (committed.Status != SessionCommandStatus.Rejected)
                 {
-                    _queueIdempotency[request.IdempotencyKey] =
-                        new QueueIdempotency(operation, requestSha256, result);
                     if (shouldAutoTitle)
                     {
                         var title = AutoTitle(request.Text);
@@ -155,6 +188,34 @@ internal sealed partial class SessionService
                                 CancellationToken.None);
                         }
                     }
+
+                    if (request.Admission == TurnAdmission.StartOnly)
+                    {
+                        var started = await StartTurnAsync(
+                            request.ThreadId,
+                            Guid.CreateVersion7(),
+                            Guid.CreateVersion7(),
+                            _snapshots[request.ThreadId].CurrentSequence,
+                            CancellationToken.None,
+                            queuedInput: queueItem,
+                            threadGateHeld: true);
+                        result = started.Status == SessionCommandStatus.Rejected
+                            ? new SessionCommandResult<SubmittedTurnInputSnapshot>(
+                                SessionCommandStatus.Rejected,
+                                null,
+                                null,
+                                started.CurrentSequence,
+                                started.Error)
+                            : result with
+                            {
+                                Value = new SubmittedTurnInputSnapshot(
+                                    queueItem,
+                                    started.Value!.TurnId),
+                            };
+                    }
+
+                    _queueIdempotency[request.IdempotencyKey] =
+                        new QueueIdempotency(operation, requestSha256, result);
                 }
             }
             finally
@@ -167,7 +228,8 @@ internal sealed partial class SessionService
             keyGate.Release();
         }
 
-        if (result.Status != SessionCommandStatus.Rejected)
+        if (result.Status != SessionCommandStatus.Rejected &&
+            request.Admission == TurnAdmission.QueueIfBusy)
         {
             await TryScheduleNextAsync(request.ThreadId, CancellationToken.None);
         }
@@ -603,7 +665,7 @@ internal sealed partial class SessionService
         }
     }
 
-    private async Task<SessionCommandResult<QueuedTurnInputSnapshot>?>
+    private async Task<SessionCommandResult<SubmittedTurnInputSnapshot>?>
         TryReplayQueueCommandAsync(
             Guid idempotencyKey,
             string operation,
@@ -615,7 +677,7 @@ internal sealed partial class SessionService
             return memory.Operation == operation &&
                    memory.RequestSha256 == requestSha256
                 ? memory.Result
-                : Rejected<QueuedTurnInputSnapshot>(
+                : Rejected<SubmittedTurnInputSnapshot>(
                     SessionErrorCodes.IdempotencyConflict,
                     "Idempotency key is bound to another request.");
         }
@@ -630,7 +692,7 @@ internal sealed partial class SessionService
 
         if (match.Entry.EntryType != SessionEventType.TurnQueued)
         {
-            return Rejected<QueuedTurnInputSnapshot>(
+            return Rejected<SubmittedTurnInputSnapshot>(
                 SessionErrorCodes.IdempotencyConflict,
                 "Idempotency key is bound to another request.");
         }
@@ -639,7 +701,7 @@ internal sealed partial class SessionService
         if (!string.Equals(operation, Wire(match.Entry.EntryType), StringComparison.Ordinal) ||
             !string.Equals(requestSha256, fact.RequestSha256, StringComparison.Ordinal))
         {
-            return Rejected<QueuedTurnInputSnapshot>(
+            return Rejected<SubmittedTurnInputSnapshot>(
                 SessionErrorCodes.IdempotencyConflict,
                 "Idempotency key is bound to another request.");
         }
@@ -651,9 +713,16 @@ internal sealed partial class SessionService
             fact.Position,
             match.Entry.Timestamp,
             fact.EffectiveAgentMode);
-        var result = new SessionCommandResult<QueuedTurnInputSnapshot>(
+        var turnId = match.Replay.Entries
+            .Where(entry =>
+                entry.Sequence > match.Entry.Sequence &&
+                entry.EntryType == SessionEventType.TurnStarted)
+            .Select(ReadFact<TurnStartedFact>)
+            .FirstOrDefault(started => started.QueueItemId == fact.QueueItemId)
+            ?.TurnId;
+        var result = new SessionCommandResult<SubmittedTurnInputSnapshot>(
             SessionCommandStatus.Committed,
-            queueItem,
+            new SubmittedTurnInputSnapshot(queueItem, turnId),
             match.Entry.Sequence,
             null,
             null);
@@ -731,5 +800,5 @@ internal sealed partial class SessionService
     private sealed record QueueIdempotency(
         string Operation,
         string RequestSha256,
-        SessionCommandResult<QueuedTurnInputSnapshot> Result);
+        SessionCommandResult<SubmittedTurnInputSnapshot> Result);
 }

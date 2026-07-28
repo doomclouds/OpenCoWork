@@ -78,6 +78,12 @@ public enum SessionSubscriptionDisposition
     ResetRequired,
 }
 
+public enum TurnAdmission
+{
+    QueueIfBusy,
+    StartOnly,
+}
+
 public enum SessionInteractionType
 {
     Approval,
@@ -281,6 +287,10 @@ public sealed record QueuedTurnInputSnapshot(
     DateTimeOffset CreatedAt,
     AgentMode EffectiveAgentMode = AgentMode.Agent);
 
+public sealed record SubmittedTurnInputSnapshot(
+    QueuedTurnInputSnapshot QueueItem,
+    Guid? TurnId);
+
 public sealed record PendingInteractionSnapshot(
     Guid InteractionId,
     Guid ThreadId,
@@ -476,7 +486,8 @@ public sealed record EnqueueInputRequest(
     Guid ThreadId,
     Guid IdempotencyKey,
     long ExpectedSequence,
-    string Text);
+    string Text,
+    TurnAdmission Admission = TurnAdmission.QueueIfBusy);
 
 public sealed record RemoveQueuedInputRequest(
     Guid ThreadId,
@@ -611,7 +622,7 @@ public interface ISessionService
         RollbackThreadRequest request,
         CancellationToken cancellationToken = default);
 
-    Task<SessionCommandResult<QueuedTurnInputSnapshot>> EnqueueInputAsync(
+    Task<SessionCommandResult<SubmittedTurnInputSnapshot>> EnqueueInputAsync(
         EnqueueInputRequest request,
         CancellationToken cancellationToken = default);
 

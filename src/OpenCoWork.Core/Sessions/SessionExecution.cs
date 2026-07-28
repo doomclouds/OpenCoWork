@@ -398,7 +398,8 @@ internal sealed partial class SessionService
         Guid idempotencyKey,
         long expectedSequence,
         CancellationToken cancellationToken = default,
-        QueuedTurnInputSnapshot? queuedInput = null)
+        QueuedTurnInputSnapshot? queuedInput = null,
+        bool threadGateHeld = false)
     {
         RequireId(threadId, nameof(threadId), "Thread ID");
         RequireId(turnId, nameof(turnId), "Turn ID");
@@ -412,7 +413,11 @@ internal sealed partial class SessionService
         }
 
         var threadGate = GetThreadGate(threadId);
-        await threadGate.WaitAsync(cancellationToken);
+        if (!threadGateHeld)
+        {
+            await threadGate.WaitAsync(cancellationToken);
+        }
+
         SessionCommandResult<TurnSnapshot> result;
         try
         {
@@ -534,7 +539,10 @@ internal sealed partial class SessionService
         }
         finally
         {
-            threadGate.Release();
+            if (!threadGateHeld)
+            {
+                threadGate.Release();
+            }
         }
 
         BeginExecution(result.Value!, checkpoint: null, resumed: false);

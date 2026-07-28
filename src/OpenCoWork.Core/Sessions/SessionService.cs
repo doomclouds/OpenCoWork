@@ -25,6 +25,7 @@ internal sealed partial class SessionService : ISessionService
     private readonly SessionProjection _projection;
     private readonly SessionEventChannel _eventChannel;
     private readonly TimeProvider _timeProvider;
+    private readonly Func<string, string, SessionError?>? _providerModelValidator;
     private readonly ConcurrentDictionary<Guid, ThreadSnapshot> _snapshots = [];
     private readonly ConcurrentDictionary<Guid, SemaphoreSlim> _threadGates = [];
     private readonly ConcurrentDictionary<Guid, SemaphoreSlim> _idempotencyGates = [];
@@ -44,7 +45,8 @@ internal sealed partial class SessionService : ISessionService
         ISessionExecutor? executor = null,
         string? executorKind = null,
         Action<SessionExecutionFaultPoint>? executionFaultInjector = null,
-        Action<SessionRecoveryFaultPoint>? recoveryFaultInjector = null)
+        Action<SessionRecoveryFaultPoint>? recoveryFaultInjector = null,
+        Func<string, string, SessionError?>? providerModelValidator = null)
     {
         ArgumentNullException.ThrowIfNull(stateRuntime);
         ArgumentNullException.ThrowIfNull(journal);
@@ -60,6 +62,7 @@ internal sealed partial class SessionService : ISessionService
         _executorKind = executorKind;
         _executionFaultInjector = executionFaultInjector;
         _recoveryFaultInjector = recoveryFaultInjector;
+        _providerModelValidator = providerModelValidator;
     }
 
     public async Task<SessionCommandResult<ThreadSnapshot>> CreateThreadAsync(
@@ -115,6 +118,19 @@ internal sealed partial class SessionService : ISessionService
                 return Rejected<ThreadSnapshot>(
                     SessionErrorCodes.UnsupportedHistoryMode,
                     "M2 only supports server-managed history.");
+            }
+
+            var providerModelError = ValidateProviderModel(
+                request.ProviderId,
+                request.ModelId);
+            if (providerModelError is not null)
+            {
+                return new SessionCommandResult<ThreadSnapshot>(
+                    SessionCommandStatus.Rejected,
+                    null,
+                    null,
+                    null,
+                    providerModelError);
             }
 
             if (!CanAcceptNewWork)
@@ -363,12 +379,13 @@ internal sealed partial class SessionService : ISessionService
             operation,
             requestSha256,
             SessionEventType.ThreadModelChanged,
-            (snapshot, _) => snapshot.Status == ThreadStatus.Archived
-                ? new SessionError(
-                    SessionErrorCodes.InvalidState,
-                    "An archived thread cannot change model.",
-                    IsRetryable: false)
-                : null,
+            (snapshot, _) =>
+                snapshot.Status == ThreadStatus.Archived
+                    ? new SessionError(
+                        SessionErrorCodes.InvalidState,
+                        "An archived thread cannot change model.",
+                        IsRetryable: false)
+                    : ValidateProviderModel(request.ProviderId, request.ModelId),
             (snapshot, timestamp) => CopySnapshot(
                 snapshot,
                 currentSequence: snapshot.CurrentSequence + 1,
@@ -381,6 +398,13 @@ internal sealed partial class SessionService : ISessionService
                 hash),
             cancellationToken);
     }
+
+    private SessionError? ValidateProviderModel(string? providerId, string? modelId) =>
+        _providerModelValidator is null ||
+        string.IsNullOrWhiteSpace(providerId) ||
+        string.IsNullOrWhiteSpace(modelId)
+            ? null
+            : _providerModelValidator(providerId, modelId);
 
     public Task<SessionCommandResult<ThreadSnapshot>> SetAgentModeAsync(
         SetAgentModeRequest request,
