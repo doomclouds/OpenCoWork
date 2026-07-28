@@ -7,6 +7,7 @@ using Json.Schema;
 using Json.Schema.Keywords;
 using OpenCoWork.Abstractions;
 using OpenCoWork.Core.Configuration;
+using OpenCoWork.Core.Workspaces;
 
 namespace OpenCoWork.Core.Tools;
 
@@ -40,7 +41,12 @@ internal sealed partial class ToolRuntime
     private readonly IReadOnlyDictionary<ToolDefinitionId, JsonSchema> _schemas;
 
     public ToolRuntime()
-        : this(CreateCoreTools())
+        : this(CreateCoreTools(fileTools: null))
+    {
+    }
+
+    internal ToolRuntime(OpenCoWorkPaths paths)
+        : this(CreateCoreTools(new CoreFileTools(paths)))
     {
     }
 
@@ -624,7 +630,7 @@ internal sealed partial class ToolRuntime
         }
     }
 
-    private static CoreTools CreateCoreTools()
+    private static CoreTools CreateCoreTools(CoreFileTools? fileTools)
     {
         var registrations = new List<ToolRegistration>();
         var bindings = new List<ToolRuntimeBinding>();
@@ -644,7 +650,10 @@ internal sealed partial class ToolRuntime
             """,
             ToolEffect.WorkspaceRead,
             ToolReplaySafety.Safe,
-            TimeSpan.FromSeconds(30));
+            TimeSpan.FromSeconds(30),
+            fileTools is null
+                ? PlaceholderExecutor
+                : fileTools.ListAsync);
         Add(
             "file.read",
             new ToolName("file", "read"),
@@ -665,7 +674,10 @@ internal sealed partial class ToolRuntime
             """,
             ToolEffect.WorkspaceRead,
             ToolReplaySafety.Safe,
-            TimeSpan.FromSeconds(30));
+            TimeSpan.FromSeconds(30),
+            fileTools is null
+                ? PlaceholderExecutor
+                : fileTools.ReadAsync);
         Add(
             "file.write",
             new ToolName("file", "write"),
@@ -686,7 +698,10 @@ internal sealed partial class ToolRuntime
             """,
             ToolEffect.WorkspaceRead | ToolEffect.WorkspaceWrite,
             ToolReplaySafety.Unsafe,
-            TimeSpan.FromSeconds(30));
+            TimeSpan.FromSeconds(30),
+            fileTools is null
+                ? PlaceholderExecutor
+                : fileTools.WriteAsync);
         Add(
             "shell.run",
             new ToolName("shell", "run"),
@@ -709,7 +724,8 @@ internal sealed partial class ToolRuntime
             ToolEffect.NetworkRead |
             ToolEffect.ExternalMutation,
             ToolReplaySafety.Unsafe,
-            TimeSpan.FromMinutes(10));
+            TimeSpan.FromMinutes(10),
+            PlaceholderExecutor);
         Add(
             "web.fetch",
             new ToolName("web", "fetch"),
@@ -728,7 +744,8 @@ internal sealed partial class ToolRuntime
             """,
             ToolEffect.NetworkRead,
             ToolReplaySafety.Unsafe,
-            TimeSpan.FromMinutes(2));
+            TimeSpan.FromMinutes(2),
+            PlaceholderExecutor);
         return new CoreTools(registrations, bindings);
 
         void Add(
@@ -738,7 +755,8 @@ internal sealed partial class ToolRuntime
             string schemaJson,
             ToolEffect effects,
             ToolReplaySafety replaySafety,
-            TimeSpan timeout)
+            TimeSpan timeout,
+            ToolExecutor executor)
         {
             using var document = JsonDocument.Parse(schemaJson);
             var definition = new ToolDefinition(
@@ -762,7 +780,7 @@ internal sealed partial class ToolRuntime
                 ToolBindingAvailability.Available,
                 Lease: null,
                 timeout,
-                PlaceholderExecutor));
+                executor));
         }
     }
 

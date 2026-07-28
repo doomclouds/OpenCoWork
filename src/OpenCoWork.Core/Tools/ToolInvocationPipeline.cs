@@ -528,7 +528,9 @@ internal sealed class ToolInvocationPipeline : IToolInvocationPipeline
             return await FinishErrorAsync(
                 context,
                 sink,
-                ToolInvocationStatus.Failed,
+                code == ToolErrorCodes.OutcomeUnknown
+                    ? ToolInvocationStatus.OutcomeUnknown
+                    : ToolInvocationStatus.Failed,
                 code,
                 "Tool execution failed.",
                 attemptNumber);

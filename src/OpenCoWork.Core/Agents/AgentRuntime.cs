@@ -31,7 +31,9 @@ public static class OpenCoWorkAgentExtensions
         ArgumentNullException.ThrowIfNull(services);
         services.TryAddSingleton<ModelsConfig>();
         services.TryAddSingleton<ToolsConfig>();
-        services.TryAddSingleton(static _ => new ToolRuntime());
+        services.TryAddSingleton(serviceProvider =>
+            new ToolRuntime(
+                serviceProvider.GetRequiredService<OpenCoWorkPaths>()));
         services.TryAddSingleton(serviceProvider =>
             FrozenProviderCredentials.Capture(
                 serviceProvider.GetRequiredService<ModelsConfig>()));

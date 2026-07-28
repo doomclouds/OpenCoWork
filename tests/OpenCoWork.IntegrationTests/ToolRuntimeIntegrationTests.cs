@@ -24,12 +24,16 @@ public sealed class ToolRuntimeIntegrationTests
         Directory.CreateDirectory(root);
         try
         {
+            await File.WriteAllTextAsync(
+                Path.Combine(root, "visible.txt"),
+                "visible",
+                cancellationToken);
             var paths = new OpenCoWorkPaths(root);
             var models = Models();
             var credentials = FrozenProviderCredentials.Capture(
                 models,
                 name => name == "TOOL_RUNTIME_KEY" ? "test-secret" : null);
-            var tools = new ToolRuntime();
+            var tools = new ToolRuntime(paths);
             var redactor = new SecretRedactor(["test-secret"]);
             var client = new ToolLoopClient();
             var executor = new AgentRuntimeExecutor(
@@ -87,6 +91,14 @@ public sealed class ToolRuntimeIntegrationTests
                 [ChatCompletionMessageRole.Assistant, ChatCompletionMessageRole.Tool],
                 client.Requests[1].Messages.TakeLast(2)
                     .Select(message => message.Role));
+            Assert.Contains(
+                "visible.txt",
+                client.Requests[1].Messages[^1].Content,
+                StringComparison.Ordinal);
+            Assert.DoesNotContain(
+                "\"status\":\"registered\"",
+                client.Requests[1].Messages[^1].Content,
+                StringComparison.Ordinal);
             var history = (await service.ReadHistoryAsync(
                 new ReadHistoryRequest(
                     thread.ThreadId,

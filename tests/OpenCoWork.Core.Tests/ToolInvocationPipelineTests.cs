@@ -518,6 +518,29 @@ public sealed class ToolInvocationPipelineTests
     }
 
     [Fact]
+    public async Task Ambiguous_binding_failure_is_terminal_outcome_unknown()
+    {
+        var harness = CreateHarness(
+            executor: (_, _) => ValueTask.FromResult(
+                ToolBindingResult.Failure(new SessionError(
+                    ToolErrorCodes.OutcomeUnknown,
+                    "File write outcome is unknown.",
+                    IsRetryable: false))));
+
+        var result = await new ToolInvocationPipeline(
+                harness.Runtime,
+                new SecretRedactor([]))
+            .InvokeAsync(
+                harness.Context,
+                new RecordingSink(),
+                TestContext.Current.CancellationToken);
+
+        Assert.Equal(ToolInvocationStatus.OutcomeUnknown, result.Status);
+        Assert.Equal(ToolErrorCodes.OutcomeUnknown, result.Error?.Code);
+        Assert.Null(result.Output);
+    }
+
+    [Fact]
     public async Task Escaped_exceptions_do_not_leak_and_terminal_hook_cannot_rewrite_result()
     {
         var failedHarness = CreateHarness(
