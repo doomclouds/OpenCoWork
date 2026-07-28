@@ -4,6 +4,7 @@
 
 - 状态：已确认
 - 日期：2026-07-25
+- 修订：2026-07-28，按 M5 头脑风暴确认 Desktop-first Wire 与稳定 ACP v1 边界
 - 目标版本：OpenCoWork 1.0
 - 目标框架：.NET 10
 - 正式平台：`win-x64`、`osx-arm64`
@@ -436,29 +437,36 @@ Running → NeedsAttention → Running
 
 ### M5 - OpenCoWork Wire Alpha
 
-目标：通过独立 Protocol 程序集暴露唯一 Session Core。
+目标：通过独立 Protocol 程序集，为 OpenCoWork Desktop 暴露唯一 Session
+Core，并同时交付稳定 ACP v1 兼容入口。
 
 包含：
 
 - JSON-RPC 2.0 基础设施；
 - initialize、initialized 和 Capability 协商；
-- stdio JSONL 与 WebSocket Transport；
+- Desktop 管理本地子进程，一进程绑定一个 Workspace；
+- stdio JSONL 默认 Transport 与 loopback WebSocket 次要 Transport；
 - `thread/*`、`turn/*`、`item/*` 核心方法和通知；
+- history 分页、model/mode 切换和生成式 Wire Catalog；
+- 原子快照、语义事件流与 afterSequence 重连；
 - Approval、UserInput、Cancel、Queue 与 Steer；
 - 连接级订阅和断连清理；
-- ACP 的 new、load、prompt、cancel 和 mode；
+- ACP 稳定 v1 的 initialize、new、load、prompt、cancel 和 mode；
 - Protocol TestClient 与契约快照测试。
 
 不包含：
 
 - 一次性复制原规范全部 214 个方法；
+- 正式 Desktop Client SDK、daemon、远程监听与浏览器接入；
+- ACP v2 草案、可选扩展和 draft elicitation；
 - Skills、MCP、Teams 和 Automations 扩展域。
 
 完成信号：
 
-- initialize 到 Turn 终态的完整协议流通过；
+- Desktop 子进程从 initialize、history、subscribe、Turn 提交到终态的完整协议流
+  通过；
 - ACP 历史回放无重复；
-- Cancel 同时终止桥接请求和底层 Turn；
+- RPC cancel 与业务 Turn cancel 语义独立；
 - 协议层没有第二套 Thread/Turn 状态。
 
 ### M6 - Capability Ecosystem

@@ -4,6 +4,8 @@
 
 - 状态：已冻结
 - 日期：2026-07-25
+- 修订：2026-07-28，按 M5 用户确认的 Desktop-first 方案收窄认证边界并补齐
+  history/model/mode 方法；权威状态和安全顺序不变
 - 所属里程碑：OpenCoWork Runtime 1.0 / M0
 - 目标框架：.NET 10
 - 正式平台：`win-x64`、`osx-arm64`
@@ -261,13 +263,16 @@ Secret 不得以明文进入被跟踪配置、日志、Journal 或事件。允�
 OpenCoWork Wire 使用 JSON-RPC 2.0。每个连接必须先调用 `initialize`，随后发送
 `initialized`，未完成握手不得调用业务方法。
 
+M5 的第一真实客户端是 OpenCoWork Desktop。Desktop 启动本地 app-server
+子进程；一个进程绑定一个 Workspace。initialize 的 Workspace 请求必须与绑定
+Workspace 相同，不允许借协议切换到其他路径。
+
 `initialize` 请求至少包含：
 
 - 客户端名称与版本；
 - 支持的 Wire 版本；
 - 客户端能力；
-- 工作区请求；
-- 认证信息或认证方式。
+- 工作区请求。
 
 响应至少包含：
 
@@ -301,10 +306,11 @@ OpenCoWork Wire 使用 JSON-RPC 2.0。每个连接必须先调用 `initialize`�
 
 ```text
 thread/create          thread/get             thread/list
-thread/rename          thread/pause           thread/resume
-thread/archive         thread/unarchive       thread/delete
-thread/fork            thread/rollback        thread/subscribe
-thread/unsubscribe
+thread/history/read    thread/rename          thread/model/set
+thread/mode/set        thread/pause           thread/resume
+thread/archive         thread/unarchive       thread/delete/prepare
+thread/delete          thread/fork            thread/rollback
+thread/subscribe       thread/unsubscribe
 
 turn/start             turn/enqueue           turn/queue/remove
 turn/queue/reorder     turn/steer             turn/cancel
@@ -327,6 +333,10 @@ system/event
 
 流式内容统一通过带类型 Payload 的 `item/delta` 传递，不为每种 Item 创建独立
 Delta 方法。
+
+`thread/create` 接受初始 Provider、Model 和 AgentMode。
+`thread/get` 只返回当前状态与元数据；`thread/history/read` 使用不透明 Cursor
+分页读取历史；`thread/subscribe` 负责实时同步与断线补齐。
 
 ### 5.4 事件、订阅与并发
 
@@ -354,6 +364,10 @@ Resolution 生效，重复请求返回同一结果。
 `$/cancelRequest` 只取消 RPC 等待；`turn/cancel` 才是持久业务取消。客户端不得
 用 Notification 发起有副作用操作。
 
+`turn/start` 成功提交后立即返回 `turnId + acceptedSequence`，终态通过事件发送；
+Thread Busy 时失败且不隐式入队。`turn/enqueue` 才明确创建队列项。两者的差异必须
+由 Session Core 原子裁决，Protocol 不得先查询状态再提交。
+
 ### 5.5 Transport、错误与扩展域
 
 stdio：
@@ -361,12 +375,18 @@ stdio：
 - UTF-8 JSONL；
 - stdout 只输出协议对象；
 - 日志只写 stderr。
+- 由 Desktop 父进程启动时信任该进程边界，不增加协议 token。
 
 WebSocket：
 
 - 一个 UTF-8 Text Frame 对应一个 JSON 对象；
-- Token 通过 Header 或 initialize 传递，不放 Query String；
+- 只监听 loopback；
+- 启动方通过环境变量注入临时 Token，客户端只通过
+  `Authorization: Bearer` Header 传递；
+- 不接受 initialize 或 Query String 中的 Token；
 - 使用有界发送队列和重连 Cursor。
+
+远程监听、TLS、浏览器 Origin 和长期驻留服务属于 M9。
 
 稳定错误响应包含 JSON-RPC 数字错误码，以及：
 
@@ -387,7 +407,11 @@ WebSocket：
 `externalChannel` 进入 `channel`，MCP App 与 Server Status 归入 `mcp`。
 `ext` 不是公共域；Dashboard 只提供查询，不承诺 Wire UI。
 
-ACP Bridge 只做协议转换，不持有独立状态机。
+ACP Bridge 固定官方稳定 `protocolVersion: 1`，只实现
+`initialize`、`session/new`、`session/load`、`session/prompt`、
+`session/cancel` 和 `session/set_mode`，且只做协议转换，不持有独立状态机。
+Approval 映射稳定 permission request；通用 UserInput 在稳定 v1 没有等价能力，
+必须明确失败并取消当前 Turn，不得启用草案能力或无限等待。
 
 ## 6. 权威状态与存储
 

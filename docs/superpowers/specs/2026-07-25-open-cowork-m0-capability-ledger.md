@@ -4,6 +4,7 @@
 
 - 状态：已冻结
 - 日期：2026-07-25
+- 修订：2026-07-28，按 M5 Desktop-first 方案澄清 Wire 与 ACP 边界
 - 所属里程碑：OpenCoWork Runtime 1.0 / M0
 - 契约规格：
   [OpenCoWork M0 Contract Freeze](2026-07-25-open-cowork-m0-contract-freeze-design.md)
@@ -104,11 +105,11 @@
 
 | CapabilityId | Capability | SourceEvidence | Decision | OpenCoWorkContract | OwnerMilestone | AcceptanceIds | Notes |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| CAP-043 | JSON-RPC initialize 与能力协商 | 原规范 AppServer 协议 | Redesign | 强制 initialize/initialized，协商 Wire 版本、能力、限制、Workspace 与 Auth。 | M5 | M0-ACC-004, M5-ACC-001 | 1.0 后按 SemVer。 |
-| CAP-044 | stdio JSONL 与 WebSocket | 原规范多 Transport | PreserveSemantics | stdio stdout 仅协议、stderr 日志；WS 一帧一对象、Token 不入 Query。 | M5 | M5-ACC-002 | 慢客户端有界。 |
-| CAP-045 | Thread/Turn/Item 方法与事件 | 原规范会话 RPC | Redesign | 使用 `domain/action` 和统一 `item/delta`，不复制 214 方法。 | M5 | M5-ACC-003, M5-ACC-004 | Generated Catalog。 |
+| CAP-043 | JSON-RPC initialize 与能力协商 | 原规范 AppServer 协议 | Redesign | 强制 initialize/initialized，协商 Wire 版本、能力、限制与进程绑定 Workspace；第一客户端为 OpenCoWork Desktop。 | M5 | M0-ACC-004, M5-ACC-001 | 1.0 后按 SemVer。 |
+| CAP-044 | stdio JSONL 与 WebSocket | 原规范多 Transport | PreserveSemantics | Desktop 子进程默认 stdio；WS 仅 loopback 且只接受环境注入 Token 对应的 Bearer Header。 | M5 | M5-ACC-002 | stdout/stderr 隔离，慢客户端有界。 |
+| CAP-045 | Thread/Turn/Item 方法与事件 | 原规范会话 RPC | Redesign | 使用 `domain/action`、分页 history 和统一 `item/delta`；补齐 model/mode，不复制 214 方法。 | M5 | M5-ACC-003, M5-ACC-004 | Generated Catalog。 |
 | CAP-046 | 订阅、Sequence 与重连 | 原规范事件订阅 | Redesign | 原子快照+Cursor、Thread 内有序、至少一次、eventId+sequence 去重。 | M5 | M5-ACC-005, M5-ACC-008 | Sequence 来自 Journal。 |
-| CAP-047 | ACP Bridge | 原规范 ACP 适配 | PreserveSemantics | 只转换 new/load/prompt/cancel/mode，不维护独立 Session 状态。 | M5 | M5-ACC-007, M5-ACC-009 | 历史回放不重复。 |
+| CAP-047 | ACP Bridge | 原规范 ACP 适配 | PreserveSemantics | 固定稳定 ACP v1，只转换 initialize/new/load/prompt/cancel/set_mode，不维护独立 Session 状态；通用 UserInput 明确失败并取消。 | M5 | M5-ACC-007, M5-ACC-009 | stdio only，历史回放不重复。 |
 | CAP-048 | 桌面/Web Dashboard 与内嵌交互 Host | 原规范 UI/Widget/Welcome 能力 | Deferred | 1.0 只提供 CLI、协议、查询和可引用 Visualization Artifact；不提供嵌入式 UI Host、Welcome Suggestion 或 Widget State。 | M9 | M9-ACC-008 | UI 推迟到 1.x；遗留 UI 状态不兼容。 |
 
 ## 10. Skills、Plugins、MCP、LSP 与 Hooks

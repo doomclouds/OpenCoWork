@@ -79,7 +79,7 @@ DotCraft .craft 兼容、DotCraft 二进制或私有实现兼容、Linux 与 Int
 | M2 - Durable Session Core | 交付可持久化、可并发、可恢复的 Thread-Turn-Item 会话核心。 | 真实 Provider、AgentFactory、真实工具和 Worktree Fork。 | Journal 重放、SQLite 投影重建、并发、等待、取消、队列、归档和恢复验收通过。 |
 | M3 - Agent Runtime Alpha | 交付无工具但支持真实多轮对话、流式响应、重试和上下文压缩的 Agent Runtime。 | 真实工具副作用和外部协议。 | CLI 可完成并恢复真实多轮对话，流中断与压缩故障注入通过。 |
 | M4 - Tool Runtime Alpha | 交付模型可安全产生副作用的工具身份、快照、审批和固定执行管线。 | MCP、插件、动态工具和 AppServer。 | 管线逐阶段测试、稳定错误码、Plan 模式限制和副作用不重复验收通过。 |
-| M5 - OpenCoWork Wire Alpha | 通过独立 Protocol 程序集交付 JSON-RPC、AppServer 和基础 ACP Bridge。 | 一次性补齐所有扩展域和原规范全部方法。 | initialize、thread、turn、item、审批、取消和订阅的端到端契约测试通过。 |
+| M5 - OpenCoWork Wire Alpha | 交付 Desktop-first 的本地子进程 Wire、语义事件同步和稳定 ACP v1 Bridge。 | 正式 Desktop SDK、daemon、远程监听、ACP 草案和扩展域。 | stdio/loopback WebSocket、核心会话流与 ACP v1 通过端到端契约和双平台真机验收。 |
 | M6 - Capability Ecosystem | 交付 Skills、Plugins、MCP、LSP、Hooks、SourceControl 与动态/延迟工具生态。 | Teams、Automations 和 Gateway 编排。 | 插件信任、Binding Lease、断连失效、能力热更新和冲突隔离验收通过。 |
 | M7 - Multi-Agent CoWork | 交付 SubAgent、Teams、Mission DAG、Mailbox、Artifact 和 Worktree 协作闭环。 | 周期自动化和外部渠道。 | DAG、成员互斥、预算、恢复、Leader 综合和 Origin 单次回传验收通过。 |
 | M8 - Automations and Scheduler | 交付可版本控制定义、可恢复运行和严格权限边界的无人值守调度。 | Gateway、Hub 和外部渠道交付。 | 去重调度、时区、并发、Worktree、定义快照、NeedsAttention 和崩溃恢复验收通过。 |
