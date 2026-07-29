@@ -27,7 +27,8 @@ internal sealed class WorkspaceCapabilityDiscovery(
     SkillCatalog skills,
     ProviderDeclarationCatalog providers,
     PluginRuntime? plugins = null,
-    McpCapabilitySource? mcp = null)
+    McpCapabilitySource? mcp = null,
+    LspCapabilitySource? lsp = null)
 {
     private readonly SkillCatalog _skills =
         skills ?? throw new ArgumentNullException(nameof(skills));
@@ -35,6 +36,7 @@ internal sealed class WorkspaceCapabilityDiscovery(
         providers ?? throw new ArgumentNullException(nameof(providers));
     private readonly PluginRuntime? _plugins = plugins;
     private readonly McpCapabilitySource? _mcp = mcp;
+    private readonly LspCapabilitySource? _lsp = lsp;
 
     public async Task<WorkspaceCapabilityDiscoveryResult> DiscoverAsync(
         CancellationToken cancellationToken)
@@ -47,12 +49,16 @@ internal sealed class WorkspaceCapabilityDiscovery(
         var mcpResult = _mcp is null
             ? new McpDiscoveryResult([])
             : await _mcp.DiscoverAsync(cancellationToken);
+        var lspResult = _lsp is null
+            ? new LspDiscoveryResult([])
+            : await _lsp.DiscoverAsync(cancellationToken);
         return new WorkspaceCapabilityDiscoveryResult(
             Array.AsReadOnly(
                 skillResult.Contributions
                     .Concat(_providers.Contributions)
                     .Concat(pluginResult.Contributions)
                     .Concat(mcpResult.Contributions)
+                    .Concat(lspResult.Contributions)
                     .ToArray()),
             skillResult.Snapshot);
     }
@@ -67,6 +73,11 @@ internal sealed class WorkspaceCapabilityDiscovery(
             await _mcp.StopAsync(cancellationToken);
         }
 
+        if (_lsp is not null)
+        {
+            await _lsp.StopAsync(cancellationToken);
+        }
+
         if (_plugins is not null)
         {
             await _plugins.StopAsync(cancellationToken);
@@ -79,6 +90,11 @@ internal sealed class WorkspaceCapabilityDiscovery(
         if (_mcp is not null)
         {
             _mcp.Changed = refresh;
+        }
+
+        if (_lsp is not null)
+        {
+            _lsp.Changed = refresh;
         }
     }
 }

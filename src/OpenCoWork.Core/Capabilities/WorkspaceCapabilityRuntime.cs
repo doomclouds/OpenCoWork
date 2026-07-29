@@ -22,6 +22,13 @@ public static class OpenCoWorkCapabilityExtensions
             new CapabilityFileStore(
                 serviceProvider.GetRequiredService<CapabilityPersistencePaths>()));
         services.TryAddSingleton(serviceProvider =>
+            new CoreSourceControlTool(
+                serviceProvider.GetRequiredService<
+                    OpenCoWork.Core.Workspaces.OpenCoWorkPaths>(),
+                serviceProvider.GetRequiredService<CapabilityFileStore>(),
+                serviceProvider.GetRequiredService<
+                    OpenCoWork.Core.Logging.SecretRedactor>()));
+        services.TryAddSingleton(serviceProvider =>
             new SkillCatalog(
                 serviceProvider.GetRequiredService<CapabilityPersistencePaths>(),
                 serviceProvider.GetRequiredService<CapabilityFileStore>()));
@@ -55,11 +62,18 @@ public static class OpenCoWorkCapabilityExtensions
                 serviceProvider.GetRequiredService<ToolRuntime>(),
                 serviceProvider.GetRequiredService<ProviderAuthService>()));
         services.TryAddSingleton(serviceProvider =>
+            new LspCapabilitySource(
+                serviceProvider.GetRequiredService<
+                    OpenCoWork.Core.Workspaces.OpenCoWorkPaths>(),
+                serviceProvider.GetRequiredService<CapabilityFileStore>(),
+                serviceProvider.GetRequiredService<ProviderAuthService>()));
+        services.TryAddSingleton(serviceProvider =>
             new WorkspaceCapabilityDiscovery(
                 serviceProvider.GetRequiredService<SkillCatalog>(),
                 serviceProvider.GetRequiredService<ProviderDeclarationCatalog>(),
                 serviceProvider.GetRequiredService<PluginRuntime>(),
-                serviceProvider.GetRequiredService<McpCapabilitySource>()));
+                serviceProvider.GetRequiredService<McpCapabilitySource>(),
+                serviceProvider.GetRequiredService<LspCapabilitySource>()));
         services.TryAddSingleton(serviceProvider =>
             new WorkspaceCapabilityRuntime(
             [

@@ -13,6 +13,7 @@
     <Project Path="tests/OpenCoWork.Core.Tests/OpenCoWork.Core.Tests.csproj" />
     <Project Path="tests/OpenCoWork.Generators.Tests/OpenCoWork.Generators.Tests.csproj" />
     <Project Path="tests/OpenCoWork.IntegrationTests/OpenCoWork.IntegrationTests.csproj" />
+    <Project Path="tests/OpenCoWork.LspFixture/OpenCoWork.LspFixture.csproj" />
     <Project Path="tests/OpenCoWork.McpFixture/OpenCoWork.McpFixture.csproj" />
     <Project Path="tests/OpenCoWork.PluginFixture/OpenCoWork.PluginFixture.csproj" />
     <Project Path="tests/OpenCoWork.Protocol.TestClient/OpenCoWork.Protocol.TestClient.csproj" />

@@ -1,6 +1,6 @@
 # OpenCoWork M6 Capability Ecosystem 实施计划
 
-**Status:** In progress；Outcome 1-7 已完成，Outcome 8-10 未开始。
+**Status:** In progress；Outcome 1-8 已完成，Outcome 9-10 未开始。
 
 **Goal:** 在现有 Workspace、Agent、Tool、Journal、SQLite 和 Wire 边界上交付
 Desktop-first 的工作区级 Capability Ecosystem，使受信来源能够被确定性发现、组合、

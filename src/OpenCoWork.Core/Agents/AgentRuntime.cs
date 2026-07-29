@@ -38,7 +38,8 @@ public static class OpenCoWorkAgentExtensions
         services.TryAddSingleton(serviceProvider =>
             new ToolRuntime(
                 serviceProvider.GetRequiredService<OpenCoWorkPaths>(),
-                serviceProvider.GetRequiredService<ModelsConfig>()));
+                serviceProvider.GetRequiredService<ModelsConfig>(),
+                serviceProvider.GetService<CoreSourceControlTool>()));
         services.TryAddSingleton(serviceProvider =>
         {
             var snapshot =

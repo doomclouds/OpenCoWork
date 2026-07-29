@@ -25,6 +25,10 @@ public sealed class ToolSnapshotTests
                 "file.write",
                 "shell.run",
                 "skill.load",
+                "source_control.diff",
+                "source_control.log",
+                "source_control.show",
+                "source_control.status",
                 "tool.search",
                 "web.fetch",
             ],
@@ -35,6 +39,10 @@ public sealed class ToolSnapshotTests
                 ToolReplaySafety.Safe,
                 ToolReplaySafety.Unsafe,
                 ToolReplaySafety.Unsafe,
+                ToolReplaySafety.Safe,
+                ToolReplaySafety.Safe,
+                ToolReplaySafety.Safe,
+                ToolReplaySafety.Safe,
                 ToolReplaySafety.Safe,
                 ToolReplaySafety.Safe,
                 ToolReplaySafety.Unsafe,
@@ -51,6 +59,10 @@ public sealed class ToolSnapshotTests
                 ToolEffect.NetworkRead |
                 ToolEffect.ExternalMutation,
                 ToolEffect.None,
+                ToolEffect.WorkspaceRead | ToolEffect.ProcessExecution,
+                ToolEffect.WorkspaceRead | ToolEffect.ProcessExecution,
+                ToolEffect.WorkspaceRead | ToolEffect.ProcessExecution,
+                ToolEffect.WorkspaceRead | ToolEffect.ProcessExecution,
                 ToolEffect.None,
                 ToolEffect.NetworkRead,
             ],
@@ -62,7 +74,11 @@ public sealed class ToolSnapshotTests
                 Assert.Equal(ToolSourceKind.CoreNative, item.Definition.Id.SourceKind);
                 Assert.Equal("opencowork.core", item.Definition.Id.SourceId);
                 Assert.Equal(ToolExposure.Direct, item.Exposure);
-                Assert.Equal(ToolInvocationAudience.Model, item.Audience);
+                Assert.Equal(
+                    item.Definition.Name.Namespace == "source_control"
+                        ? ToolInvocationAudience.Model | ToolInvocationAudience.Host
+                        : ToolInvocationAudience.Model,
+                    item.Audience);
             });
         Assert.Equal(
             [
@@ -71,6 +87,10 @@ public sealed class ToolSnapshotTests
                 "file__write",
                 "shell__run",
                 "skill__load",
+                "source_control__diff",
+                "source_control__log",
+                "source_control__show",
+                "source_control__status",
                 "tool__search",
                 "web__fetch",
             ],
@@ -119,7 +139,7 @@ public sealed class ToolSnapshotTests
                     new ToolsConfig()),
                 TestContext.Current.CancellationToken)));
 
-        Assert.All(snapshots, snapshot => Assert.Equal(7, snapshot.Registrations.Count));
+        Assert.All(snapshots, snapshot => Assert.Equal(11, snapshot.Registrations.Count));
         Assert.Single(snapshots.Select(snapshot => snapshot.SnapshotSha256).Distinct());
     }
 
@@ -152,7 +172,17 @@ public sealed class ToolSnapshotTests
             ["file.list", "file.read", "skill.load", "tool.search", "web.fetch"],
             plan.Registrations.Select(CanonicalName));
         Assert.Equal(
-            ["file.list", "file.read", "file.write", "skill.load", "tool.search"],
+            [
+                "file.list",
+                "file.read",
+                "file.write",
+                "skill.load",
+                "source_control.diff",
+                "source_control.log",
+                "source_control.show",
+                "source_control.status",
+                "tool.search",
+            ],
             networkDenied.Registrations.Select(CanonicalName));
         Assert.Equal(
             ToolAuthorityDecision.RequireApproval,

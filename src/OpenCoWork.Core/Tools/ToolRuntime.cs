@@ -64,7 +64,8 @@ internal sealed partial class ToolRuntime
         : this(CreateCoreTools(
             fileTools: null,
             shellTool: null,
-            webTool: null))
+            webTool: null,
+            sourceControl: null))
     {
     }
 
@@ -74,6 +75,14 @@ internal sealed partial class ToolRuntime
     }
 
     internal ToolRuntime(OpenCoWorkPaths paths, ModelsConfig? models)
+        : this(paths, models, sourceControl: null)
+    {
+    }
+
+    internal ToolRuntime(
+        OpenCoWorkPaths paths,
+        ModelsConfig? models,
+        CoreSourceControlTool? sourceControl)
         : this(CreateCoreTools(
             new CoreFileTools(paths),
             new CoreShellTool(
@@ -81,7 +90,8 @@ internal sealed partial class ToolRuntime
                 models?.Providers.Values
                     .Select(provider => provider.ApiKey.Environment) ??
                 []),
-            new CoreWebTool()))
+            new CoreWebTool(),
+            sourceControl))
     {
     }
 
@@ -989,7 +999,8 @@ internal sealed partial class ToolRuntime
     private static CoreTools CreateCoreTools(
         CoreFileTools? fileTools,
         CoreShellTool? shellTool,
-        CoreWebTool? webTool)
+        CoreWebTool? webTool,
+        CoreSourceControlTool? sourceControl)
     {
         var registrations = new List<ToolRegistration>();
         var bindings = new List<ToolRuntimeBinding>();
@@ -1149,6 +1160,89 @@ internal sealed partial class ToolRuntime
             webTool is null
                 ? PlaceholderExecutor
                 : webTool.FetchAsync);
+        Add(
+            "source_control.status",
+            new ToolName("source_control", "status"),
+            "Read Git status for the workspace repository.",
+            """
+            {
+              "$schema":"https://json-schema.org/draft/2020-12/schema",
+              "type":"object",
+              "properties":{"path":{"type":"string","minLength":1}},
+              "additionalProperties":false
+            }
+            """,
+            ToolEffect.WorkspaceRead | ToolEffect.ProcessExecution,
+            ToolReplaySafety.Safe,
+            TimeSpan.FromSeconds(30),
+            sourceControl is null
+                ? PlaceholderExecutor
+                : sourceControl.StatusAsync,
+            audience: ToolInvocationAudience.Model | ToolInvocationAudience.Host);
+        Add(
+            "source_control.diff",
+            new ToolName("source_control", "diff"),
+            "Read the unstaged Git diff for the workspace repository.",
+            """
+            {
+              "$schema":"https://json-schema.org/draft/2020-12/schema",
+              "type":"object",
+              "properties":{"path":{"type":"string","minLength":1}},
+              "additionalProperties":false
+            }
+            """,
+            ToolEffect.WorkspaceRead | ToolEffect.ProcessExecution,
+            ToolReplaySafety.Safe,
+            TimeSpan.FromSeconds(30),
+            sourceControl is null
+                ? PlaceholderExecutor
+                : sourceControl.DiffAsync,
+            audience: ToolInvocationAudience.Model | ToolInvocationAudience.Host);
+        Add(
+            "source_control.log",
+            new ToolName("source_control", "log"),
+            "Read Git commit history for the workspace repository.",
+            """
+            {
+              "$schema":"https://json-schema.org/draft/2020-12/schema",
+              "type":"object",
+              "properties":{
+                "path":{"type":"string","minLength":1},
+                "maxCount":{"type":"integer","minimum":1,"maximum":100}
+              },
+              "additionalProperties":false
+            }
+            """,
+            ToolEffect.WorkspaceRead | ToolEffect.ProcessExecution,
+            ToolReplaySafety.Safe,
+            TimeSpan.FromSeconds(30),
+            sourceControl is null
+                ? PlaceholderExecutor
+                : sourceControl.LogAsync,
+            audience: ToolInvocationAudience.Model | ToolInvocationAudience.Host);
+        Add(
+            "source_control.show",
+            new ToolName("source_control", "show"),
+            "Read one Git revision from the workspace repository.",
+            """
+            {
+              "$schema":"https://json-schema.org/draft/2020-12/schema",
+              "type":"object",
+              "properties":{
+                "revision":{"type":"string","minLength":1,"maxLength":256},
+                "path":{"type":"string","minLength":1}
+              },
+              "required":["revision"],
+              "additionalProperties":false
+            }
+            """,
+            ToolEffect.WorkspaceRead | ToolEffect.ProcessExecution,
+            ToolReplaySafety.Safe,
+            TimeSpan.FromSeconds(30),
+            sourceControl is null
+                ? PlaceholderExecutor
+                : sourceControl.ShowAsync,
+            audience: ToolInvocationAudience.Model | ToolInvocationAudience.Host);
         return new CoreTools(registrations, bindings);
 
         void Add(
@@ -1160,7 +1254,8 @@ internal sealed partial class ToolRuntime
             ToolReplaySafety replaySafety,
             TimeSpan timeout,
             ToolExecutor executor,
-            ContextualToolExecutor? contextualExecutor = null)
+            ContextualToolExecutor? contextualExecutor = null,
+            ToolInvocationAudience audience = ToolInvocationAudience.Model)
         {
             using var document = JsonDocument.Parse(schemaJson);
             var definition = new ToolDefinition(
@@ -1178,7 +1273,7 @@ internal sealed partial class ToolRuntime
                 definition,
                 bindingId,
                 ToolExposure.Direct,
-                ToolInvocationAudience.Model));
+                audience));
             bindings.Add(new ToolRuntimeBinding(
                 bindingId,
                 ToolBindingAvailability.Available,
