@@ -1,5 +1,5 @@
-using System.Collections;
 using System.Buffers;
+using System.Collections;
 using System.Globalization;
 using System.Text;
 using System.Text.Json;
@@ -22,16 +22,21 @@ public sealed class SecretRedactor
     private static readonly Regex SensitiveAssignment = new(
         @"(?ix)\b(?<key>password|token|secret|api[_-]?key)\s*(?<separator>[:=])\s*(?<value>""[^""]*""|'[^']*'|[^\s,;}\]]+)",
         RegexOptions.CultureInvariant);
-    private readonly string[] _knownValues;
+    private readonly string[] _baseValues;
+    private readonly object _secretGate = new();
+    private readonly Dictionary<string, int> _dynamicValues =
+        new(StringComparer.Ordinal);
+    private string[] _knownValues;
 
     public SecretRedactor(IEnumerable<string> knownValues)
     {
         ArgumentNullException.ThrowIfNull(knownValues);
-        _knownValues = knownValues
+        _baseValues = knownValues
             .Where(value => !string.IsNullOrEmpty(value))
             .Distinct(StringComparer.Ordinal)
             .OrderByDescending(value => value.Length)
             .ToArray();
+        _knownValues = _baseValues;
     }
 
     public static SecretRedactor FromSnapshot(EffectiveConfigSnapshot snapshot)
@@ -58,7 +63,7 @@ public sealed class SecretRedactor
         }
 
         var redacted = value;
-        foreach (var secret in _knownValues)
+        foreach (var secret in Volatile.Read(ref _knownValues))
         {
             redacted = redacted.Replace(
                 secret,
@@ -73,6 +78,50 @@ public sealed class SecretRedactor
                 match.Groups["separator"].Value +
                 Replacement);
     }
+
+    internal IDisposable RegisterSecret(string secret)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(secret);
+        lock (_secretGate)
+        {
+            _dynamicValues.TryGetValue(secret, out var count);
+            _dynamicValues[secret] = checked(count + 1);
+            PublishKnownValues();
+        }
+
+        return new SecretRegistration(this, secret);
+    }
+
+    private void UnregisterSecret(string secret)
+    {
+        lock (_secretGate)
+        {
+            if (!_dynamicValues.TryGetValue(secret, out var count))
+            {
+                return;
+            }
+
+            if (count == 1)
+            {
+                _dynamicValues.Remove(secret);
+            }
+            else
+            {
+                _dynamicValues[secret] = count - 1;
+            }
+
+            PublishKnownValues();
+        }
+    }
+
+    private void PublishKnownValues() =>
+        Volatile.Write(
+            ref _knownValues,
+            _baseValues
+                .Concat(_dynamicValues.Keys)
+                .Distinct(StringComparer.Ordinal)
+                .OrderByDescending(value => value.Length)
+                .ToArray());
 
     internal JsonElement RedactJson(JsonElement value, out bool changed)
     {
@@ -240,6 +289,16 @@ public sealed class SecretRedactor
                 .ToArray());
         return SensitiveKeys.Any(
             sensitive => normalized.EndsWith(sensitive, StringComparison.Ordinal));
+    }
+
+    private sealed class SecretRegistration(
+        SecretRedactor owner,
+        string secret) : IDisposable
+    {
+        private SecretRedactor? _owner = owner;
+
+        public void Dispose() =>
+            Interlocked.Exchange(ref _owner, null)?.UnregisterSecret(secret);
     }
 }
 

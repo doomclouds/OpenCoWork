@@ -340,6 +340,7 @@ internal sealed partial class ToolRuntime
             if (current is not null &&
                 binding.Generation == current.Generation &&
                 (binding.Executor != current.Executor ||
+                 binding.ContextualExecutor != current.ContextualExecutor ||
                  binding.DefaultTimeout != current.DefaultTimeout))
             {
                 throw new ToolRuntimeException(
@@ -809,6 +810,26 @@ internal sealed partial class ToolRuntime
                 ? PlaceholderExecutor
                 : shellTool.RunAsync);
         Add(
+            "skill.load",
+            new ToolName("skill", "load"),
+            "Load one Skill body from the current Turn snapshot.",
+            """
+            {
+              "$schema":"https://json-schema.org/draft/2020-12/schema",
+              "type":"object",
+              "properties":{
+                "id":{"type":"string","pattern":"^[a-z0-9][a-z0-9.-]{0,62}/[a-z0-9][a-z0-9.-]{0,62}$"}
+              },
+              "required":["id"],
+              "additionalProperties":false
+            }
+            """,
+            ToolEffect.None,
+            ToolReplaySafety.Safe,
+            TimeSpan.FromSeconds(30),
+            PlaceholderExecutor,
+            SkillLoadAsync);
+        Add(
             "web.fetch",
             new ToolName("web", "fetch"),
             "Fetch an unauthenticated HTTP or HTTPS text resource.",
@@ -840,7 +861,8 @@ internal sealed partial class ToolRuntime
             ToolEffect effects,
             ToolReplaySafety replaySafety,
             TimeSpan timeout,
-            ToolExecutor executor)
+            ToolExecutor executor,
+            ContextualToolExecutor? contextualExecutor = null)
         {
             using var document = JsonDocument.Parse(schemaJson);
             var definition = new ToolDefinition(
@@ -864,8 +886,37 @@ internal sealed partial class ToolRuntime
                 ToolBindingAvailability.Available,
                 Lease: null,
                 timeout,
-                executor));
+                executor,
+                ContextualExecutor: contextualExecutor));
         }
+    }
+
+    private static ValueTask<ToolBindingResult> SkillLoadAsync(
+        ToolInvocationContext context,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var id = context.Arguments.GetProperty("id").GetString();
+        var skill = context.Skills?.Items.SingleOrDefault(item =>
+            string.Equals(item.Id, id, StringComparison.Ordinal));
+        if (skill is null)
+        {
+            return ValueTask.FromResult(ToolBindingResult.Failure(
+                new SessionError(
+                    ToolErrorCodes.InputInvalid,
+                    "Skill is unavailable in the current Turn snapshot.",
+                    IsRetryable: false)));
+        }
+
+        return ValueTask.FromResult(ToolBindingResult.Success(
+            JsonSerializer.SerializeToElement(new
+            {
+                id = skill.Id,
+                description = skill.Description,
+                markdownBody = skill.MarkdownBody,
+                contentSha256 = skill.ContentSha256,
+                selectedVariantId = skill.SelectedVariantId,
+            })));
     }
 
     private static ValueTask<ToolBindingResult> PlaceholderExecutor(

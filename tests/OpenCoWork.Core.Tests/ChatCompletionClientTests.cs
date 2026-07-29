@@ -4,12 +4,52 @@ using System.Text;
 using System.Text.Json;
 using OpenCoWork.Abstractions;
 using OpenCoWork.Core.Agents;
+using OpenCoWork.Core.Capabilities;
 using Xunit;
 
 namespace OpenCoWork.Core.Tests;
 
 public sealed class ChatCompletionClientTests
 {
+    [Fact]
+    public async Task Explicit_header_auth_does_not_emit_bearer_authorization()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var handler = new RecordingHandler(request =>
+        {
+            Assert.Null(request.Headers.Authorization);
+            Assert.True(request.Headers.TryGetValues("X-Api-Key", out var values));
+            Assert.Equal("header-secret", Assert.Single(values));
+            return Response(
+                HttpStatusCode.OK,
+                """
+                data: {"choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":"stop"}]}
+
+                data: [DONE]
+
+                """);
+        });
+        using var httpClient = new HttpClient(handler)
+        {
+            Timeout = Timeout.InfiniteTimeSpan,
+        };
+        var client = new OpenAiCompatibleChatClient(
+            httpClient,
+            new Uri("https://provider.example/v1/"),
+            "header-secret",
+            new ProviderAuthPlacement(
+                ProviderAuthPlacementKind.Header,
+                "X-Api-Key"),
+            TimeSpan.FromSeconds(30),
+            TimeSpan.FromSeconds(60));
+
+        var events = await DrainAsync(
+            client.StreamAsync(Request(), cancellationToken),
+            cancellationToken);
+
+        Assert.Equal(2, events.Count);
+    }
+
     [Fact]
     public async Task Shared_http_client_completes_a_real_loopback_sse_exchange()
     {

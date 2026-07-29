@@ -238,14 +238,43 @@ internal static class ModelSelectionPreflight
 {
     public static ModelTokenizer Validate(
         ModelsConfig models,
+        string providerId,
+        string modelId,
+        string bundledTokenizerBaseDirectory,
+        string customTokenizerBaseDirectory) =>
+        ValidateCore(
+            models,
+            providerId,
+            modelId,
+            bundledTokenizerBaseDirectory,
+            customTokenizerBaseDirectory);
+
+    public static ModelTokenizer Validate(
+        ModelsConfig models,
         FrozenProviderCredentials credentials,
         string providerId,
         string modelId,
         string bundledTokenizerBaseDirectory,
         string customTokenizerBaseDirectory)
     {
-        ArgumentNullException.ThrowIfNull(models);
         ArgumentNullException.ThrowIfNull(credentials);
+        _ = credentials.GetRequired(providerId);
+        return ValidateCore(
+            models,
+            providerId,
+            modelId,
+            bundledTokenizerBaseDirectory,
+            customTokenizerBaseDirectory);
+    }
+
+    private static ModelTokenizer ValidateCore(
+        ModelsConfig models,
+        string providerId,
+        string modelId,
+        string bundledTokenizerBaseDirectory,
+        string customTokenizerBaseDirectory)
+    {
+        ArgumentNullException.ThrowIfNull(models);
         ArgumentException.ThrowIfNullOrWhiteSpace(providerId);
         ArgumentException.ThrowIfNullOrWhiteSpace(modelId);
         ArgumentException.ThrowIfNullOrWhiteSpace(bundledTokenizerBaseDirectory);
@@ -263,7 +292,6 @@ internal static class ModelSelectionPreflight
                 $"Provider/model selection '{providerId}/{modelId}' does not match its Tokenizer Profile.");
         }
 
-        _ = credentials.GetRequired(providerId);
         if (TokenizerProfiles.TryGetForModel(modelId, out var builtIn))
         {
             return builtIn!.CreateTokenizer(bundledTokenizerBaseDirectory);

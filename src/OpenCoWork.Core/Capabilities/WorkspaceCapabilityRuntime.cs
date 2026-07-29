@@ -3,6 +3,7 @@ using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using OpenCoWork.Abstractions;
+using OpenCoWork.Core.Agents;
 using OpenCoWork.Core.Tools;
 
 namespace OpenCoWork.Core.Capabilities;
@@ -14,11 +15,29 @@ public static class OpenCoWorkCapabilityExtensions
     {
         ArgumentNullException.ThrowIfNull(services);
         services.TryAddSingleton(serviceProvider =>
+            new CapabilityPersistencePaths(
+                serviceProvider.GetRequiredService<OpenCoWork.Core.Workspaces.OpenCoWorkPaths>(),
+                Environment.GetFolderPath(Environment.SpecialFolder.UserProfile)));
+        services.TryAddSingleton(serviceProvider =>
+            new CapabilityFileStore(
+                serviceProvider.GetRequiredService<CapabilityPersistencePaths>()));
+        services.TryAddSingleton(serviceProvider =>
+            new SkillCatalog(
+                serviceProvider.GetRequiredService<CapabilityPersistencePaths>(),
+                serviceProvider.GetRequiredService<CapabilityFileStore>()));
+        services.TryAddSingleton(serviceProvider =>
+            new WorkspaceCapabilityDiscovery(
+                serviceProvider.GetRequiredService<SkillCatalog>(),
+                serviceProvider.GetRequiredService<ProviderDeclarationCatalog>()));
+        services.TryAddSingleton(serviceProvider =>
             new WorkspaceCapabilityRuntime(
             [
                 WorkspaceCapabilityRuntime.CreateCoreContributions(
                     serviceProvider.GetRequiredService<ToolRuntime>()),
-            ]));
+                serviceProvider.GetRequiredService<ProviderRegistry>()
+                    .CreateCoreContributions(),
+            ],
+            serviceProvider.GetRequiredService<WorkspaceCapabilityDiscovery>()));
         return services;
     }
 }
@@ -27,17 +46,21 @@ public sealed class WorkspaceCapabilityRuntime
 {
     private const int CatalogSchemaVersion = 1;
     private readonly CapabilityContributionSet[] _coreContributions;
+    private readonly WorkspaceCapabilityDiscovery? _discovery;
     private readonly SemaphoreSlim _lifecycleLock = new(1, 1);
     private readonly object _leaseGate = new();
     private readonly Dictionary<long, int> _activeLeases = [];
     private CapabilityCatalog _catalog;
+    private EffectiveSkillSnapshot _skills = EffectiveSkillSnapshot.Empty;
     private int _status;
 
     internal WorkspaceCapabilityRuntime(
-        IEnumerable<CapabilityContributionSet> coreContributions)
+        IEnumerable<CapabilityContributionSet> coreContributions,
+        WorkspaceCapabilityDiscovery? discovery = null)
     {
         ArgumentNullException.ThrowIfNull(coreContributions);
         _coreContributions = coreContributions.ToArray();
+        _discovery = discovery;
         if (_coreContributions.Any(set =>
                 set.Source.Kind != CapabilitySourceKind.Core))
         {
@@ -65,12 +88,19 @@ public sealed class WorkspaceCapabilityRuntime
             SetStatus(CapabilityRuntimeState.Starting);
             try
             {
-                var candidate = BuildCandidate(_coreContributions);
+                var discovered = _discovery is null
+                    ? new WorkspaceCapabilityDiscoveryResult(
+                        [],
+                        EffectiveSkillSnapshot.Empty)
+                    : await _discovery.DiscoverAsync(cancellationToken);
+                var candidate = BuildCandidate(
+                    _coreContributions.Concat(discovered.Contributions));
                 Publish(
                     candidate.IsDegraded
                         ? CapabilityRuntimeState.Degraded
                         : CapabilityRuntimeState.Ready,
-                    candidate.Items);
+                    candidate.Items,
+                    discovered.Skills);
             }
             catch (OperationCanceledException)
             {
@@ -111,7 +141,8 @@ public sealed class WorkspaceCapabilityRuntime
                 candidate.IsDegraded
                     ? CapabilityRuntimeState.Degraded
                     : CapabilityRuntimeState.Ready,
-                candidate.Items);
+                candidate.Items,
+                _skills);
         }
         finally
         {
@@ -156,6 +187,7 @@ public sealed class WorkspaceCapabilityRuntime
             _activeLeases[catalog.Revision] = checked(count + 1);
             return new CapabilitySnapshotLease(
                 catalog,
+                _skills,
                 () => ReleaseLease(catalog.Revision));
         }
     }
@@ -310,7 +342,8 @@ public sealed class WorkspaceCapabilityRuntime
 
     private void Publish(
         CapabilityRuntimeState runtimeState,
-        IReadOnlyList<CapabilityCatalogItem> items)
+        IReadOnlyList<CapabilityCatalogItem> items,
+        EffectiveSkillSnapshot? skills = null)
     {
         var hash = HashCatalog(runtimeState, items);
         lock (_leaseGate)
@@ -328,6 +361,7 @@ public sealed class WorkspaceCapabilityRuntime
                 hash,
                 runtimeState,
                 items);
+            _skills = skills ?? _skills;
             Volatile.Write(ref _catalog, catalog);
             Volatile.Write(ref _status, (int)runtimeState);
         }
@@ -558,13 +592,19 @@ public sealed class CapabilitySnapshotLease : IDisposable
 {
     private Action? _release;
 
-    internal CapabilitySnapshotLease(CapabilityCatalog catalog, Action release)
+    internal CapabilitySnapshotLease(
+        CapabilityCatalog catalog,
+        EffectiveSkillSnapshot skills,
+        Action release)
     {
         Catalog = catalog ?? throw new ArgumentNullException(nameof(catalog));
+        Skills = skills ?? throw new ArgumentNullException(nameof(skills));
         _release = release ?? throw new ArgumentNullException(nameof(release));
     }
 
     public CapabilityCatalog Catalog { get; }
+
+    public EffectiveSkillSnapshot Skills { get; }
 
     public void Dispose() => Interlocked.Exchange(ref _release, null)?.Invoke();
 }

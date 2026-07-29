@@ -162,6 +162,10 @@ public delegate ValueTask<ToolBindingResult> ToolExecutor(
     JsonElement arguments,
     CancellationToken cancellationToken);
 
+public delegate ValueTask<ToolBindingResult> ContextualToolExecutor(
+    ToolInvocationContext context,
+    CancellationToken cancellationToken);
+
 public sealed record ToolBindingLease(string LeaseId, DateTimeOffset? ExpiresAt);
 
 public sealed record ToolRuntimeBinding(
@@ -171,7 +175,8 @@ public sealed record ToolRuntimeBinding(
     TimeSpan DefaultTimeout,
     ToolExecutor Executor,
     long Generation = 1,
-    bool IsTrusted = true);
+    bool IsTrusted = true,
+    ContextualToolExecutor? ContextualExecutor = null);
 
 public sealed record ToolRegistration(
     ToolDefinition Definition,
@@ -266,7 +271,8 @@ public sealed record ToolInvocationContext(
     int PriorAttemptCount = 0,
     TimeSpan? RemainingExecutionBudget = null,
     ToolResultSnapshot? ReplayResult = null,
-    bool ProviderCallIdConflict = false);
+    bool ProviderCallIdConflict = false,
+    EffectiveSkillSnapshot? Skills = null);
 
 public sealed class ToolBindingResult
 {

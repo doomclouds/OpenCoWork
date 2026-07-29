@@ -72,11 +72,15 @@ public sealed record CapabilitySourceDescriptor
     public CapabilitySourceDescriptor(
         CapabilitySourceKind kind,
         string id,
-        string version,
+        string? version,
         string sha256)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(id);
-        ArgumentException.ThrowIfNullOrWhiteSpace(version);
+        if (version is not null)
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(version);
+        }
+
         if (!IsSha256(sha256))
         {
             throw new ArgumentException(
@@ -94,7 +98,7 @@ public sealed record CapabilitySourceDescriptor
 
     public string Id { get; }
 
-    public string Version { get; }
+    public string? Version { get; }
 
     public string Sha256 { get; }
 

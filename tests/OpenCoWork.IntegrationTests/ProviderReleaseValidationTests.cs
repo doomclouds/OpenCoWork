@@ -147,7 +147,7 @@ public sealed class ProviderReleaseValidationTests(ITestOutputHelper output)
                                 new OpenAiCompatibleChatClient(
                                     serviceProvider.GetRequiredService<HttpClient>(),
                                     registration.BaseUri,
-                                    registration.ApiKey,
+                                    registration.LegacyApiKey!,
                                     timeProvider),
                                 registration.Tokenizer,
                                 probe),

@@ -278,8 +278,18 @@ public sealed class EffectiveSkillSnapshot
         SnapshotSha256 = snapshotSha256;
     }
 
-    public static EffectiveSkillSnapshot Empty { get; } =
-        new(1, [], Hash("[]"u8));
+    public static EffectiveSkillSnapshot Empty { get; } = Create([]);
+
+    public static EffectiveSkillSnapshot Create(
+        IReadOnlyList<EffectiveSkillSnapshotItem> items)
+    {
+        ArgumentNullException.ThrowIfNull(items);
+        var ordered = items.OrderBy(item => item.Id, StringComparer.Ordinal).ToArray();
+        return new EffectiveSkillSnapshot(
+            1,
+            ordered,
+            Hash(JsonSerializer.SerializeToUtf8Bytes(ordered)));
+    }
 
     public int SchemaVersion { get; }
 

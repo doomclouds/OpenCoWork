@@ -116,7 +116,7 @@ public sealed class ChatCliIntegrationTests
                 userProfile,
                 isInteractive: false,
                 services => services.AddSingleton<ISessionExecutor>(
-                    new ThrowingExecutor("chat-test-secret")),
+                    new ThrowingExecutor("apiKey=chat-test-secret")),
                 cancellationToken);
 
             Assert.Equal(1, failedExitCode);

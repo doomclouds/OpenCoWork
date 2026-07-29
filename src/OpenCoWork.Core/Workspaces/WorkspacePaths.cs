@@ -26,6 +26,9 @@ public sealed class OpenCoWorkPaths
         LocalConfigPath = Path.Combine(OpenCoWorkDirectory, "config.local.jsonc");
         PluginsLockPath = Path.Combine(OpenCoWorkDirectory, "plugins.lock.json");
         CapabilitiesPath = Path.Combine(OpenCoWorkDirectory, "capabilities.json");
+        SkillsDirectory = Path.Combine(OpenCoWorkDirectory, "skills");
+        AuthPath = Path.Combine(OpenCoWorkDirectory, "auth.json");
+        ProvidersPath = Path.Combine(OpenCoWorkDirectory, "providers.json");
         RuntimeDirectory = Path.Combine(OpenCoWorkDirectory, "runtime");
         StateDatabasePath = Path.Combine(RuntimeDirectory, "state.db");
         LogsDirectory = Path.Combine(RuntimeDirectory, "logs");
@@ -47,6 +50,12 @@ public sealed class OpenCoWorkPaths
     public string PluginsLockPath { get; }
 
     public string CapabilitiesPath { get; }
+
+    public string SkillsDirectory { get; }
+
+    public string AuthPath { get; }
+
+    public string ProvidersPath { get; }
 
     public string RuntimeDirectory { get; }
 

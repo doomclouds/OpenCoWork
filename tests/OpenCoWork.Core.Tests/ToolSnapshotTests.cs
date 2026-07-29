@@ -19,7 +19,14 @@ public sealed class ToolSnapshotTests
         Assert.Equal(first.SnapshotSha256, second.SnapshotSha256);
         Assert.Equal(2, first.SchemaVersion);
         Assert.Equal(
-            ["file.list", "file.read", "file.write", "shell.run", "web.fetch"],
+            [
+                "file.list",
+                "file.read",
+                "file.write",
+                "shell.run",
+                "skill.load",
+                "web.fetch",
+            ],
             first.Registrations.Select(CanonicalName));
         Assert.Equal(
             [
@@ -27,6 +34,7 @@ public sealed class ToolSnapshotTests
                 ToolReplaySafety.Safe,
                 ToolReplaySafety.Unsafe,
                 ToolReplaySafety.Unsafe,
+                ToolReplaySafety.Safe,
                 ToolReplaySafety.Unsafe,
             ],
             first.Registrations.Select(item => item.Definition.ReplaySafety));
@@ -40,6 +48,7 @@ public sealed class ToolSnapshotTests
                 ToolEffect.ProcessExecution |
                 ToolEffect.NetworkRead |
                 ToolEffect.ExternalMutation,
+                ToolEffect.None,
                 ToolEffect.NetworkRead,
             ],
             first.Registrations.Select(item => item.Definition.Effects));
@@ -53,7 +62,14 @@ public sealed class ToolSnapshotTests
                 Assert.Equal(ToolInvocationAudience.Model, item.Audience);
             });
         Assert.Equal(
-            ["file__list", "file__read", "file__write", "shell__run", "web__fetch"],
+            [
+                "file__list",
+                "file__read",
+                "file__write",
+                "shell__run",
+                "skill__load",
+                "web__fetch",
+            ],
             first.Registrations.Select(item =>
                 first.CanonicalToProviderNames[CanonicalName(item)]));
         Assert.Equal(
@@ -99,7 +115,7 @@ public sealed class ToolSnapshotTests
                     new ToolsConfig()),
                 TestContext.Current.CancellationToken)));
 
-        Assert.All(snapshots, snapshot => Assert.Equal(5, snapshot.Registrations.Count));
+        Assert.All(snapshots, snapshot => Assert.Equal(6, snapshot.Registrations.Count));
         Assert.Single(snapshots.Select(snapshot => snapshot.SnapshotSha256).Distinct());
     }
 
@@ -129,10 +145,10 @@ public sealed class ToolSnapshotTests
             });
 
         Assert.Equal(
-            ["file.list", "file.read", "web.fetch"],
+            ["file.list", "file.read", "skill.load", "web.fetch"],
             plan.Registrations.Select(CanonicalName));
         Assert.Equal(
-            ["file.list", "file.read", "file.write"],
+            ["file.list", "file.read", "file.write", "skill.load"],
             networkDenied.Registrations.Select(CanonicalName));
         Assert.Equal(
             ToolAuthorityDecision.RequireApproval,

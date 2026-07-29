@@ -151,6 +151,57 @@ public sealed class ToolInvocationPipelineTests
             });
     }
 
+    [Fact]
+    public async Task Skill_load_reads_only_the_frozen_turn_snapshot()
+    {
+        const string body = "Frozen skill body.";
+        using var arguments = JsonDocument.Parse("""{"id":"acme/review"}""");
+        var runtime = new ToolRuntime();
+        var toolSnapshot = runtime.BuildSnapshot(AgentMode.Agent, new ToolsConfig());
+        var skillSnapshot = EffectiveSkillSnapshot.Create(
+        [
+            new EffectiveSkillSnapshotItem(
+                "acme/review",
+                new CapabilitySourceDescriptor(
+                    CapabilitySourceKind.Workspace,
+                    "acme/review",
+                    version: null,
+                    new string('a', 64)),
+                "Review changes.",
+                body,
+                Sha256(System.Text.Encoding.UTF8.GetBytes(body)),
+                IsActive: false,
+                SelectedVariantId: null),
+        ]);
+        var canonicalArguments = ThreadJournal.Canonicalize(arguments.RootElement);
+        var context = new ToolInvocationContext(
+            Guid.CreateVersion7(),
+            Guid.CreateVersion7(),
+            Guid.CreateVersion7(),
+            Guid.CreateVersion7(),
+            CallIndex: 0,
+            ProviderToolCallId: "call-skill",
+            ProviderToolName: toolSnapshot.CanonicalToProviderNames["skill.load"],
+            arguments.RootElement,
+            Sha256(canonicalArguments),
+            SensitiveInputDetected: false,
+            toolSnapshot,
+            Skills: skillSnapshot);
+
+        var result = await new ToolInvocationPipeline(
+                runtime,
+                new SecretRedactor([]))
+            .InvokeAsync(
+                context,
+                new RecordingSink(),
+                TestContext.Current.CancellationToken);
+
+        Assert.Equal(ToolInvocationStatus.Completed, result.Status);
+        Assert.Equal(
+            body,
+            result.Output!.Value.GetProperty("markdownBody").GetString());
+    }
+
     [Theory]
     [InlineData("not-found", ToolErrorCodes.NotFound)]
     [InlineData("audience", ToolErrorCodes.AudienceDenied)]

@@ -33,28 +33,35 @@ public static class OpenCoWorkAgentExtensions
         services.TryAddSingleton<ModelsConfig>();
         services.TryAddSingleton<ToolsConfig>();
         services.TryAddSingleton(serviceProvider =>
+            new ProviderDeclarationCatalog(
+                serviceProvider.GetRequiredService<OpenCoWorkPaths>()));
+        services.TryAddSingleton(serviceProvider =>
             new ToolRuntime(
                 serviceProvider.GetRequiredService<OpenCoWorkPaths>(),
                 serviceProvider.GetRequiredService<ModelsConfig>()));
         services.TryAddSingleton(serviceProvider =>
-            FrozenProviderCredentials.Capture(
-                serviceProvider.GetRequiredService<ModelsConfig>()));
-        services.TryAddSingleton(serviceProvider =>
         {
-            var credentials =
-                serviceProvider.GetRequiredService<FrozenProviderCredentials>();
             var snapshot =
                 serviceProvider.GetService<EffectiveConfigSnapshot>();
             return snapshot is null
-                ? new SecretRedactor(credentials.GetSecretValues())
-                : SecretRedactor.FromSnapshot(snapshot, credentials);
+                ? new SecretRedactor([])
+                : SecretRedactor.FromSnapshot(snapshot);
         });
+        services.TryAddSingleton<IProviderOsSecretStore>(
+            static _ => ProviderOsSecretStore.Create());
+        services.TryAddSingleton(serviceProvider =>
+            new ProviderAuthService(
+                serviceProvider.GetRequiredService<ModelsConfig>(),
+                serviceProvider.GetRequiredService<ProviderDeclarationCatalog>(),
+                serviceProvider.GetRequiredService<IProviderOsSecretStore>(),
+                serviceProvider.GetRequiredService<SecretRedactor>(),
+                paths: serviceProvider.GetRequiredService<OpenCoWorkPaths>()));
         services.TryAddSingleton(serviceProvider =>
             new ProviderRegistry(
                 serviceProvider.GetRequiredService<ModelsConfig>(),
-                serviceProvider.GetRequiredService<FrozenProviderCredentials>(),
                 AppContext.BaseDirectory,
-                serviceProvider.GetRequiredService<OpenCoWorkPaths>().WorkspaceRoot));
+                serviceProvider.GetRequiredService<OpenCoWorkPaths>().WorkspaceRoot,
+                serviceProvider.GetRequiredService<ProviderDeclarationCatalog>()));
         services.TryAddSingleton(serviceProvider =>
             new AgentFactory(
                 serviceProvider.GetRequiredService<ProviderRegistry>(),
@@ -76,6 +83,7 @@ public static class OpenCoWorkAgentExtensions
                 serviceProvider.GetRequiredService<HttpClient>(),
                 serviceProvider.GetRequiredService<IToolInvocationPipeline>(),
                 serviceProvider.GetRequiredService<SecretRedactor>(),
+                serviceProvider.GetRequiredService<ProviderAuthService>(),
                 serviceProvider.GetService<TimeProvider>()));
         services.TryAddSingleton<ISessionExecutor>(serviceProvider =>
             serviceProvider.GetRequiredService<AgentRuntimeExecutor>());
@@ -87,7 +95,8 @@ internal sealed record ProviderModelRegistration(
     string ProviderId,
     string ModelId,
     Uri BaseUri,
-    string ApiKey,
+    string? AuthProfileId,
+    ProviderAuthPlacement AuthPlacement,
     string TokenizerProfileId,
     string TokenizerProfileVersion,
     string ChatTemplateId,
@@ -95,13 +104,18 @@ internal sealed record ProviderModelRegistration(
     int ContextWindowTokens,
     int MaxOutputTokens,
     string ConfigurationSha256,
-    ModelTokenizer Tokenizer);
+    ModelTokenizer Tokenizer,
+    bool SupportsToolCalls,
+    TimeSpan ResponseHeaderTimeout,
+    TimeSpan StreamIdleTimeout,
+    string? LegacyApiKey = null);
 
 internal sealed class ProviderRegistry
 {
     private readonly object _gate = new();
     private readonly ModelsConfig _models;
-    private readonly FrozenProviderCredentials _credentials;
+    private readonly FrozenProviderCredentials? _legacyCredentials;
+    private readonly ProviderDeclarationCatalog? _declarations;
     private readonly string _bundledTokenizerBaseDirectory;
     private readonly string _customTokenizerBaseDirectory;
     private readonly Dictionary<string, ProviderModelRegistration> _resolved =
@@ -112,10 +126,39 @@ internal sealed class ProviderRegistry
         FrozenProviderCredentials credentials,
         string bundledTokenizerBaseDirectory,
         string customTokenizerBaseDirectory)
+        : this(
+            models,
+            bundledTokenizerBaseDirectory,
+            customTokenizerBaseDirectory,
+            declarations: null,
+            credentials)
+    {
+    }
+
+    public ProviderRegistry(
+        ModelsConfig models,
+        string bundledTokenizerBaseDirectory,
+        string customTokenizerBaseDirectory,
+        ProviderDeclarationCatalog? declarations = null)
+        : this(
+            models,
+            bundledTokenizerBaseDirectory,
+            customTokenizerBaseDirectory,
+            declarations,
+            legacyCredentials: null)
+    {
+    }
+
+    private ProviderRegistry(
+        ModelsConfig models,
+        string bundledTokenizerBaseDirectory,
+        string customTokenizerBaseDirectory,
+        ProviderDeclarationCatalog? declarations,
+        FrozenProviderCredentials? legacyCredentials)
     {
         _models = models ?? throw new ArgumentNullException(nameof(models));
-        _credentials = credentials
-            ?? throw new ArgumentNullException(nameof(credentials));
+        _legacyCredentials = legacyCredentials;
+        _declarations = declarations;
         ArgumentException.ThrowIfNullOrWhiteSpace(bundledTokenizerBaseDirectory);
         ArgumentException.ThrowIfNullOrWhiteSpace(customTokenizerBaseDirectory);
         _bundledTokenizerBaseDirectory =
@@ -136,40 +179,158 @@ internal sealed class ProviderRegistry
                 return existing;
             }
 
-            if (!_models.Providers.TryGetValue(providerId, out var provider) ||
-                !provider.Models.TryGetValue(modelId, out var model))
+            ProviderModelRegistration registration;
+            if (_models.Providers.TryGetValue(providerId, out var provider) &&
+                provider.Models.TryGetValue(modelId, out var model))
+            {
+                registration = ResolveBuiltIn(providerId, modelId, provider, model);
+            }
+            else if (_declarations?.Providers.TryGetValue(
+                         providerId,
+                         out var external) == true &&
+                     external.Models.TryGetValue(modelId, out var externalModel))
+            {
+                registration = ResolveExternal(external, externalModel);
+            }
+            else
             {
                 throw new AgentPreparationException(
                     AgentErrorCodes.ContextInputInvalid,
                     "The configured provider/model selection is unavailable.");
             }
 
-            var tokenizer = ModelSelectionPreflight.Validate(
-                _models,
-                _credentials,
-                providerId,
-                modelId,
-                _bundledTokenizerBaseDirectory,
-                _customTokenizerBaseDirectory);
-            var profile = TokenizerProfiles.TryGetForModel(modelId, out var builtIn)
-                ? builtIn
-                : null;
-            var registration = new ProviderModelRegistration(
-                providerId,
-                modelId,
-                new Uri(provider.BaseUrl.TrimEnd('/') + "/", UriKind.Absolute),
-                _credentials.GetRequired(providerId),
-                model.TokenizerProfileId,
-                model.TokenizerProfileVersion,
-                profile?.ChatTemplateId ?? "openai-compatible-chat",
-                profile?.ChatTemplateVersion ?? "1",
-                model.ContextWindowTokens,
-                model.MaxOutputTokens,
-                ConfigurationHash(providerId, modelId, provider, model),
-                tokenizer);
             _resolved.Add(key, registration);
             return registration;
         }
+    }
+
+    internal CapabilityContributionSet CreateCoreContributions()
+    {
+        var items = new List<CapabilityContribution>();
+        foreach (var (providerId, provider) in _models.Providers
+                     .OrderBy(pair => pair.Key, StringComparer.Ordinal))
+        {
+            items.Add(new CapabilityContribution(
+                CapabilityKind.AuthProfile,
+                $"core/{providerId}",
+                $"{providerId} authentication",
+                "Built-in provider environment authentication.",
+                CapabilityStatus.Ready,
+                [],
+                generation: 1,
+                []));
+            items.Add(new CapabilityContribution(
+                CapabilityKind.Provider,
+                providerId,
+                providerId,
+                "Built-in OpenAI-compatible provider.",
+                CapabilityStatus.Ready,
+                [],
+                generation: 1,
+                []));
+            foreach (var modelId in provider.Models.Keys.Order(StringComparer.Ordinal))
+            {
+                items.Add(new CapabilityContribution(
+                    CapabilityKind.Model,
+                    $"{providerId}/{modelId}",
+                    modelId,
+                    "Built-in provider model.",
+                    CapabilityStatus.Ready,
+                    [],
+                    generation: 1,
+                    []));
+            }
+        }
+
+        var digest = Convert.ToHexString(
+                SHA256.HashData(Encoding.UTF8.GetBytes(string.Join(
+                    '\n',
+                    items.Select(item => $"{item.Kind}\0{item.Id}")))))
+            .ToLowerInvariant();
+        return new CapabilityContributionSet(
+            new CapabilitySourceDescriptor(
+                CapabilitySourceKind.Core,
+                "opencowork.providers",
+                "1",
+                digest),
+            items);
+    }
+
+    private ProviderModelRegistration ResolveBuiltIn(
+        string providerId,
+        string modelId,
+        ProviderConfig provider,
+        ModelConfig model)
+    {
+        var tokenizer = ModelSelectionPreflight.Validate(
+            _models,
+            providerId,
+            modelId,
+            _bundledTokenizerBaseDirectory,
+            _customTokenizerBaseDirectory);
+        var profile = TokenizerProfiles.TryGetForModel(modelId, out var builtIn)
+            ? builtIn
+            : null;
+        var legacyApiKey = _legacyCredentials?.GetRequired(providerId);
+        return new ProviderModelRegistration(
+            providerId,
+            modelId,
+            new Uri(provider.BaseUrl.TrimEnd('/') + "/", UriKind.Absolute),
+            $"core/{providerId}",
+            ProviderAuthPlacement.Bearer,
+            model.TokenizerProfileId,
+            model.TokenizerProfileVersion,
+            profile?.ChatTemplateId ?? "openai-compatible-chat",
+            profile?.ChatTemplateVersion ?? "1",
+            model.ContextWindowTokens,
+            model.MaxOutputTokens,
+            ConfigurationHash(providerId, modelId, provider, model),
+            tokenizer,
+            SupportsToolCalls: true,
+            TimeSpan.FromSeconds(120),
+            TimeSpan.FromSeconds(120),
+            legacyApiKey);
+    }
+
+    private ProviderModelRegistration ResolveExternal(
+        ExternalProvider provider,
+        ExternalProviderModel model)
+    {
+        var tokenizer = TokenizerProfiles.TryGetForModel(model.Id, out var builtIn)
+            ? builtIn!.CreateTokenizer(_bundledTokenizerBaseDirectory)
+            : TokenizerProfiles.CreateCustomTokenizer(
+                model.TokenizerProfileId,
+                Path.GetFullPath(model.TokenizerPath!, _customTokenizerBaseDirectory),
+                model.TokenizerSha256!);
+        var profile = TokenizerProfiles.TryGetForModel(model.Id, out var builtInProfile)
+            ? builtInProfile
+            : null;
+        var placement = provider.AuthProfileId is null
+            ? ProviderAuthPlacement.None
+            : _declarations!.AuthProfiles.TryGetValue(
+                provider.AuthProfileId,
+                out var auth)
+                ? auth.Placement
+                : throw new AgentPreparationException(
+                    AgentErrorCodes.ProviderAuthenticationFailed,
+                    "Provider authentication is unavailable.");
+        return new ProviderModelRegistration(
+            provider.Id,
+            model.Id,
+            provider.BaseUri,
+            provider.AuthProfileId,
+            placement,
+            model.TokenizerProfileId,
+            model.TokenizerProfileVersion,
+            profile?.ChatTemplateId ?? "openai-compatible-chat",
+            profile?.ChatTemplateVersion ?? "1",
+            model.ContextWindowTokens,
+            model.MaxOutputTokens,
+            ConfigurationHash(provider, model),
+            tokenizer,
+            model.SupportsToolCalls,
+            provider.ResponseHeaderTimeout,
+            provider.StreamIdleTimeout);
     }
 
     private static string ConfigurationHash(
@@ -189,6 +350,28 @@ internal sealed class ProviderRegistry
             model.ContextWindowTokens,
             model.MaxOutputTokens,
             model.TokenizerSha256 ?? string.Empty);
+        return Convert.ToHexString(
+                SHA256.HashData(Encoding.UTF8.GetBytes(canonical)))
+            .ToLowerInvariant();
+    }
+
+    private static string ConfigurationHash(
+        ExternalProvider provider,
+        ExternalProviderModel model)
+    {
+        var canonical = string.Join(
+            '\n',
+            provider.Id,
+            model.Id,
+            provider.BaseUri.AbsoluteUri.TrimEnd('/'),
+            provider.AuthProfileId ?? string.Empty,
+            model.TokenizerProfileId,
+            model.TokenizerProfileVersion,
+            model.ContextWindowTokens,
+            model.MaxOutputTokens,
+            model.TokenizerSha256 ?? string.Empty,
+            provider.ResponseHeaderTimeout.Ticks,
+            provider.StreamIdleTimeout.Ticks);
         return Convert.ToHexString(
                 SHA256.HashData(Encoding.UTF8.GetBytes(canonical)))
             .ToLowerInvariant();
@@ -437,7 +620,8 @@ internal sealed class AgentFactory(
             : null;
         var capabilityRevision =
             frozen?.CapabilityRevision ?? capabilityLease?.Catalog.Revision ?? 0;
-        var skillSnapshot = frozen?.Skills ?? EffectiveSkillSnapshot.Empty;
+        var skillSnapshot =
+            frozen?.Skills ?? capabilityLease?.Skills ?? EffectiveSkillSnapshot.Empty;
         EffectiveToolSnapshot toolSnapshot;
         if (frozen is not null)
         {
@@ -464,7 +648,9 @@ internal sealed class AgentFactory(
             }
         }
 
-        var tools = _tools.CreateProviderDefinitions(toolSnapshot);
+        var tools = provider.SupportsToolCalls
+            ? _tools.CreateProviderDefinitions(toolSnapshot)
+            : [];
         var workspaceName = new DirectoryInfo(_paths.WorkspaceRoot).Name;
         if (string.IsNullOrEmpty(workspaceName))
         {
@@ -795,6 +981,7 @@ internal sealed class AgentRuntimeExecutor : ISessionExecutor
     private readonly Func<ProviderModelRegistration, IChatCompletionClient> _clients;
     private readonly IToolInvocationPipeline _toolPipeline;
     private readonly SecretRedactor _redactor;
+    private readonly ProviderAuthService? _auth;
     private readonly TimeProvider _timeProvider;
 
     public AgentRuntimeExecutor(
@@ -803,6 +990,7 @@ internal sealed class AgentRuntimeExecutor : ISessionExecutor
         HttpClient httpClient,
         IToolInvocationPipeline toolPipeline,
         SecretRedactor redactor,
+        ProviderAuthService auth,
         TimeProvider? timeProvider = null)
         : this(
             factory,
@@ -810,11 +998,15 @@ internal sealed class AgentRuntimeExecutor : ISessionExecutor
             provider => new OpenAiCompatibleChatClient(
                 httpClient,
                 provider.BaseUri,
-                provider.ApiKey,
+                provider.LegacyApiKey,
+                provider.AuthPlacement,
+                provider.ResponseHeaderTimeout,
+                provider.StreamIdleTimeout,
                 timeProvider),
             timeProvider,
             toolPipeline,
-            redactor)
+            redactor,
+            auth)
     {
     }
 
@@ -824,13 +1016,15 @@ internal sealed class AgentRuntimeExecutor : ISessionExecutor
         Func<ProviderModelRegistration, IChatCompletionClient> clients,
         TimeProvider? timeProvider = null,
         IToolInvocationPipeline? toolPipeline = null,
-        SecretRedactor? redactor = null)
+        SecretRedactor? redactor = null,
+        ProviderAuthService? auth = null)
     {
         _factory = factory ?? throw new ArgumentNullException(nameof(factory));
         _paths = paths ?? throw new ArgumentNullException(nameof(paths));
         _clients = clients ?? throw new ArgumentNullException(nameof(clients));
         _timeProvider = timeProvider ?? TimeProvider.System;
         _redactor = redactor ?? new SecretRedactor([]);
+        _auth = auth;
         _toolPipeline = toolPipeline ??
                         new ToolInvocationPipeline(
                             new ToolRuntime(),
@@ -875,6 +1069,7 @@ internal sealed class AgentRuntimeExecutor : ISessionExecutor
         var invocationToken = invocationCancellation.Token;
         WorkspaceInstructionDocument? instructions;
         AgentInvocationDraft draft;
+        ProviderSecretLease providerSecret;
         Dictionary<string, KnownToolCall> knownToolCalls;
         PendingToolFrame? pendingToolFrame;
         try
@@ -899,6 +1094,8 @@ internal sealed class AgentRuntimeExecutor : ISessionExecutor
                 draft.Snapshot,
                 pendingToolFrame,
                 resumeCheckpoint);
+            providerSecret = _auth?.Acquire(draft.Provider.AuthProfileId) ??
+                             new ProviderSecretLease(draft.Provider.LegacyApiKey);
         }
         catch (AgentPreparationException exception)
         {
@@ -923,6 +1120,7 @@ internal sealed class AgentRuntimeExecutor : ISessionExecutor
             return;
         }
 
+        using var providerSecretLease = providerSecret;
         var activeContentItemId = Guid.Empty;
         var activeReasoningItemId = Guid.Empty;
         try
@@ -955,6 +1153,7 @@ internal sealed class AgentRuntimeExecutor : ISessionExecutor
                     nextAttempt,
                     maximumAttempt,
                     targetPercent: 60,
+                    providerSecretLease,
                     invocationToken,
                     cancellationToken);
                 if (compacted is null)
@@ -1037,7 +1236,9 @@ internal sealed class AgentRuntimeExecutor : ISessionExecutor
                             attempt,
                             ChatCompletionInvocationPurpose.Response,
                             draft.Tools);
-                        await foreach (var item in _clients(draft.Provider)
+                        await foreach (var item in Client(
+                                           draft.Provider,
+                                           providerSecretLease)
                                            .StreamAsync(request, invocationToken)
                                            .WithCancellation(invocationToken))
                         {
@@ -1224,7 +1425,8 @@ internal sealed class AgentRuntimeExecutor : ISessionExecutor
                                             ? known?.Result
                                             : null,
                                         ProviderCallIdConflict:
-                                        known is not null && !sameCall),
+                                        known is not null && !sameCall,
+                                        Skills: draft.Snapshot.Skills),
                                     sink,
                                     invocationToken);
                                 anyToolAttempted |= result.AttemptCount > 0;
@@ -1328,6 +1530,7 @@ internal sealed class AgentRuntimeExecutor : ISessionExecutor
                                 nextAttempt,
                                 maximumAttempt: 3,
                                 targetPercent: 50,
+                                providerSecretLease,
                                 invocationToken,
                                 cancellationToken);
                             if (compacted is null)
@@ -1637,7 +1840,8 @@ internal sealed class AgentRuntimeExecutor : ISessionExecutor
                     PriorAttemptCount: priorAttemptCount,
                     RemainingExecutionBudget: remaining,
                     ReplayResult: sameCall ? known?.Result : null,
-                    ProviderCallIdConflict: known is not null && !sameCall),
+                    ProviderCallIdConflict: known is not null && !sameCall,
+                    Skills: draft.Snapshot.Skills),
                 sink,
                 cancellationToken);
             anyToolAttempted |= result.AttemptCount > 0;
@@ -1928,6 +2132,7 @@ internal sealed class AgentRuntimeExecutor : ISessionExecutor
         int nextAttempt,
         int maximumAttempt,
         int targetPercent,
+        ProviderSecretLease providerSecret,
         CancellationToken invocationToken,
         CancellationToken cancellationToken)
     {
@@ -1973,7 +2178,7 @@ internal sealed class AgentRuntimeExecutor : ISessionExecutor
                     draft.Snapshot.InvocationId,
                     attempt,
                     ChatCompletionInvocationPurpose.Compaction);
-                await foreach (var item in _clients(draft.Provider)
+                await foreach (var item in Client(draft.Provider, providerSecret)
                                    .StreamAsync(request, invocationToken)
                                    .WithCancellation(invocationToken))
                 {
@@ -2078,6 +2283,11 @@ internal sealed class AgentRuntimeExecutor : ISessionExecutor
 
         return null;
     }
+
+    private IChatCompletionClient Client(
+        ProviderModelRegistration provider,
+        ProviderSecretLease secret) =>
+        _clients(provider with { LegacyApiKey = secret.Secret });
 
     private static CompactionSelection? SelectCompaction(
         AgentSession session,

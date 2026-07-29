@@ -487,9 +487,9 @@ internal sealed class ToolInvocationPipeline : IToolInvocationPipeline
         {
             try
             {
-                bindingResult = await binding.Executor(
-                    context.Arguments,
-                    linked.Token);
+                bindingResult = binding.ContextualExecutor is null
+                    ? await binding.Executor(context.Arguments, linked.Token)
+                    : await binding.ContextualExecutor(context, linked.Token);
             }
             catch (OperationCanceledException)
             {
