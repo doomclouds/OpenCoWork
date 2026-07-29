@@ -6,6 +6,7 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using OpenCoWork.Abstractions;
 using OpenCoWork.Core.Agents;
+using OpenCoWork.Core.Capabilities;
 using OpenCoWork.Core.Configuration;
 using OpenCoWork.Core.Diagnostics;
 using OpenCoWork.Core.Hosting;
@@ -801,6 +802,7 @@ namespace OpenCoWork.App
         public void ConfigureServices(IServiceCollection services)
         {
             services.AddOpenCoWorkAgentRuntime();
+            services.AddOpenCoWorkCapabilityRuntime();
             services.AddOpenCoWorkSessionRuntime();
         }
 
@@ -808,20 +810,93 @@ namespace OpenCoWork.App
             IServiceProvider services,
             CancellationToken cancellationToken)
         {
+            var capabilities =
+                services.GetRequiredService<WorkspaceCapabilityRuntime>();
             var session = services.GetRequiredService<SessionRuntime>();
-            await session.StartAsync(cancellationToken);
+            try
+            {
+                await capabilities.StartAsync(cancellationToken);
+                await session.StartAsync(cancellationToken);
+            }
+            catch (Exception startupError)
+            {
+                try
+                {
+                    if (capabilities.Status != CapabilityRuntimeState.Stopped)
+                    {
+                        await capabilities.StopAsync(CancellationToken.None);
+                    }
+                }
+                catch (Exception cleanupError)
+                {
+                    throw new AggregateException(
+                        "Capability startup failed and cleanup reported an error.",
+                        startupError,
+                        cleanupError);
+                }
+
+                System.Runtime.ExceptionServices.ExceptionDispatchInfo
+                    .Capture(startupError)
+                    .Throw();
+                throw;
+            }
+
+            var degradedReasons = new List<string>();
+            if (capabilities.Status == CapabilityRuntimeState.Degraded)
+            {
+                degradedReasons.Add("Capability recovery is incomplete.");
+            }
+
             if (session.IsDegraded)
+            {
+                degradedReasons.Add("Session projection recovery is incomplete.");
+            }
+
+            if (degradedReasons.Count != 0)
             {
                 services.GetRequiredService<WorkspaceRuntime>().ReportDegraded(
                     "session",
-                    "Session projection recovery is incomplete.");
+                    string.Join(' ', degradedReasons));
             }
         }
 
-        public ValueTask StopAsync(
+        public async ValueTask StopAsync(
             IServiceProvider services,
-            CancellationToken cancellationToken) =>
-            new(services.GetRequiredService<SessionRuntime>().StopAsync(cancellationToken));
+            CancellationToken cancellationToken)
+        {
+            Exception? sessionError = null;
+            try
+            {
+                await services
+                    .GetRequiredService<SessionRuntime>()
+                    .StopAsync(cancellationToken);
+            }
+            catch (Exception error)
+            {
+                sessionError = error;
+            }
+
+            try
+            {
+                await services
+                    .GetRequiredService<WorkspaceCapabilityRuntime>()
+                    .StopAsync(cancellationToken);
+            }
+            catch (Exception capabilityError) when (sessionError is not null)
+            {
+                throw new AggregateException(
+                    "Session and capability runtime cleanup failed.",
+                    sessionError,
+                    capabilityError);
+            }
+
+            if (sessionError is not null)
+            {
+                System.Runtime.ExceptionServices.ExceptionDispatchInfo
+                    .Capture(sessionError)
+                    .Throw();
+            }
+        }
     }
 
     [OpenCoWorkModule(

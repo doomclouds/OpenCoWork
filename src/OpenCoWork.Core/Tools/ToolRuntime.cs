@@ -40,6 +40,11 @@ internal sealed partial class ToolRuntime
     private readonly IReadOnlyDictionary<RuntimeBindingId, ToolRuntimeBinding> _bindings;
     private readonly IReadOnlyDictionary<ToolDefinitionId, JsonSchema> _schemas;
 
+    internal IReadOnlyList<ToolRegistration> Registrations =>
+        Array.AsReadOnly(_candidates
+            .Select(candidate => candidate.Registration)
+            .ToArray());
+
     public ToolRuntime()
         : this(CreateCoreTools(
             fileTools: null,
