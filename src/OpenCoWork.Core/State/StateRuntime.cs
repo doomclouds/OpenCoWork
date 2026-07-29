@@ -15,7 +15,7 @@ internal enum StateMigrationFaultPoint
 
 internal static class StateMigrations
 {
-    internal const int CurrentVersion = 4;
+    internal const int CurrentVersion = 5;
     internal const string VersionTwoTables =
         "items,pending_interactions,session_idempotency," +
         "session_operation_receipts,state_info,threads,turn_queue,turns";
@@ -23,22 +23,32 @@ internal static class StateMigrations
         "agent_invocations,compaction_checkpoints,items,pending_interactions," +
         "provider_usage,session_idempotency,session_operation_receipts," +
         "state_info,threads,turn_queue,turns";
-    internal const string CurrentTables =
+    internal const string VersionFourTables =
         "agent_invocations,compaction_checkpoints,items,pending_interactions," +
         "provider_usage,session_idempotency,session_operation_receipts," +
         "state_info,threads,tool_invocations,turn_queue,turns";
+    internal const string CurrentTables =
+        "agent_invocations,capability_catalog_state,compaction_checkpoints," +
+        "deferred_tool_activations,items,pending_interactions,provider_usage," +
+        "session_idempotency,session_operation_receipts,state_info," +
+        "terminal_sessions,threads,tool_invocations,turn_queue,turns," +
+        "workspace_memories,workspace_memory_versions";
     internal const string CurrentIndexes =
-        "ix_agent_invocations_thread,ix_items_thread_sequence,ix_items_turn_sequence," +
+        "ix_agent_invocations_thread,ix_deferred_tool_activations_thread," +
+        "ix_items_thread_sequence,ix_items_turn_sequence," +
         "ix_pending_interactions_thread,ix_provider_usage_thread," +
         "ix_session_idempotency_thread," +
-        "ix_session_operation_receipts_expiry,ix_threads_status," +
-        "ix_threads_updated,ix_tool_invocations_thread_call," +
-        "ix_tool_invocations_thread_status,ix_turns_thread";
+        "ix_session_operation_receipts_expiry,ix_terminal_sessions_thread_status," +
+        "ix_threads_status,ix_threads_updated,ix_tool_invocations_thread_call," +
+        "ix_tool_invocations_thread_status,ix_turns_thread," +
+        "ix_workspace_memories_search,ix_workspace_memories_status_updated";
     internal const string CurrentForeignKeys =
         "agent_invocations:thread_id->threads.thread_id:cascade," +
         "agent_invocations:turn_id->turns.turn_id:cascade," +
         "compaction_checkpoints:thread_id->threads.thread_id:cascade," +
         "compaction_checkpoints:turn_id->turns.turn_id:cascade," +
+        "deferred_tool_activations:thread_id->threads.thread_id:cascade," +
+        "deferred_tool_activations:turn_id->turns.turn_id:cascade," +
         "items:thread_id->threads.thread_id:cascade," +
         "items:turn_id->turns.turn_id:cascade," +
         "pending_interactions:item_id->items.item_id:cascade," +
@@ -47,11 +57,13 @@ internal static class StateMigrations
         "provider_usage:thread_id->threads.thread_id:cascade," +
         "provider_usage:turn_id->turns.turn_id:cascade," +
         "session_idempotency:thread_id->threads.thread_id:cascade," +
+        "terminal_sessions:thread_id->threads.thread_id:cascade," +
         "threads:active_turn_id->turns.turn_id:set null," +
         "tool_invocations:thread_id->threads.thread_id:cascade," +
         "tool_invocations:turn_id->turns.turn_id:cascade," +
         "turn_queue:thread_id->threads.thread_id:cascade," +
-        "turns:thread_id->threads.thread_id:cascade";
+        "turns:thread_id->threads.thread_id:cascade," +
+        "workspace_memory_versions:memory_id->workspace_memories.memory_id:restrict";
 
     private const string VersionOneSql =
         """
@@ -432,6 +444,82 @@ internal static class StateMigrations
             ON tool_invocations (thread_id, status);
         """;
 
+    private const string VersionFiveSql =
+        """
+        CREATE TABLE capability_catalog_state (
+            id INTEGER NOT NULL PRIMARY KEY CHECK (id = 1),
+            last_revision INTEGER NOT NULL CHECK (last_revision >= 0),
+            catalog_sha256 TEXT NOT NULL CHECK (length(catalog_sha256) = 64),
+            updated_utc INTEGER NOT NULL
+        );
+        INSERT INTO capability_catalog_state (
+            id,
+            last_revision,
+            catalog_sha256,
+            updated_utc
+        ) VALUES (
+            1,
+            0,
+            '0000000000000000000000000000000000000000000000000000000000000000',
+            0
+        );
+
+        CREATE TABLE deferred_tool_activations (
+            thread_id TEXT NOT NULL,
+            turn_id TEXT NOT NULL,
+            tool_definition_id TEXT NOT NULL,
+            activated_sequence INTEGER NOT NULL CHECK (activated_sequence > 0),
+            activated_utc INTEGER NOT NULL,
+            PRIMARY KEY (turn_id, tool_definition_id),
+            FOREIGN KEY (thread_id) REFERENCES threads (thread_id) ON DELETE CASCADE,
+            FOREIGN KEY (turn_id) REFERENCES turns (turn_id) ON DELETE CASCADE
+        );
+        CREATE INDEX ix_deferred_tool_activations_thread
+            ON deferred_tool_activations (thread_id, activated_sequence);
+
+        CREATE TABLE workspace_memories (
+            memory_id TEXT NOT NULL PRIMARY KEY,
+            current_version INTEGER NOT NULL CHECK (current_version > 0),
+            title TEXT NOT NULL,
+            summary TEXT NOT NULL,
+            tags_json TEXT NOT NULL,
+            status TEXT NOT NULL CHECK (status IN ('active', 'archived')),
+            normalized_search_text TEXT NOT NULL,
+            created_utc INTEGER NOT NULL,
+            updated_utc INTEGER NOT NULL
+        );
+        CREATE INDEX ix_workspace_memories_status_updated
+            ON workspace_memories (status, updated_utc DESC, memory_id);
+        CREATE INDEX ix_workspace_memories_search
+            ON workspace_memories (normalized_search_text, memory_id);
+
+        CREATE TABLE workspace_memory_versions (
+            memory_id TEXT NOT NULL,
+            version INTEGER NOT NULL CHECK (version > 0),
+            content_sha256 TEXT NOT NULL CHECK (length(content_sha256) = 64),
+            content_length INTEGER NOT NULL CHECK (content_length >= 0),
+            created_utc INTEGER NOT NULL,
+            PRIMARY KEY (memory_id, version),
+            FOREIGN KEY (memory_id)
+                REFERENCES workspace_memories (memory_id) ON DELETE RESTRICT
+        );
+
+        CREATE TABLE terminal_sessions (
+            terminal_session_id TEXT NOT NULL PRIMARY KEY,
+            thread_id TEXT NOT NULL,
+            request_sha256 TEXT NOT NULL CHECK (length(request_sha256) = 64),
+            status TEXT NOT NULL CHECK (
+                status IN ('running', 'exited', 'stopped', 'lost', 'failed')),
+            started_utc INTEGER NOT NULL,
+            updated_utc INTEGER NOT NULL,
+            ended_utc INTEGER NULL,
+            exit_code INTEGER NULL,
+            FOREIGN KEY (thread_id) REFERENCES threads (thread_id) ON DELETE CASCADE
+        );
+        CREATE INDEX ix_terminal_sessions_thread_status
+            ON terminal_sessions (thread_id, status, updated_utc DESC);
+        """;
+
     internal static readonly IReadOnlyList<StateMigration> VersionOneOnly =
     [
         new(1, VersionOneSql),
@@ -450,12 +538,21 @@ internal static class StateMigrations
         new(3, VersionThreeSql),
     ];
 
+    internal static readonly IReadOnlyList<StateMigration> VersionFourOnly =
+    [
+        new(1, VersionOneSql),
+        new(2, VersionTwoSql),
+        new(3, VersionThreeSql),
+        new(4, VersionFourSql),
+    ];
+
     internal static readonly IReadOnlyList<StateMigration> Current =
     [
         new(1, VersionOneSql),
         new(2, VersionTwoSql),
         new(3, VersionThreeSql),
         new(4, VersionFourSql),
+        new(5, VersionFiveSql),
     ];
 }
 
@@ -1133,6 +1230,7 @@ public sealed class StateRuntime
                 1 => "state_info",
                 2 => StateMigrations.VersionTwoTables,
                 3 => StateMigrations.VersionThreeTables,
+                4 => StateMigrations.VersionFourTables,
                 StateMigrations.CurrentVersion => StateMigrations.CurrentTables,
                 _ => throw new StateMigrationException(
                     $"State schema version {expectedVersion} has no validation contract."),
@@ -1208,6 +1306,12 @@ public sealed class StateRuntime
                         SELECT 'compaction_checkpoints' AS source, * FROM pragma_foreign_key_list('compaction_checkpoints')
                         UNION ALL
                         SELECT 'tool_invocations' AS source, * FROM pragma_foreign_key_list('tool_invocations')
+                        UNION ALL
+                        SELECT 'deferred_tool_activations' AS source, * FROM pragma_foreign_key_list('deferred_tool_activations')
+                        UNION ALL
+                        SELECT 'terminal_sessions' AS source, * FROM pragma_foreign_key_list('terminal_sessions')
+                        UNION ALL
+                        SELECT 'workspace_memory_versions' AS source, * FROM pragma_foreign_key_list('workspace_memory_versions')
                     )
                     ORDER BY signature
                 );

@@ -71,6 +71,12 @@ public sealed class WorkspacePathTests
         Assert.Equal(
             Path.Combine(Path.GetFullPath(root), ".opencowork", "runtime", "recovery", "threads"),
             paths.ThreadRecoveryDirectory);
+        Assert.Equal(
+            Path.Combine(Path.GetFullPath(root), ".opencowork", "plugins.lock.json"),
+            paths.PluginsLockPath);
+        Assert.Equal(
+            Path.Combine(Path.GetFullPath(root), ".opencowork", "capabilities.json"),
+            paths.CapabilitiesPath);
         Assert.True(Path.IsPathFullyQualified(paths.StateDatabasePath));
     }
 

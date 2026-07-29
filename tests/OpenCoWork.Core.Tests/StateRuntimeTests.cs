@@ -11,33 +11,42 @@ public sealed class StateRuntimeTests
     private static readonly string[] SessionSchemaTables =
     [
         "agent_invocations",
+        "capability_catalog_state",
         "compaction_checkpoints",
+        "deferred_tool_activations",
         "items",
         "pending_interactions",
         "provider_usage",
         "session_idempotency",
         "session_operation_receipts",
         "state_info",
+        "terminal_sessions",
         "threads",
         "tool_invocations",
         "turn_queue",
         "turns",
+        "workspace_memories",
+        "workspace_memory_versions",
     ];
 
     private static readonly string[] SessionSchemaIndexes =
     [
         "ix_agent_invocations_thread",
+        "ix_deferred_tool_activations_thread",
         "ix_items_thread_sequence",
         "ix_items_turn_sequence",
         "ix_pending_interactions_thread",
         "ix_provider_usage_thread",
         "ix_session_idempotency_thread",
         "ix_session_operation_receipts_expiry",
+        "ix_terminal_sessions_thread_status",
         "ix_threads_status",
         "ix_threads_updated",
         "ix_tool_invocations_thread_call",
         "ix_tool_invocations_thread_status",
         "ix_turns_thread",
+        "ix_workspace_memories_search",
+        "ix_workspace_memories_status_updated",
     ];
 
     [Fact]
@@ -70,7 +79,7 @@ public sealed class StateRuntimeTests
                 """,
                 cancellationToken));
         Assert.Equal(
-            4L,
+            5L,
             await ScalarAsync<long>(
                 write,
                 "SELECT schema_version FROM state_info WHERE id = 1;",
@@ -142,10 +151,52 @@ public sealed class StateRuntimeTests
                 connection,
                 "SELECT name FROM pragma_table_info('tool_invocations') ORDER BY name;",
             cancellationToken));
+        Assert.Equal(
+            [
+                "catalog_sha256",
+                "id",
+                "last_revision",
+                "updated_utc",
+            ],
+            await ReadStringsAsync(
+                connection,
+                "SELECT name FROM pragma_table_info('capability_catalog_state') ORDER BY name;",
+                cancellationToken));
+        Assert.Equal(
+            [
+                "created_utc",
+                "current_version",
+                "memory_id",
+                "normalized_search_text",
+                "status",
+                "summary",
+                "tags_json",
+                "title",
+                "updated_utc",
+            ],
+            await ReadStringsAsync(
+                connection,
+                "SELECT name FROM pragma_table_info('workspace_memories') ORDER BY name;",
+                cancellationToken));
+        Assert.Equal(
+            [
+                "ended_utc",
+                "exit_code",
+                "request_sha256",
+                "started_utc",
+                "status",
+                "terminal_session_id",
+                "thread_id",
+                "updated_utc",
+            ],
+            await ReadStringsAsync(
+                connection,
+                "SELECT name FROM pragma_table_info('terminal_sessions') ORDER BY name;",
+                cancellationToken));
     }
 
     [Fact]
-    public async Task Version_four_items_accept_tool_call_and_tool_result_types()
+    public async Task Current_items_accept_tool_call_and_tool_result_types()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         using var files = new TempWorkspace();
@@ -337,7 +388,7 @@ public sealed class StateRuntimeTests
                 """,
                 cancellationToken));
         Assert.Equal(
-            4L,
+            5L,
             await ScalarAsync<long>(
                 migrated,
                 "SELECT schema_version FROM state_info WHERE id = 1;",
@@ -351,7 +402,7 @@ public sealed class StateRuntimeTests
     }
 
     [Fact]
-    public async Task Version_three_database_migrates_to_version_four_without_losing_session_rows()
+    public async Task Version_three_database_migrates_to_version_five_without_losing_session_rows()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         using var files = new TempWorkspace();
@@ -416,7 +467,7 @@ public sealed class StateRuntimeTests
         await using var migrated =
             await current.OpenReadWriteConnectionAsync(cancellationToken);
         Assert.Equal(
-            4L,
+            5L,
             await ScalarAsync<long>(
                 migrated,
                 "SELECT schema_version FROM state_info WHERE id = 1;",
@@ -451,6 +502,53 @@ public sealed class StateRuntimeTests
                 SELECT item_id
                 FROM pending_interactions
                 WHERE interaction_id = '0197f8b1-0000-7000-8000-000000000004';
+                """,
+                cancellationToken));
+    }
+
+    [Fact]
+    public async Task Version_four_database_migrates_to_version_five()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        using var files = new TempWorkspace();
+        var versionFour = new StateRuntime(
+            files.Paths,
+            TimeSpan.FromSeconds(2),
+            StateMigrations.VersionFourOnly,
+            faultInjector: null);
+        await versionFour.InitializeAsync(cancellationToken);
+
+        var current = new StateRuntime(files.Paths, TimeSpan.FromSeconds(2));
+        await current.InitializeAsync(cancellationToken);
+
+        await using var migrated =
+            await current.OpenReadWriteConnectionAsync(cancellationToken);
+        Assert.Equal(
+            5L,
+            await ScalarAsync<long>(
+                migrated,
+                "SELECT schema_version FROM state_info WHERE id = 1;",
+                cancellationToken));
+        Assert.Equal(
+            1L,
+            await ScalarAsync<long>(
+                migrated,
+                "SELECT count(*) FROM capability_catalog_state WHERE id = 1;",
+                cancellationToken));
+        Assert.Equal(
+            5L,
+            await ScalarAsync<long>(
+                migrated,
+                """
+                SELECT count(*)
+                FROM sqlite_schema
+                WHERE type = 'table'
+                  AND name IN (
+                    'capability_catalog_state',
+                    'deferred_tool_activations',
+                    'workspace_memories',
+                    'workspace_memory_versions',
+                    'terminal_sessions');
                 """,
                 cancellationToken));
     }

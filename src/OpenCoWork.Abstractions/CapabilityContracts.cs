@@ -63,6 +63,8 @@ public static class CapabilityErrorCodes
     public const string Conflict = "capability.conflict";
     public const string RevisionConflict = "capability.revisionConflict";
     public const string RuntimeUnavailable = "capability.runtimeUnavailable";
+    public const string PersistenceInvalid = "capability.persistenceInvalid";
+    public const string PersistenceUnavailable = "capability.persistenceUnavailable";
 }
 
 public sealed record CapabilitySourceDescriptor
