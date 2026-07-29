@@ -920,6 +920,10 @@ internal sealed class SessionProjection
                 await ApplyCompactionCheckpointAsync(
                     connection, transaction, entry, cancellationToken);
                 return;
+            case SessionEventType.DeferredToolsActivated:
+                await ApplyDeferredToolsActivatedAsync(
+                    connection, transaction, entry, cancellationToken);
+                return;
             case SessionEventType.ThreadJournalRecovered:
                 return;
             default:
@@ -2828,6 +2832,56 @@ internal sealed class SessionProjection
             ("$timestamp", UnixMilliseconds(entry.Timestamp)));
     }
 
+    private static async Task ApplyDeferredToolsActivatedAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        ThreadJournalEntry entry,
+        CancellationToken cancellationToken)
+    {
+        var fact = ReadFact<DeferredToolsActivatedFact>(entry);
+        SessionIds.RequireVersion7(fact.TurnId, nameof(fact.TurnId), "Turn ID");
+        if (fact.ToolDefinitionIds.Count is 0 or > 8 ||
+            fact.ToolDefinitionIds.Distinct().Count() != fact.ToolDefinitionIds.Count ||
+            fact.ToolDefinitionIds.Any(id =>
+                !Enum.IsDefined(id.SourceKind) ||
+                !IsCleanIdentity(id.SourceId) ||
+                !IsCleanIdentity(id.SourceToolId)))
+        {
+            throw ProjectionError(
+                SessionErrorCodes.InvalidState,
+                "Deferred Tool activation is invalid.");
+        }
+
+        foreach (var definitionId in fact.ToolDefinitionIds)
+        {
+            await ExecuteRequiredAsync(
+                connection,
+                transaction,
+                """
+                INSERT INTO deferred_tool_activations (
+                    thread_id, turn_id, tool_definition_id,
+                    activated_sequence, activated_utc)
+                SELECT
+                    $threadId, $turnId, $definitionId,
+                    $sequence, $timestamp
+                WHERE EXISTS (
+                    SELECT 1
+                    FROM turns
+                    JOIN threads USING (thread_id)
+                    WHERE turns.turn_id = $turnId
+                      AND turns.thread_id = $threadId
+                      AND turns.status = 'running'
+                      AND threads.active_turn_id = $turnId);
+                """,
+                cancellationToken,
+                ("$threadId", Wire(entry.ThreadId)),
+                ("$turnId", Wire(fact.TurnId)),
+                ("$definitionId", JsonSerializer.Serialize(definitionId, JsonOptions)),
+                ("$sequence", entry.Sequence),
+                ("$timestamp", UnixMilliseconds(entry.Timestamp)));
+        }
+    }
+
     private static async Task ApplyCompactionCheckpointAsync(
         SqliteConnection connection,
         SqliteTransaction transaction,
@@ -3342,6 +3396,11 @@ internal sealed class SessionProjection
         value is { Length: 64 } &&
         value.All(character =>
             character is >= '0' and <= '9' or >= 'a' and <= 'f');
+
+    private static bool IsCleanIdentity(string? value) =>
+        !string.IsNullOrWhiteSpace(value) &&
+        string.Equals(value, value.Trim(), StringComparison.Ordinal) &&
+        !value.Any(char.IsControl);
 
     private static bool IsTerminalToolStatus(ToolInvocationStatus status) =>
         status is

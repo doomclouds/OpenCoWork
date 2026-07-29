@@ -127,6 +127,7 @@ public enum SessionEventType
     ToolInvocationStarted,
     ToolInvocationAttemptStarted,
     ToolInvocationTerminal,
+    DeferredToolsActivated,
 }
 
 public static class SessionErrorCodes
@@ -672,7 +673,8 @@ public sealed class AgentSession
         CompactionCheckpointSnapshot? compactionCheckpoint = null,
         AgentInvocationSnapshot? invocation = null,
         IEnumerable<AgentToolInvocationSnapshot>? toolInvocations = null,
-        IEnumerable<ProviderUsageSnapshot>? providerUsage = null)
+        IEnumerable<ProviderUsageSnapshot>? providerUsage = null,
+        IEnumerable<ToolDefinitionId>? activatedDeferredTools = null)
     {
         ArgumentNullException.ThrowIfNull(thread);
         ArgumentNullException.ThrowIfNull(turn);
@@ -685,6 +687,8 @@ public sealed class AgentSession
         Invocation = invocation;
         ToolInvocations = Array.AsReadOnly((toolInvocations ?? []).ToArray());
         ProviderUsage = Array.AsReadOnly((providerUsage ?? []).ToArray());
+        ActivatedDeferredTools = Array.AsReadOnly(
+            (activatedDeferredTools ?? []).Distinct().ToArray());
     }
 
     public ThreadSnapshot Thread { get; }
@@ -702,6 +706,8 @@ public sealed class AgentSession
     public IReadOnlyList<AgentToolInvocationSnapshot> ToolInvocations { get; }
 
     public IReadOnlyList<ProviderUsageSnapshot> ProviderUsage { get; }
+
+    public IReadOnlyList<ToolDefinitionId> ActivatedDeferredTools { get; }
 }
 
 public abstract record SessionExecutionIntent;
@@ -751,6 +757,9 @@ public sealed record RecordToolInvocationAttemptStartedIntent(
 public sealed record RecordToolInvocationTerminalIntent(
     Guid ResultItemId,
     ToolResultSnapshot Result) : SessionExecutionIntent;
+
+public sealed record RecordDeferredToolsActivatedIntent(
+    IReadOnlyList<ToolDefinitionId> ToolDefinitionIds) : SessionExecutionIntent;
 
 public sealed record WaitForInteractionIntent(
     Guid InteractionId,

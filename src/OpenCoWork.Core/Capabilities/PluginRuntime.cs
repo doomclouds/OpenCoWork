@@ -76,9 +76,15 @@ internal sealed partial class PluginRuntime
                         : CapabilityStatus.PendingTrust;
                 IReadOnlyList<PluginToolDeclaration> declarations =
                     await ReadToolsAsync(package, cancellationToken);
+                IReadOnlyList<PluginHookDeclaration> hooks =
+                    await ReadHooksAsync(package, cancellationToken);
                 if (status == CapabilityStatus.Ready)
                 {
-                    await ActivateAsync(package, declarations, cancellationToken);
+                    await ActivateAsync(
+                        package,
+                        declarations,
+                        hooks,
+                        cancellationToken);
                     if (IsFaulted(entry.Id))
                     {
                         status = CapabilityStatus.Faulted;
@@ -94,6 +100,7 @@ internal sealed partial class PluginRuntime
                     status,
                     requiredTrust,
                     declarations,
+                    hooks,
                     status == CapabilityStatus.PendingTrust
                         ? [ToolErrorCodes.TrustRequired]
                         : status == CapabilityStatus.Faulted
@@ -184,6 +191,17 @@ internal sealed partial class PluginRuntime
         }
     }
 
+    internal IReadOnlyList<CapabilityHook> GetHooks()
+    {
+        lock (_gate)
+        {
+            return Array.AsReadOnly(_active.Values
+                .SelectMany(version => version.Hooks)
+                .OrderBy(hook => hook.Id, StringComparer.Ordinal)
+                .ToArray());
+        }
+    }
+
     public Task RemoveAsync(
         string pluginId,
         CancellationToken cancellationToken = default)
@@ -229,6 +247,7 @@ internal sealed partial class PluginRuntime
     private async Task ActivateAsync(
         StoredPluginPackage package,
         IReadOnlyList<PluginToolDeclaration> declarations,
+        IReadOnlyList<PluginHookDeclaration> hookDeclarations,
         CancellationToken cancellationToken)
     {
         PluginVersion? current;
@@ -282,7 +301,7 @@ internal sealed partial class PluginRuntime
             }
         }
 
-        if (declarations.Count == 0)
+        if (declarations.Count == 0 && hookDeclarations.Count == 0)
         {
             lock (_gate)
             {
@@ -312,11 +331,17 @@ internal sealed partial class PluginRuntime
             }
 
             var executors = plugin.ToolExecutors;
+            var hookExecutors = plugin.HookExecutors;
             if (executors is null ||
                 executors.Any(pair =>
                     string.IsNullOrWhiteSpace(pair.Key) || pair.Value is null) ||
                 declarations.Any(declaration =>
-                    !executors.ContainsKey(declaration.Executor)))
+                    !executors.ContainsKey(declaration.Executor)) ||
+                hookExecutors is null ||
+                hookExecutors.Any(pair =>
+                    string.IsNullOrWhiteSpace(pair.Key) || pair.Value is null) ||
+                hookDeclarations.Any(declaration =>
+                    !hookExecutors.ContainsKey(declaration.Executor)))
             {
                 throw LoadFailed();
             }
@@ -333,6 +358,12 @@ internal sealed partial class PluginRuntime
                     CreateRegistration(version, declaration, executors[declaration.Executor]))
                 .ToArray();
             version.Registrations = registrations;
+            version.Hooks = hookDeclarations
+                .Select(declaration => CreateHook(
+                    version,
+                    declaration,
+                    hookExecutors[declaration.Executor]))
+                .ToArray();
             var bindings = registrations
                 .Select(registration => version.Bindings[registration.RuntimeBindingId])
                 .ToArray();
@@ -392,15 +423,104 @@ internal sealed partial class PluginRuntime
             version.Generation);
     }
 
+    private CapabilityHook CreateHook(
+        PluginVersion version,
+        PluginHookDeclaration declaration,
+        PluginHookExecutor executor)
+    {
+        var id = $"{version.Manifest.Id}/{declaration.Id}";
+        return declaration.Event == CapabilityHookEvent.PreToolUse
+            ? new CapabilityHook(
+                id,
+                declaration.Event,
+                version.Manifest.Id,
+                async (context, cancellationToken) =>
+                {
+                    var result = await InvokeHookAsync(
+                        version,
+                        executor,
+                        HookContext(
+                            "preToolUse",
+                            context,
+                            result: null),
+                        cancellationToken);
+                    return new ToolPreUseDecision(
+                        result.Authority,
+                        result.TimeoutCap);
+                },
+                Terminal: null)
+            : new CapabilityHook(
+                id,
+                declaration.Event,
+                version.Manifest.Id,
+                PreUse: null,
+                async (context, result, cancellationToken) =>
+                {
+                    _ = await InvokeHookAsync(
+                        version,
+                        executor,
+                        HookContext(
+                            "toolTerminal",
+                            context,
+                            result),
+                        cancellationToken);
+                });
+    }
+
+    private async ValueTask<PluginHookResult> InvokeHookAsync(
+        PluginVersion version,
+        PluginHookExecutor executor,
+        PluginHookContext context,
+        CancellationToken cancellationToken)
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(
+            cancellationToken,
+            timeout.Token);
+        return await InvokeTrackedAsync(
+            version,
+            token => executor(context, token),
+            linked.Token);
+    }
+
+    private static PluginHookContext HookContext(
+        string eventName,
+        ToolInvocationContext context,
+        ToolResultSnapshot? result)
+    {
+        var canonicalName = context.Snapshot.ProviderToCanonicalNames[
+            context.ProviderToolName];
+        var definition = context.Snapshot.Registrations.Single(registration =>
+            string.Equals(
+                $"{registration.Definition.Name.Namespace}." +
+                registration.Definition.Name.Name,
+                canonicalName,
+                StringComparison.Ordinal)).Definition;
+        return new PluginHookContext(
+            eventName,
+            definition.Id,
+            context.Arguments,
+            result);
+    }
+
     private async ValueTask<ToolBindingResult> InvokeAsync(
         PluginVersion version,
         ToolExecutor executor,
         JsonElement arguments,
+        CancellationToken cancellationToken) =>
+        await InvokeTrackedAsync(
+            version,
+            token => executor(arguments, token),
+            cancellationToken);
+
+    private async ValueTask<T> InvokeTrackedAsync<T>(
+        PluginVersion version,
+        Func<CancellationToken, ValueTask<T>> invoke,
         CancellationToken cancellationToken)
     {
         lock (_gate)
         {
-            if (version.Faulted)
+            if (version.Faulted || version.Retired)
             {
                 throw new PluginPackageException(
                     PluginErrorCodes.UnloadFailed,
@@ -413,7 +533,7 @@ internal sealed partial class PluginRuntime
         var releaseOnExit = true;
         try
         {
-            var call = executor(arguments, cancellationToken).AsTask();
+            var call = invoke(cancellationToken).AsTask();
             try
             {
                 return await call.WaitAsync(cancellationToken);
@@ -626,6 +746,7 @@ internal sealed partial class PluginRuntime
         CapabilityStatus status,
         IReadOnlyList<CapabilityTrustScope> requiredTrust,
         IReadOnlyList<PluginToolDeclaration> tools,
+        IReadOnlyList<PluginHookDeclaration> hooks,
         IReadOnlyList<string> diagnostics)
     {
         var source = new CapabilitySourceDescriptor(
@@ -650,6 +771,15 @@ internal sealed partial class PluginRuntime
             $"{package.Manifest.Id}/{tool.Id}",
             tool.Id,
             tool.Description,
+            status,
+            requiredTrust,
+            generation: Generation(package.ContentSha256),
+            diagnostics)));
+        items.AddRange(hooks.Select(hook => new CapabilityContribution(
+            CapabilityKind.Hook,
+            $"{package.Manifest.Id}/{hook.Id}",
+            hook.Id,
+            $"Plugin {hook.Event} Hook.",
             status,
             requiredTrust,
             generation: Generation(package.ContentSha256),
@@ -706,6 +836,48 @@ internal sealed partial class PluginRuntime
         }
 
         return Array.AsReadOnly(tools.ToArray());
+    }
+
+    private static async Task<IReadOnlyList<PluginHookDeclaration>> ReadHooksAsync(
+        StoredPluginPackage package,
+        CancellationToken cancellationToken)
+    {
+        var hooks = new List<PluginHookDeclaration>();
+        foreach (var relativePath in package.Manifest.Contributions.Hooks)
+        {
+            var path = Path.GetFullPath(
+                relativePath.Replace('/', Path.DirectorySeparatorChar),
+                package.PackageDirectory);
+            var bytes = await ReadBoundedAsync(path, cancellationToken);
+            using var document = JsonDocument.Parse(bytes, new JsonDocumentOptions
+            {
+                AllowTrailingCommas = false,
+                CommentHandling = JsonCommentHandling.Disallow,
+                MaxDepth = 16,
+            });
+            EnsureUniqueProperties(document.RootElement);
+            RequireObject(document.RootElement, ["id", "event", "executor"]);
+            var id = RequireString(document.RootElement, "id");
+            if (!ToolNamePattern().IsMatch(id))
+            {
+                throw LoadFailed();
+            }
+
+            hooks.Add(new PluginHookDeclaration(
+                id,
+                RequireString(document.RootElement, "event") switch
+                {
+                    "preToolUse" => CapabilityHookEvent.PreToolUse,
+                    "toolTerminal" => CapabilityHookEvent.ToolTerminal,
+                    _ => throw LoadFailed(),
+                },
+                RequireString(document.RootElement, "executor")));
+        }
+
+        return hooks.GroupBy(hook => hook.Id, StringComparer.Ordinal)
+            .Any(group => group.Skip(1).Any())
+            ? throw LoadFailed()
+            : Array.AsReadOnly(hooks.ToArray());
     }
 
     private static PluginToolDeclaration ParseTool(JsonElement root)
@@ -946,6 +1118,11 @@ internal sealed partial class PluginRuntime
         TimeSpan DefaultTimeout,
         string Executor);
 
+    private sealed record PluginHookDeclaration(
+        string Id,
+        CapabilityHookEvent Event,
+        string Executor);
+
     private sealed class PluginVersion
     {
         public PluginVersion(
@@ -987,6 +1164,8 @@ internal sealed partial class PluginRuntime
 
         public Dictionary<RuntimeBindingId, ToolRuntimeBinding> Bindings { get; } = [];
 
+        public IReadOnlyList<CapabilityHook> Hooks { get; set; } = [];
+
         public int SnapshotLeases { get; set; }
 
         public int ActiveCalls { get; set; }
@@ -1002,6 +1181,7 @@ internal sealed partial class PluginRuntime
             Plugin = null;
             LoadContext = null;
             Registrations = [];
+            Hooks = [];
             Bindings.Clear();
         }
 

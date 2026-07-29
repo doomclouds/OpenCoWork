@@ -8,6 +8,7 @@ using OpenCoWork.Abstractions;
 using OpenCoWork.Core.Configuration;
 using OpenCoWork.Core.Sessions;
 using OpenCoWork.Core.State;
+using OpenCoWork.Core.Tools;
 using OpenCoWork.Core.Workspaces;
 using Xunit;
 
@@ -20,6 +21,105 @@ public sealed class SessionExecutionTests
         PropertyNameCaseInsensitive = true,
         Converters = { new JsonStringEnumConverter(JsonNamingPolicy.CamelCase) },
     };
+
+    [Fact]
+    public async Task Deferred_activation_is_projected_and_replays_from_journal()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        using var files = new TempWorkspace();
+        using var schema = JsonDocument.Parse(
+            """{"type":"object","additionalProperties":false}""");
+        var definitionId = new ToolDefinitionId(
+            ToolSourceKind.PluginNative,
+            "acme/tools",
+            "deferred");
+        var registration = new ToolRegistration(
+            new ToolDefinition(
+                definitionId,
+                new ToolName("plugin_acme_tools", "deferred"),
+                "Deferred test tool.",
+                schema.RootElement,
+                ToolEffect.None,
+                ToolReplaySafety.Safe),
+            new RuntimeBindingId("plugin.acme.tools.deferred"),
+            ToolExposure.Deferred,
+            ToolInvocationAudience.Model);
+        var toolRuntime = new ToolRuntime(
+            [registration],
+            [new ToolRuntimeBinding(
+                registration.RuntimeBindingId,
+                ToolBindingAvailability.Available,
+                Lease: null,
+                TimeSpan.FromSeconds(30),
+                static (_, _) => ValueTask.FromResult(
+                    ToolBindingResult.Success(
+                        JsonSerializer.SerializeToElement(new { ok = true }))))]);
+        var toolSnapshot = toolRuntime.BuildSnapshot(
+            AgentMode.Agent,
+            new ToolsConfig());
+        var invocation = new AgentInvocationSnapshot(
+            Guid.CreateVersion7(),
+            "qwen",
+            "qwen3.8",
+            "qwen-tokenizer",
+            "1",
+            AgentMode.Agent,
+            new AgentPromptSnapshot("response-v1", new string('a', 64), 10),
+            new AgentPromptSnapshot("compaction-v1", new string('b', 64), 8),
+            WorkspaceInstructions: null,
+            ContextWindowTokens: 32_768,
+            MaxOutputTokens: 2_048,
+            ConfigurationSha256: new string('c', 64),
+            Tools: toolSnapshot);
+        var executor = new ScriptedExecutor(
+            async (_, sink, token) =>
+            {
+                await sink.EmitAsync(
+                    new RecordAgentInvocationSnapshotIntent(invocation),
+                    token);
+                await sink.EmitAsync(
+                    new RecordDeferredToolsActivatedIntent([definitionId]),
+                    token);
+                await sink.EmitAsync(new CompleteTurnIntent(), token);
+            });
+        var (runtime, journal, service) = await CreateServiceAsync(
+            files,
+            cancellationToken,
+            executor);
+        var thread = Assert.IsType<ThreadSnapshot>(
+            (await service.CreateThreadAsync(
+                new CreateThreadRequest(
+                    Guid.CreateVersion7(),
+                    ExpectedSequence: 0,
+                    DisplayName: "deferred",
+                    ProviderId: "qwen",
+                    ModelId: "qwen3.8"),
+                cancellationToken)).Value);
+        var turnId = Guid.CreateVersion7();
+
+        await service.StartTurnAsync(
+            thread.ThreadId,
+            turnId,
+            Guid.CreateVersion7(),
+            thread.CurrentSequence,
+            cancellationToken);
+        await service.WaitForExecutionAsync(turnId, cancellationToken);
+
+        await using var connection = new SqliteConnection(
+            $"Data Source={files.Paths.StateDatabasePath};Mode=ReadOnly");
+        await connection.OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText =
+            "SELECT COUNT(*) FROM deferred_tool_activations WHERE turn_id = $turnId;";
+        command.Parameters.AddWithValue("$turnId", turnId.ToString("D"));
+        Assert.Equal(1L, (long)(await command.ExecuteScalarAsync(cancellationToken))!);
+        var restarted = new SessionService(
+            runtime,
+            journal,
+            new SessionProjection(runtime),
+            new SessionConfig());
+        Assert.Empty(await restarted.RecoverSessionStateAsync(cancellationToken));
+    }
 
     [Fact]
     public async Task Tool_journal_and_projection_are_atomic_ordered_and_rebuildable()

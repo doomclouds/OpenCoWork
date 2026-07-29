@@ -112,12 +112,14 @@ public sealed class PluginPackageTests
     internal static string CreateToolPackage(
         string root,
         string version,
-        string assemblyPath)
+        string assemblyPath,
+        bool includeHook = false)
     {
         var archive = Path.Combine(root, $"plugin-{version}.zip");
-        CreateArchive(
-            archive,
-            ("opencowork.plugin.json", Manifest(version, includeEntryPoint: true)),
+        var entries = new List<(string Name, object Content)>
+        {
+            ("opencowork.plugin.json",
+                Manifest(version, includeEntryPoint: true, includeHook)),
             ("lib/net10.0/OpenCoWork.PluginFixture.dll", File.ReadAllBytes(assemblyPath)),
             ("tools/echo.json",
                 """
@@ -138,11 +140,28 @@ public sealed class PluginPackageTests
                   "defaultTimeoutMs": 30000,
                   "executor": "echo"
                 }
+                """),
+        };
+        if (includeHook)
+        {
+            entries.Add(("hooks/protect.json",
+                """
+                {
+                  "id": "protect",
+                  "event": "preToolUse",
+                  "executor": "require_approval"
+                }
                 """));
+        }
+
+        CreateArchive(archive, entries.ToArray());
         return archive;
     }
 
-    internal static string Manifest(string version, bool includeEntryPoint) =>
+    internal static string Manifest(
+        string version,
+        bool includeEntryPoint,
+        bool includeHook = false) =>
         $$"""
         {
           "schemaVersion": 1,
@@ -165,7 +184,7 @@ public sealed class PluginPackageTests
             "mcpServers": [],
             "lspServers": [],
             "tools": [{{(includeEntryPoint ? "\"tools/echo.json\"" : string.Empty)}}],
-            "hooks": []
+            "hooks": [{{(includeHook ? "\"hooks/protect.json\"" : string.Empty)}}]
           }
         }
         """;

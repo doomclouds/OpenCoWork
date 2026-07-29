@@ -44,6 +44,7 @@ internal delegate ValueTask<ToolPreUseDecision> ToolPreUseHook(
     CancellationToken cancellationToken);
 
 internal delegate ValueTask ToolTerminalHook(
+    ToolInvocationContext context,
     ToolResultSnapshot result,
     CancellationToken cancellationToken);
 
@@ -185,7 +186,10 @@ internal sealed class ToolInvocationPipeline : IToolInvocationPipeline
                 "Tool audience does not allow model invocation.");
         }
 
-        if (registration.Exposure != ToolExposure.Direct)
+        if (registration.Exposure != ToolExposure.Direct &&
+            !(registration.Exposure == ToolExposure.Deferred &&
+              (context.ActivatedDeferredTools ?? [])
+              .Contains(registration.Definition.Id)))
         {
             return await RejectAsync(
                 context,
@@ -229,8 +233,12 @@ internal sealed class ToolInvocationPipeline : IToolInvocationPipeline
             return await RejectAsync(
                 context,
                 sink,
-                ToolErrorCodes.BindingUnavailable,
-                "Runtime binding is unavailable.");
+                definition.Id.SourceKind == ToolSourceKind.RuntimeDynamic
+                    ? DynamicToolErrorCodes.Disconnected
+                    : ToolErrorCodes.BindingUnavailable,
+                definition.Id.SourceKind == ToolSourceKind.RuntimeDynamic
+                    ? "Dynamic Tool connection is unavailable."
+                    : "Runtime binding is unavailable.");
         }
 
         if (binding.Lease?.ExpiresAt is { } expiresAt &&
@@ -239,8 +247,12 @@ internal sealed class ToolInvocationPipeline : IToolInvocationPipeline
             return await RejectAsync(
                 context,
                 sink,
-                ToolErrorCodes.LeaseExpired,
-                "Runtime binding lease has expired.");
+                definition.Id.SourceKind == ToolSourceKind.RuntimeDynamic
+                    ? DynamicToolErrorCodes.LeaseExpired
+                    : ToolErrorCodes.LeaseExpired,
+                definition.Id.SourceKind == ToolSourceKind.RuntimeDynamic
+                    ? "Dynamic Tool lease has expired."
+                    : "Runtime binding lease has expired.");
         }
 
         if (!binding.IsTrusted)
@@ -592,6 +604,28 @@ internal sealed class ToolInvocationPipeline : IToolInvocationPipeline
                              ToolRuntimeLimits.MaximumResultEnvelopeBytes
                 ? redacted
                 : CreatePreview(complete);
+            if (!TryValidateDeferredActivations(
+                    context,
+                    registration,
+                    bindingResult.DeferredActivations,
+                    out var activations))
+            {
+                return await FinishErrorAsync(
+                    context,
+                    sink,
+                    ToolInvocationStatus.Failed,
+                    ToolErrorCodes.ResultInvalid,
+                    "Deferred Tool activation result is invalid.",
+                    attemptNumber);
+            }
+
+            if (activations.Count != 0)
+            {
+                await sink.EmitAsync(
+                    new RecordDeferredToolsActivatedIntent(activations),
+                    CancellationToken.None);
+            }
+
             return await FinishAsync(
                 context,
                 sink,
@@ -619,6 +653,44 @@ internal sealed class ToolInvocationPipeline : IToolInvocationPipeline
                 "Tool result is invalid.",
                 attemptNumber);
         }
+    }
+
+    private static bool TryValidateDeferredActivations(
+        ToolInvocationContext context,
+        ToolRegistration registration,
+        IReadOnlyList<ToolDefinitionId> requested,
+        out IReadOnlyList<ToolDefinitionId> activations)
+    {
+        if (requested.Count == 0)
+        {
+            activations = [];
+            return true;
+        }
+
+        var isSearch = registration.Definition.Id is
+        {
+            SourceKind: ToolSourceKind.CoreNative,
+            SourceId: "opencowork.core",
+            SourceToolId: "tool.search",
+        };
+        var active = (context.ActivatedDeferredTools ?? []).ToHashSet();
+        var unique = requested.Distinct().ToArray();
+        if (!isSearch ||
+            unique.Length != requested.Count ||
+            unique.Length > 8 ||
+            active.Count + unique.Length > 32 ||
+            unique.Any(id =>
+                active.Contains(id) ||
+                !context.Snapshot.Registrations.Any(registration =>
+                    registration.Exposure == ToolExposure.Deferred &&
+                    registration.Definition.Id == id)))
+        {
+            activations = [];
+            return false;
+        }
+
+        activations = Array.AsReadOnly(unique);
+        return true;
     }
 
     private static string ApprovalPrompt(
@@ -696,7 +768,7 @@ internal sealed class ToolInvocationPipeline : IToolInvocationPipeline
         {
             try
             {
-                await _terminal(result, CancellationToken.None);
+                await _terminal(context, result, CancellationToken.None);
             }
             catch (Exception)
             {
@@ -755,7 +827,8 @@ internal sealed class ToolInvocationPipeline : IToolInvocationPipeline
 
     private static bool IsStableToolCode(string? code) =>
         code is { Length: > 5 and <= 128 } &&
-        code.StartsWith("tool.", StringComparison.Ordinal) &&
+        (code.StartsWith("tool.", StringComparison.Ordinal) ||
+         code.StartsWith("dynamicTool.", StringComparison.Ordinal)) &&
         code.All(character =>
             char.IsAsciiLetterOrDigit(character) || character == '.');
 

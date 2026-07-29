@@ -388,6 +388,8 @@ internal sealed partial class SessionService
     private readonly ConcurrentDictionary<Guid, ExecutionIdempotency> _executionIdempotency = [];
     private readonly ConcurrentDictionary<Guid, InvocationRecord> _agentInvocations = [];
     private readonly ConcurrentDictionary<Guid, ToolInvocationRecord> _toolInvocations = [];
+    private readonly ConcurrentDictionary<DeferredActivationKey, long>
+        _deferredToolActivations = [];
     private readonly ConcurrentDictionary<ProviderUsageKey, UsageRecord> _providerUsage = [];
     private readonly ConcurrentDictionary<Guid, CompactionRecord> _compactionCheckpoints = [];
     private readonly ConcurrentDictionary<Guid, byte> _loadedExecutionThreads = [];
@@ -1123,7 +1125,11 @@ internal sealed partial class SessionService
                     _agentInvocations.TryGetValue(turn.TurnId, out var invocation) &&
                     item.Usage.InvocationId == invocation.Snapshot.InvocationId)
                 .OrderBy(item => item.Sequence)
-                .Select(item => item.Usage));
+                .Select(item => item.Usage),
+            _deferredToolActivations
+                .Where(item => item.Key.TurnId == turn.TurnId)
+                .OrderBy(item => item.Value)
+                .Select(item => item.Key.ToolDefinitionId));
         var execution = new SessionExecution(
             _executor,
             _sessionConfig,
@@ -1322,6 +1328,12 @@ internal sealed partial class SessionService
                         thread,
                         turn,
                         toolTerminal,
+                        cancellationToken),
+                RecordDeferredToolsActivatedIntent deferred =>
+                    await RecordDeferredToolsActivatedAsync(
+                        thread,
+                        turn,
+                        deferred,
                         cancellationToken),
                 WaitForInteractionIntent waiting =>
                     await WaitForInteractionAsync(
@@ -1875,6 +1887,64 @@ internal sealed partial class SessionService
         _itemText[intent.ResultItemId] = string.Empty;
         _toolInvocations[result.ToolInvocationId] =
             existing with { Snapshot = snapshot, Sequence = sequence };
+        return sequence;
+    }
+
+    private async ValueTask<long> RecordDeferredToolsActivatedAsync(
+        ThreadSnapshot thread,
+        TurnSnapshot turn,
+        RecordDeferredToolsActivatedIntent intent,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(intent.ToolDefinitionIds);
+        var requested = intent.ToolDefinitionIds.Distinct().ToArray();
+        if (turn.Status != TurnStatus.Running ||
+            requested.Length is 0 or > 8 ||
+            requested.Length != intent.ToolDefinitionIds.Count ||
+            !_agentInvocations.TryGetValue(turn.TurnId, out var invocation))
+        {
+            throw ExecutionError(
+                SessionErrorCodes.InvalidState,
+                "Deferred Tool activation is invalid.");
+        }
+
+        var existing = _deferredToolActivations.Keys
+            .Where(key => key.TurnId == turn.TurnId)
+            .Select(key => key.ToolDefinitionId)
+            .ToHashSet();
+        if (invocation.Snapshot.Tools is not { } frozenTools ||
+            existing.Count + requested.Length > 32 ||
+            requested.Any(existing.Contains) ||
+            requested.Any(id =>
+                !frozenTools.Registrations.Any(registration =>
+                    registration.Exposure == ToolExposure.Deferred &&
+                    registration.Definition.Id == id)))
+        {
+            throw ExecutionError(
+                SessionErrorCodes.InvalidState,
+                "Deferred Tool activation does not match the frozen snapshot.");
+        }
+
+        var hash = InternalRequestHash(
+            SessionEventType.DeferredToolsActivated,
+            new { turn.TurnId, ToolDefinitionIds = requested });
+        var fact = new DeferredToolsActivatedFact(
+            turn.TurnId,
+            Array.AsReadOnly(requested),
+            hash.RequestSha256);
+        var sequence = await CommitExecutionFactAsync(
+            thread,
+            fact,
+            SessionEventType.DeferredToolsActivated,
+            new SessionEventPayload(Turn: turn),
+            hash,
+            cancellationToken);
+        foreach (var id in requested)
+        {
+            _deferredToolActivations[
+                new DeferredActivationKey(turn.TurnId, id)] = sequence;
+        }
+
         return sequence;
     }
 
@@ -2556,6 +2626,9 @@ internal sealed partial class SessionService
                     break;
                 case SessionEventType.ToolInvocationTerminal:
                     RestoreToolInvocationTerminal(entry);
+                    break;
+                case SessionEventType.DeferredToolsActivated:
+                    RestoreDeferredToolsActivated(entry);
                     break;
                 case SessionEventType.AgentInvocationSnapshotRecorded:
                     var invocation = ReadFact<AgentInvocationSnapshotRecordedFact>(entry);
@@ -3742,6 +3815,40 @@ internal sealed partial class SessionService
         };
     }
 
+    private void RestoreDeferredToolsActivated(ThreadJournalEntry entry)
+    {
+        var fact = ReadFact<DeferredToolsActivatedFact>(entry);
+        if (!_agentInvocations.TryGetValue(fact.TurnId, out var invocation) ||
+            invocation.Snapshot.Tools is not { } frozenTools ||
+            fact.ToolDefinitionIds.Count is 0 or > 8 ||
+            fact.ToolDefinitionIds.Distinct().Count() != fact.ToolDefinitionIds.Count)
+        {
+            throw new InvalidDataException(
+                "Journal contains invalid Deferred Tool activations.");
+        }
+
+        var existing = _deferredToolActivations.Keys
+            .Where(key => key.TurnId == fact.TurnId)
+            .Select(key => key.ToolDefinitionId)
+            .ToHashSet();
+        if (existing.Count + fact.ToolDefinitionIds.Count > 32 ||
+            fact.ToolDefinitionIds.Any(existing.Contains) ||
+            fact.ToolDefinitionIds.Any(id =>
+                !frozenTools.Registrations.Any(registration =>
+                    registration.Exposure == ToolExposure.Deferred &&
+                    registration.Definition.Id == id)))
+        {
+            throw new InvalidDataException(
+                "Journal Deferred Tool activation does not match its snapshot.");
+        }
+
+        foreach (var id in fact.ToolDefinitionIds)
+        {
+            _deferredToolActivations[
+                new DeferredActivationKey(fact.TurnId, id)] = entry.Sequence;
+        }
+    }
+
     private void RestoreWaiting(ThreadJournalEntry entry)
     {
         var fact = ReadFact<TurnWaitingFact>(entry);
@@ -4289,6 +4396,10 @@ internal sealed partial class SessionService
     private sealed record UsageRecord(
         ProviderUsageSnapshot Usage,
         long Sequence);
+
+    private sealed record DeferredActivationKey(
+        Guid TurnId,
+        ToolDefinitionId ToolDefinitionId);
 
     private sealed record CompactionRecord(
         CompactionCheckpointSnapshot Checkpoint,

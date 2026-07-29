@@ -88,7 +88,7 @@ public sealed class ToolInvocationPipelineTests
             runtime,
             new SecretRedactor(["top-secret"]),
             trace: trace,
-            terminal: (result, _) =>
+            terminal: (_, result, _) =>
             {
                 observedTerminal = result;
                 return ValueTask.CompletedTask;
@@ -653,7 +653,7 @@ public sealed class ToolInvocationPipelineTests
         var completed = await new ToolInvocationPipeline(
                 completedHarness.Runtime,
                 new SecretRedactor([]),
-                terminal: (_, _) => ValueTask.FromException(
+                terminal: (_, _, _) => ValueTask.FromException(
                     new InvalidOperationException("terminal failure")))
             .InvokeAsync(
                 completedHarness.Context,

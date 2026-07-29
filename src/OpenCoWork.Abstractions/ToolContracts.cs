@@ -41,6 +41,7 @@ public enum ToolAuthorityDecision
 public enum ToolExposure
 {
     Direct,
+    Deferred,
     Hidden,
 }
 
@@ -122,6 +123,15 @@ public static class ToolErrorCodes
     public const string ContentUnsupported = "tool.contentUnsupported";
     public const string PreconditionFailed = "tool.preconditionFailed";
     public const string NetworkTargetDenied = "tool.networkTargetDenied";
+}
+
+public static class DynamicToolErrorCodes
+{
+    public const string DefinitionInvalid = "dynamicTool.definitionInvalid";
+    public const string LimitExceeded = "dynamicTool.limitExceeded";
+    public const string NotFound = "dynamicTool.notFound";
+    public const string Disconnected = "dynamicTool.disconnected";
+    public const string LeaseExpired = "dynamicTool.leaseExpired";
 }
 
 public sealed record ToolDefinition
@@ -272,24 +282,40 @@ public sealed record ToolInvocationContext(
     TimeSpan? RemainingExecutionBudget = null,
     ToolResultSnapshot? ReplayResult = null,
     bool ProviderCallIdConflict = false,
-    EffectiveSkillSnapshot? Skills = null);
+    EffectiveSkillSnapshot? Skills = null,
+    IReadOnlyList<ToolDefinitionId>? ActivatedDeferredTools = null);
 
 public sealed class ToolBindingResult
 {
-    private ToolBindingResult(JsonElement? output, SessionError? error)
+    private ToolBindingResult(
+        JsonElement? output,
+        SessionError? error,
+        IEnumerable<ToolDefinitionId>? deferredActivations = null)
     {
         Output = output?.Clone();
         Error = error;
+        DeferredActivations = Array.AsReadOnly(
+            (deferredActivations ?? []).ToArray());
     }
 
     public JsonElement? Output { get; }
 
     public SessionError? Error { get; }
 
+    public IReadOnlyList<ToolDefinitionId> DeferredActivations { get; }
+
     public bool IsSuccess => Error is null;
 
     public static ToolBindingResult Success(JsonElement output) =>
         new(output, error: null);
+
+    public static ToolBindingResult Success(
+        JsonElement output,
+        IEnumerable<ToolDefinitionId> deferredActivations)
+    {
+        ArgumentNullException.ThrowIfNull(deferredActivations);
+        return new(output, error: null, deferredActivations);
+    }
 
     public static ToolBindingResult Failure(SessionError error)
     {

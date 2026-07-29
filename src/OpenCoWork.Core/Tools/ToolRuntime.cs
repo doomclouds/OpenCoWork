@@ -43,6 +43,8 @@ internal sealed partial class ToolRuntime
     private Candidate[] _candidates;
     private readonly object _bindingGate = new();
     private readonly Dictionary<BindingKey, ToolRuntimeBinding> _bindings;
+    private readonly Dictionary<ToolDefinitionId, Guid> _dynamicScopes = [];
+    private readonly TimeProvider _timeProvider;
     private Dictionary<ToolDefinitionId, JsonSchema> _schemas;
 
     internal IReadOnlyList<ToolRegistration> Registrations
@@ -90,7 +92,8 @@ internal sealed partial class ToolRuntime
 
     internal ToolRuntime(
         IEnumerable<ToolRegistration> registrations,
-        IEnumerable<ToolRuntimeBinding> bindings)
+        IEnumerable<ToolRuntimeBinding> bindings,
+        TimeProvider? timeProvider = null)
     {
         ArgumentNullException.ThrowIfNull(registrations);
         ArgumentNullException.ThrowIfNull(bindings);
@@ -121,6 +124,7 @@ internal sealed partial class ToolRuntime
 
         _bindings = bindingArray.ToDictionary(
             binding => new BindingKey(binding.Id, binding.Generation));
+        _timeProvider = timeProvider ?? TimeProvider.System;
         _schemas = CreateSchemas(_candidates);
     }
 
@@ -131,7 +135,13 @@ internal sealed partial class ToolRuntime
 
     public EffectiveToolSnapshot BuildSnapshot(
         AgentMode effectiveAgentMode,
-        ToolsConfig config)
+        ToolsConfig config) =>
+        BuildSnapshot(effectiveAgentMode, config, threadId: null);
+
+    internal EffectiveToolSnapshot BuildSnapshot(
+        AgentMode effectiveAgentMode,
+        ToolsConfig config,
+        Guid? threadId)
     {
         ArgumentNullException.ThrowIfNull(config);
         var authority = BuildAuthority(config);
@@ -140,7 +150,22 @@ internal sealed partial class ToolRuntime
         Candidate[] candidates;
         lock (_bindingGate)
         {
-            candidates = _candidates;
+            candidates = _candidates
+                .Where(candidate =>
+                    candidate.Registration.Definition.Id.SourceKind !=
+                    ToolSourceKind.RuntimeDynamic ||
+                    threadId is { } scopedThreadId &&
+                    _dynamicScopes.GetValueOrDefault(
+                        candidate.Registration.Definition.Id) == scopedThreadId &&
+                    _bindings.TryGetValue(
+                        new BindingKey(
+                            candidate.Registration.RuntimeBindingId,
+                            candidate.Registration.BindingGeneration),
+                        out var binding) &&
+                    binding.Availability == ToolBindingAvailability.Available &&
+                    binding.IsTrusted &&
+                    binding.Lease?.ExpiresAt > _timeProvider.GetUtcNow())
+                .ToArray();
         }
 
         var conflicts = FindConflicts(candidates);
@@ -174,7 +199,8 @@ internal sealed partial class ToolRuntime
             {
                 rejection = ToolErrorCodes.AudienceDenied;
             }
-            else if (registration.Exposure != ToolExposure.Direct)
+            else if (registration.Exposure is not (
+                         ToolExposure.Direct or ToolExposure.Deferred))
             {
                 rejection = ToolErrorCodes.ExposureDenied;
             }
@@ -270,10 +296,20 @@ internal sealed partial class ToolRuntime
     }
 
     public IReadOnlyList<ChatCompletionToolDefinition> CreateProviderDefinitions(
-        EffectiveToolSnapshot snapshot)
+        EffectiveToolSnapshot snapshot) =>
+        CreateProviderDefinitions(snapshot, []);
+
+    public IReadOnlyList<ChatCompletionToolDefinition> CreateProviderDefinitions(
+        EffectiveToolSnapshot snapshot,
+        IReadOnlyCollection<ToolDefinitionId> activatedDeferredTools)
     {
         ArgumentNullException.ThrowIfNull(snapshot);
+        ArgumentNullException.ThrowIfNull(activatedDeferredTools);
         return Array.AsReadOnly(snapshot.Registrations
+            .Where(registration =>
+                registration.Exposure == ToolExposure.Direct ||
+                registration.Exposure == ToolExposure.Deferred &&
+                activatedDeferredTools.Contains(registration.Definition.Id))
             .Select(registration =>
             {
                 var canonical = CanonicalName(registration.Definition.Name);
@@ -472,6 +508,58 @@ internal sealed partial class ToolRuntime
                         pluginId,
                         StringComparison.Ordinal))
                 .ToArray();
+            _schemas = CreateSchemas(_candidates);
+        }
+    }
+
+    internal void PublishDynamic(
+        Guid threadId,
+        ToolRegistration registration,
+        ToolRuntimeBinding binding)
+    {
+        ArgumentOutOfRangeException.ThrowIfEqual(threadId, Guid.Empty);
+        ArgumentNullException.ThrowIfNull(registration);
+        ValidateBinding(binding);
+        if (registration.Definition.Id.SourceKind !=
+                ToolSourceKind.RuntimeDynamic ||
+            registration.RuntimeBindingId != binding.Id ||
+            registration.BindingGeneration != binding.Generation ||
+            !TryCompileSchema(registration.Definition, out var schema))
+        {
+            throw new ToolRuntimeException(
+                DynamicToolErrorCodes.DefinitionInvalid,
+                "Dynamic Tool registration is invalid.");
+        }
+
+        lock (_bindingGate)
+        {
+            _candidates = _candidates
+                .Where(candidate =>
+                    candidate.Registration.Definition.Id !=
+                    registration.Definition.Id)
+                .Append(new Candidate(registration, schema))
+                .ToArray();
+            _dynamicScopes[registration.Definition.Id] = threadId;
+            _bindings[new BindingKey(binding.Id, binding.Generation)] = binding;
+            _schemas = CreateSchemas(_candidates);
+        }
+    }
+
+    internal void RemoveDynamic(
+        ToolDefinitionId definitionId,
+        RuntimeBindingId bindingId,
+        long generation)
+    {
+        ArgumentNullException.ThrowIfNull(definitionId);
+        ArgumentNullException.ThrowIfNull(bindingId);
+        lock (_bindingGate)
+        {
+            _candidates = _candidates
+                .Where(candidate =>
+                    candidate.Registration.Definition.Id != definitionId)
+                .ToArray();
+            _dynamicScopes.Remove(definitionId);
+            _bindings.Remove(new BindingKey(bindingId, generation));
             _schemas = CreateSchemas(_candidates);
         }
     }
@@ -984,6 +1072,26 @@ internal sealed partial class ToolRuntime
             PlaceholderExecutor,
             SkillLoadAsync);
         Add(
+            "tool.search",
+            new ToolName("tool", "search"),
+            "Search and activate deferred tools from the current Turn snapshot.",
+            """
+            {
+              "$schema":"https://json-schema.org/draft/2020-12/schema",
+              "type":"object",
+              "properties":{
+                "query":{"type":"string","minLength":1,"maxLength":256}
+              },
+              "required":["query"],
+              "additionalProperties":false
+            }
+            """,
+            ToolEffect.None,
+            ToolReplaySafety.Safe,
+            TimeSpan.FromSeconds(30),
+            PlaceholderExecutor,
+            ToolSearchAsync);
+        Add(
             "web.fetch",
             new ToolName("web", "fetch"),
             "Fetch an unauthenticated HTTP or HTTPS text resource.",
@@ -1072,6 +1180,60 @@ internal sealed partial class ToolRuntime
                 selectedVariantId = skill.SelectedVariantId,
             })));
     }
+
+    private static ValueTask<ToolBindingResult> ToolSearchAsync(
+        ToolInvocationContext context,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var query = context.Arguments.GetProperty("query").GetString()?.Trim();
+        if (string.IsNullOrEmpty(query))
+        {
+            return ValueTask.FromResult(ToolBindingResult.Failure(
+                new SessionError(
+                    ToolErrorCodes.InputInvalid,
+                    "Deferred Tool search query is empty.",
+                    IsRetryable: false)));
+        }
+
+        var active = (context.ActivatedDeferredTools ?? [])
+            .ToHashSet();
+        var remaining = Math.Max(0, 32 - active.Count);
+        var selected = context.Snapshot.Registrations
+            .Where(registration =>
+                registration.Exposure == ToolExposure.Deferred &&
+                !active.Contains(registration.Definition.Id) &&
+                SearchText(registration).Contains(
+                    query,
+                    StringComparison.OrdinalIgnoreCase))
+            .OrderBy(
+                registration => CanonicalName(registration.Definition.Name),
+                StringComparer.Ordinal)
+            .ThenBy(
+                registration => DefinitionKey(registration.Definition.Id),
+                StringComparer.Ordinal)
+            .Take(Math.Min(8, remaining))
+            .ToArray();
+        return ValueTask.FromResult(ToolBindingResult.Success(
+            JsonSerializer.SerializeToElement(new
+            {
+                activated = selected.Select(registration => new
+                {
+                    sourceKind = EnumText(registration.Definition.Id.SourceKind),
+                    sourceId = registration.Definition.Id.SourceId,
+                    sourceToolId = registration.Definition.Id.SourceToolId,
+                    canonicalName = CanonicalName(registration.Definition.Name),
+                    registration.Definition.Description,
+                }),
+                remainingCapacity = remaining - selected.Length,
+            }),
+            selected.Select(registration => registration.Definition.Id)));
+    }
+
+    private static string SearchText(ToolRegistration registration) =>
+        $"{registration.Definition.Name.Namespace} " +
+        $"{registration.Definition.Name.Name} " +
+        registration.Definition.Description;
 
     private static ValueTask<ToolBindingResult> PlaceholderExecutor(
         JsonElement arguments,

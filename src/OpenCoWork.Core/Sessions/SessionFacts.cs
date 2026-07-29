@@ -201,6 +201,11 @@ internal sealed record ToolInvocationTerminalJournalFact(
     ToolResultItemFact ResultItem,
     string RequestSha256);
 
+internal sealed record DeferredToolsActivatedFact(
+    Guid TurnId,
+    IReadOnlyList<ToolDefinitionId> ToolDefinitionIds,
+    string RequestSha256);
+
 internal sealed record AgentInvocationSnapshotRecordedFact(
     Guid TurnId,
     AgentInvocationSnapshot Snapshot,

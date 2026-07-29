@@ -70,10 +70,15 @@ public static class OpenCoWorkAgentExtensions
                 serviceProvider.GetRequiredService<ToolsConfig>(),
                 serviceProvider.GetService<WorkspaceCapabilityRuntime>()));
         services.TryAddSingleton<IToolInvocationPipeline>(serviceProvider =>
-            new ToolInvocationPipeline(
+        {
+            var hooks = serviceProvider.GetService<CapabilityHookRuntime>();
+            return new ToolInvocationPipeline(
                 serviceProvider.GetRequiredService<ToolRuntime>(),
                 serviceProvider.GetRequiredService<SecretRedactor>(),
-                timeProvider: serviceProvider.GetService<TimeProvider>()));
+                timeProvider: serviceProvider.GetService<TimeProvider>(),
+                preToolUse: hooks is null ? null : hooks.PreToolUseAsync,
+                terminal: hooks is null ? null : hooks.ToolTerminalAsync);
+        });
         services.TryAddSingleton(static _ =>
             OpenAiCompatibleChatClient.CreateSharedHttpClient());
         services.TryAddSingleton(serviceProvider =>
@@ -644,7 +649,8 @@ internal sealed class AgentFactory(
             {
                 toolSnapshot = _tools.BuildSnapshot(
                     session.Turn.EffectiveAgentMode,
-                    _toolsConfig);
+                    _toolsConfig,
+                    session.Thread.ThreadId);
             }
             catch (ToolRuntimeException exception)
             {
@@ -653,7 +659,9 @@ internal sealed class AgentFactory(
         }
 
         var tools = provider.SupportsToolCalls
-            ? _tools.CreateProviderDefinitions(toolSnapshot)
+            ? _tools.CreateProviderDefinitions(
+                toolSnapshot,
+                session.ActivatedDeferredTools)
             : [];
         var workspaceName = new DirectoryInfo(_paths.WorkspaceRoot).Name;
         if (string.IsNullOrEmpty(workspaceName))
@@ -777,6 +785,18 @@ internal sealed class AgentFactory(
                     AgentErrorCodes.ContextInputInvalid,
                     "The frozen tool snapshot is missing.")));
     }
+
+    internal IReadOnlyList<ChatCompletionToolDefinition> CreateProviderDefinitions(
+        AgentInvocationDraft draft,
+        IReadOnlyCollection<ToolDefinitionId> activatedDeferredTools) =>
+        draft.Provider.SupportsToolCalls
+            ? _tools.CreateProviderDefinitions(
+                draft.Snapshot.Tools ??
+                throw new AgentPreparationException(
+                    AgentErrorCodes.ContextInputInvalid,
+                    "The frozen tool snapshot is missing."),
+                activatedDeferredTools)
+            : [];
 
     private CapabilitySnapshotLease? AcquireCapabilitySnapshot()
     {
@@ -1168,6 +1188,8 @@ internal sealed class AgentRuntimeExecutor : ISessionExecutor
         try
         {
             var session = context;
+            var activatedDeferredTools =
+                context.ActivatedDeferredTools.ToHashSet();
             var nextAttempt = context.ProviderUsage
                 .Where(item =>
                     item.InvocationId == draft.Snapshot.InvocationId)
@@ -1221,6 +1243,7 @@ internal sealed class AgentRuntimeExecutor : ISessionExecutor
                 anyToolAttempted = await ResumeToolFrameAsync(
                     context,
                     draft,
+                    activatedDeferredTools,
                     pendingToolFrame,
                     resumeCheckpoint,
                     knownToolCalls,
@@ -1243,6 +1266,9 @@ internal sealed class AgentRuntimeExecutor : ISessionExecutor
                 var toolFrameCompleted = false;
                 for (var stepAttempt = 1; stepAttempt <= 3; stepAttempt++)
                 {
+                    var providerTools = _factory.CreateProviderDefinitions(
+                        draft,
+                        activatedDeferredTools);
                     var attempt = nextAttempt++;
                     var usageRecorded = false;
                     var stepVisible = false;
@@ -1256,7 +1282,7 @@ internal sealed class AgentRuntimeExecutor : ISessionExecutor
                     var inputTokenCount = AgentFactory.CountPromptTokens(
                         draft.Provider.Tokenizer,
                         messages,
-                        draft.Tools);
+                        providerTools);
                     if (inputTokenCount > draft.UsableInputBudgetTokens)
                     {
                         await sink.EmitAsync(
@@ -1277,7 +1303,7 @@ internal sealed class AgentRuntimeExecutor : ISessionExecutor
                             draft.Snapshot.InvocationId,
                             attempt,
                             ChatCompletionInvocationPurpose.Response,
-                            draft.Tools);
+                            providerTools);
                         await foreach (var item in Client(
                                            draft.Provider,
                                            providerSecretLease)
@@ -1468,9 +1494,16 @@ internal sealed class AgentRuntimeExecutor : ISessionExecutor
                                             : null,
                                         ProviderCallIdConflict:
                                         known is not null && !sameCall,
-                                        Skills: draft.Snapshot.Skills),
+                                        Skills: draft.Snapshot.Skills,
+                                        ActivatedDeferredTools:
+                                        activatedDeferredTools.ToArray()),
                                     sink,
                                     invocationToken);
+                                ActivateDeferredTools(
+                                    draft.Snapshot.Tools!,
+                                    call.ProviderToolName,
+                                    result,
+                                    activatedDeferredTools);
                                 anyToolAttempted |= result.AttemptCount > 0;
                                 if (known is null)
                                 {
@@ -1806,6 +1839,7 @@ internal sealed class AgentRuntimeExecutor : ISessionExecutor
     private async ValueTask<bool> ResumeToolFrameAsync(
         AgentSession session,
         AgentInvocationDraft draft,
+        HashSet<ToolDefinitionId> activatedDeferredTools,
         PendingToolFrame frame,
         ToolLoopCheckpoint? resumeCheckpoint,
         Dictionary<string, KnownToolCall> knownToolCalls,
@@ -1883,9 +1917,16 @@ internal sealed class AgentRuntimeExecutor : ISessionExecutor
                     RemainingExecutionBudget: remaining,
                     ReplayResult: sameCall ? known?.Result : null,
                     ProviderCallIdConflict: known is not null && !sameCall,
-                    Skills: draft.Snapshot.Skills),
+                    Skills: draft.Snapshot.Skills,
+                    ActivatedDeferredTools:
+                    activatedDeferredTools.ToArray()),
                 sink,
                 cancellationToken);
+            ActivateDeferredTools(
+                draft.Snapshot.Tools!,
+                call.ProviderToolName,
+                result,
+                activatedDeferredTools);
             anyToolAttempted |= result.AttemptCount > 0;
             if (known is null)
             {
@@ -1910,6 +1951,54 @@ internal sealed class AgentRuntimeExecutor : ISessionExecutor
         }
 
         return anyToolAttempted;
+    }
+
+    private static void ActivateDeferredTools(
+        EffectiveToolSnapshot snapshot,
+        string providerToolName,
+        ToolResultSnapshot result,
+        HashSet<ToolDefinitionId> activated)
+    {
+        if (result.Status != ToolInvocationStatus.Completed ||
+            result.Output is not { ValueKind: JsonValueKind.Object } output ||
+            !snapshot.ProviderToCanonicalNames.TryGetValue(
+                providerToolName,
+                out var canonicalName) ||
+            !string.Equals(canonicalName, "tool.search", StringComparison.Ordinal) ||
+            !output.TryGetProperty("activated", out var values) ||
+            values.ValueKind != JsonValueKind.Array)
+        {
+            return;
+        }
+
+        foreach (var value in values.EnumerateArray())
+        {
+            if (!value.TryGetProperty("sourceKind", out var sourceKind) ||
+                !value.TryGetProperty("sourceId", out var sourceId) ||
+                !value.TryGetProperty("sourceToolId", out var sourceToolId) ||
+                !Enum.TryParse<ToolSourceKind>(
+                    sourceKind.GetString(),
+                    ignoreCase: true,
+                    out var kind))
+            {
+                throw new InvalidDataException(
+                    "Deferred Tool activation result is invalid.");
+            }
+
+            var id = new ToolDefinitionId(
+                kind,
+                sourceId.GetString() ?? string.Empty,
+                sourceToolId.GetString() ?? string.Empty);
+            if (!snapshot.Registrations.Any(registration =>
+                    registration.Exposure == ToolExposure.Deferred &&
+                    registration.Definition.Id == id) ||
+                !activated.Add(id) ||
+                activated.Count > 32)
+            {
+                throw new InvalidDataException(
+                    "Deferred Tool activation result does not match its snapshot.");
+            }
+        }
     }
 
     private static bool? ApprovalDecision(
@@ -2293,7 +2382,8 @@ internal sealed class AgentRuntimeExecutor : ISessionExecutor
                     checkpoint,
                     session.Invocation,
                     session.ToolInvocations,
-                    session.ProviderUsage);
+                    session.ProviderUsage,
+                    session.ActivatedDeferredTools);
                 var compactedDraft = _factory.Create(
                     compactedSession,
                     draft.Snapshot.InvocationId,

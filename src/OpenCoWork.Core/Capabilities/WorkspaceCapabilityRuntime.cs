@@ -35,6 +35,19 @@ public static class OpenCoWorkCapabilityExtensions
                 serviceProvider.GetRequiredService<PluginPackageStore>(),
                 serviceProvider.GetRequiredService<ToolRuntime>()));
         services.TryAddSingleton(serviceProvider =>
+            new WorkspaceProcessHookSource(
+                serviceProvider.GetRequiredService<OpenCoWork.Core.Workspaces.OpenCoWorkPaths>(),
+                serviceProvider.GetRequiredService<CapabilityFileStore>(),
+                serviceProvider.GetRequiredService<OpenCoWork.Core.Logging.SecretRedactor>(),
+                serviceProvider.GetService<
+                    Microsoft.Extensions.Logging.ILogger<WorkspaceProcessHookSource>>()));
+        services.TryAddSingleton(serviceProvider =>
+            new CapabilityHookRuntime(
+                serviceProvider.GetRequiredService<WorkspaceProcessHookSource>(),
+                serviceProvider.GetRequiredService<PluginRuntime>(),
+                serviceProvider.GetService<
+                    Microsoft.Extensions.Logging.ILogger<CapabilityHookRuntime>>()));
+        services.TryAddSingleton(serviceProvider =>
             new WorkspaceCapabilityDiscovery(
                 serviceProvider.GetRequiredService<SkillCatalog>(),
                 serviceProvider.GetRequiredService<ProviderDeclarationCatalog>(),

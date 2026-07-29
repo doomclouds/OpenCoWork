@@ -4,6 +4,7 @@ using Microsoft.Extensions.DependencyInjection;
 using OpenCoWork.Abstractions;
 using OpenCoWork.Core.Agents;
 using OpenCoWork.Core.Configuration;
+using OpenCoWork.Core.Logging;
 using OpenCoWork.Core.Tools;
 using OpenCoWork.Core.Workspaces;
 using Xunit;
@@ -153,6 +154,74 @@ public sealed class AgentRuntimeExecutorTests
                 sink.Intents
                     .OfType<RecordToolInvocationTerminalIntent>()
                     .Select(intent => intent.Result.ProviderToolCallId));
+            Assert.IsType<CompleteTurnIntent>(sink.Intents[^1]);
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Deferred_tool_activation_changes_the_next_provider_round()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var directory = Path.Combine(
+            Path.GetTempPath(),
+            $"opencowork-deferred-loop-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        try
+        {
+            var runtime = new ToolRuntime(new OpenCoWorkPaths(directory));
+            using var schema = JsonDocument.Parse(
+                """{"type":"object","additionalProperties":false}""");
+            var registration = new ToolRegistration(
+                new ToolDefinition(
+                    new ToolDefinitionId(
+                        ToolSourceKind.PluginNative,
+                        "acme/tools",
+                        "echo"),
+                    new ToolName("plugin_acme_tools", "echo"),
+                    "Deferred echo tool.",
+                    schema.RootElement,
+                    ToolEffect.None,
+                    ToolReplaySafety.Safe),
+                new RuntimeBindingId("plugin.acme.tools.echo"),
+                ToolExposure.Deferred,
+                ToolInvocationAudience.Model);
+            runtime.PublishPlugin(
+                "acme/tools",
+                [registration],
+                [new ToolRuntimeBinding(
+                    registration.RuntimeBindingId,
+                    ToolBindingAvailability.Available,
+                    Lease: null,
+                    TimeSpan.FromSeconds(30),
+                    static (_, _) => ValueTask.FromResult(
+                        ToolBindingResult.Success(
+                            JsonSerializer.SerializeToElement(new { ok = true }))))]);
+            var client = new DeferredToolClient();
+            var sink = new RecordingSink();
+
+            await Executor(
+                    directory,
+                    "secret",
+                    _ => client,
+                    toolPipeline: new ToolInvocationPipeline(
+                        runtime,
+                        new SecretRedactor([])),
+                    toolRuntime: runtime)
+                .ExecuteAsync(Session(), sink, cancellationToken);
+
+            Assert.Equal(2, client.Requests.Count);
+            Assert.DoesNotContain(
+                client.Requests[0].Tools,
+                tool => tool.ProviderName == "plugin_acme_tools__echo");
+            Assert.Contains(
+                client.Requests[1].Tools,
+                tool => tool.ProviderName == "plugin_acme_tools__echo");
+            Assert.Single(
+                sink.Intents.OfType<RecordDeferredToolsActivatedIntent>());
             Assert.IsType<CompleteTurnIntent>(sink.Intents[^1]);
         }
         finally
@@ -584,11 +653,12 @@ public sealed class AgentRuntimeExecutorTests
         string secret,
         Func<ProviderModelRegistration, IChatCompletionClient> clients,
         TimeProvider? timeProvider = null,
-        IToolInvocationPipeline? toolPipeline = null)
+        IToolInvocationPipeline? toolPipeline = null,
+        ToolRuntime? toolRuntime = null)
     {
         var paths = new OpenCoWorkPaths(directory);
         return new AgentRuntimeExecutor(
-            Factory(directory, secret),
+            Factory(directory, secret, toolRuntime),
             paths,
             clients,
             timeProvider,
@@ -597,7 +667,8 @@ public sealed class AgentRuntimeExecutorTests
 
     private static AgentFactory Factory(
         string directory,
-        string secret)
+        string secret,
+        ToolRuntime? toolRuntime = null)
     {
         var paths = new OpenCoWorkPaths(directory);
         var models = Models();
@@ -610,7 +681,8 @@ public sealed class AgentRuntimeExecutorTests
                 credentials,
                 AppContext.BaseDirectory,
                 directory),
-            paths);
+            paths,
+            toolRuntime);
     }
 
     private static ModelsConfig Models() =>
@@ -1035,6 +1107,35 @@ public sealed class AgentRuntimeExecutorTests
                     "call-2",
                     "file__list",
                     """{"path":"tests"}""");
+                yield return new ChatCompletionCompletedEvent(
+                    ChatCompletionFinishReason.ToolCall);
+                yield break;
+            }
+
+            yield return new ChatCompletionContentDeltaEvent("done");
+            yield return new ChatCompletionCompletedEvent(
+                ChatCompletionFinishReason.Stop);
+        }
+    }
+
+    private sealed class DeferredToolClient : IChatCompletionClient
+    {
+        public List<ChatCompletionRequest> Requests { get; } = [];
+
+        public async IAsyncEnumerable<ChatCompletionEvent> StreamAsync(
+            ChatCompletionRequest request,
+            [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            Requests.Add(request);
+            await Task.Yield();
+            cancellationToken.ThrowIfCancellationRequested();
+            if (Requests.Count == 1)
+            {
+                yield return new ChatCompletionToolCallCompletedEvent(
+                    0,
+                    "call-search",
+                    "tool__search",
+                    """{"query":"echo"}""");
                 yield return new ChatCompletionCompletedEvent(
                     ChatCompletionFinishReason.ToolCall);
                 yield break;

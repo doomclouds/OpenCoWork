@@ -25,6 +25,7 @@ public sealed class ToolSnapshotTests
                 "file.write",
                 "shell.run",
                 "skill.load",
+                "tool.search",
                 "web.fetch",
             ],
             first.Registrations.Select(CanonicalName));
@@ -34,6 +35,7 @@ public sealed class ToolSnapshotTests
                 ToolReplaySafety.Safe,
                 ToolReplaySafety.Unsafe,
                 ToolReplaySafety.Unsafe,
+                ToolReplaySafety.Safe,
                 ToolReplaySafety.Safe,
                 ToolReplaySafety.Unsafe,
             ],
@@ -48,6 +50,7 @@ public sealed class ToolSnapshotTests
                 ToolEffect.ProcessExecution |
                 ToolEffect.NetworkRead |
                 ToolEffect.ExternalMutation,
+                ToolEffect.None,
                 ToolEffect.None,
                 ToolEffect.NetworkRead,
             ],
@@ -68,6 +71,7 @@ public sealed class ToolSnapshotTests
                 "file__write",
                 "shell__run",
                 "skill__load",
+                "tool__search",
                 "web__fetch",
             ],
             first.Registrations.Select(item =>
@@ -115,7 +119,7 @@ public sealed class ToolSnapshotTests
                     new ToolsConfig()),
                 TestContext.Current.CancellationToken)));
 
-        Assert.All(snapshots, snapshot => Assert.Equal(6, snapshot.Registrations.Count));
+        Assert.All(snapshots, snapshot => Assert.Equal(7, snapshot.Registrations.Count));
         Assert.Single(snapshots.Select(snapshot => snapshot.SnapshotSha256).Distinct());
     }
 
@@ -145,10 +149,10 @@ public sealed class ToolSnapshotTests
             });
 
         Assert.Equal(
-            ["file.list", "file.read", "skill.load", "web.fetch"],
+            ["file.list", "file.read", "skill.load", "tool.search", "web.fetch"],
             plan.Registrations.Select(CanonicalName));
         Assert.Equal(
-            ["file.list", "file.read", "file.write", "skill.load"],
+            ["file.list", "file.read", "file.write", "skill.load", "tool.search"],
             networkDenied.Registrations.Select(CanonicalName));
         Assert.Equal(
             ToolAuthorityDecision.RequireApproval,

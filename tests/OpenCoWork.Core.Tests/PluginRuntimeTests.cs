@@ -12,6 +12,95 @@ namespace OpenCoWork.Core.Tests;
 public sealed class PluginRuntimeTests
 {
     [Fact]
+    public async Task Trusted_plugin_hook_only_observes_its_plugin_tools()
+    {
+        var (root, workspace, user) = PluginPackageTests.CreateDirectories();
+        try
+        {
+            var paths = new CapabilityPersistencePaths(
+                new OpenCoWorkPaths(workspace),
+                user);
+            var files = new CapabilityFileStore(paths);
+            var tools = new ToolRuntime(paths.WorkspacePaths);
+            using var store = new PluginPackageStore(paths);
+            var archive = PluginPackageTests.CreateToolPackage(
+                root,
+                "1.0.0",
+                Path.Combine(
+                    AppContext.BaseDirectory,
+                    "OpenCoWork.PluginFixture.dll"),
+                includeHook: true);
+            var package = await store.StoreLocalAsync(
+                archive,
+                TestContext.Current.CancellationToken);
+            await files.SavePluginLockAsync(
+                new PluginLockDocument(
+                    1,
+                    [new PluginLockEntry(
+                        package.Manifest.Id,
+                        package.Manifest.Version,
+                        package.ContentSha256,
+                        Enabled: true)]),
+                TestContext.Current.CancellationToken);
+            await files.SaveTrustDecisionsAsync(
+                new TrustDecisionsDocument(
+                    1,
+                    [new CapabilityTrustDecision(
+                        workspace,
+                        CapabilitySourceKind.Plugin,
+                        package.Manifest.Id,
+                        package.Manifest.Version,
+                        package.ContentSha256,
+                        [
+                            CapabilityTrustScope.InProcessCode,
+                            CapabilityTrustScope.TrustedHook,
+                        ],
+                        [])]),
+                TestContext.Current.CancellationToken);
+            var plugins = new PluginRuntime(paths, files, store, tools);
+            _ = await plugins.DiscoverAsync(
+                TestContext.Current.CancellationToken);
+            var snapshot = tools.BuildSnapshot(
+                AgentMode.Agent,
+                new ToolsConfig());
+            var registration = Assert.Single(
+                snapshot.Registrations,
+                item => item.Definition.Id.SourceKind ==
+                        ToolSourceKind.PluginNative);
+            var canonicalName =
+                $"{registration.Definition.Name.Namespace}." +
+                registration.Definition.Name.Name;
+            var context = new ToolInvocationContext(
+                Guid.CreateVersion7(),
+                Guid.CreateVersion7(),
+                Guid.CreateVersion7(),
+                Guid.CreateVersion7(),
+                0,
+                "call-plugin-hook",
+                snapshot.CanonicalToProviderNames[canonicalName],
+                JsonSerializer.SerializeToElement(new { text = "hello" }),
+                new string('a', 64),
+                SensitiveInputDetected: false,
+                snapshot);
+
+            var decision = await new CapabilityHookRuntime(plugins.GetHooks())
+                .PreToolUseAsync(
+                    context,
+                    TestContext.Current.CancellationToken);
+
+            Assert.Equal(
+                ToolAuthorityDecision.RequireApproval,
+                decision.Authority);
+            Assert.Equal(TimeSpan.FromSeconds(2), decision.TimeoutCap);
+            await plugins.StopAsync(TestContext.Current.CancellationToken);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task Trusted_plugin_binds_declared_tool_and_unloads_after_lease_release()
     {
         var (root, workspace, user) = PluginPackageTests.CreateDirectories();
