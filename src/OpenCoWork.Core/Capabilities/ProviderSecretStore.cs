@@ -119,7 +119,7 @@ internal sealed class ProviderAuthService
             return new ProviderSecretLease(secret: null);
         }
 
-        var profile = ResolveProfile(profileId);
+        var profile = GetProfile(profileId);
         if (profile.Kind == ProviderAuthKind.None)
         {
             return new ProviderSecretLease(secret: null);
@@ -160,7 +160,7 @@ internal sealed class ProviderAuthService
     public void Set(string profileId, string secret)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(secret);
-        var profile = ResolveProfile(profileId);
+        var profile = GetProfile(profileId);
         if (profile.SourceKind != ProviderAuthSourceKind.OsSecretStore ||
             !_store.IsAvailable)
         {
@@ -172,7 +172,7 @@ internal sealed class ProviderAuthService
 
     public void Clear(string profileId)
     {
-        var profile = ResolveProfile(profileId);
+        var profile = GetProfile(profileId);
         if (profile.SourceKind != ProviderAuthSourceKind.OsSecretStore ||
             !_store.IsAvailable)
         {
@@ -182,7 +182,33 @@ internal sealed class ProviderAuthService
         _store.Clear(Account(profile.Id));
     }
 
-    private ProviderAuthProfile ResolveProfile(string profileId)
+    internal ProviderSecretLease AcquireStored(string profileId)
+    {
+        var profile = GetProfile(profileId);
+        if (profile.SourceKind != ProviderAuthSourceKind.OsSecretStore ||
+            !_store.IsAvailable)
+        {
+            throw AuthenticationFailed();
+        }
+
+        try
+        {
+            var secret = _store.Read(Account(profile.Id));
+            return new ProviderSecretLease(
+                secret,
+                string.IsNullOrWhiteSpace(secret)
+                    ? null
+                    : _redactor.RegisterSecret(secret));
+        }
+        catch (Exception exception) when (
+            exception is Win32Exception or ExternalException or
+                PlatformNotSupportedException)
+        {
+            throw AuthenticationFailed();
+        }
+    }
+
+    internal ProviderAuthProfile GetProfile(string profileId)
     {
         if (profileId.StartsWith("core/", StringComparison.Ordinal))
         {

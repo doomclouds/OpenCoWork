@@ -134,6 +134,13 @@ public static class DynamicToolErrorCodes
     public const string LeaseExpired = "dynamicTool.leaseExpired";
 }
 
+public static class McpToolErrorCodes
+{
+    public const string Disconnected = "mcp.disconnected";
+    public const string CallFailed = "mcp.callFailed";
+    public const string InvalidResponse = "mcp.invalidResponse";
+}
+
 public sealed record ToolDefinition
 {
     public ToolDefinition(

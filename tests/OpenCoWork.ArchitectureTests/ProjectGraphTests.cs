@@ -35,6 +35,7 @@ public sealed class ProjectGraphTests
             ["OpenCoWork.Generators"],
             "opencowork"),
         new("OpenCoWork.Generators", "netstandard2.0", "Library", [], []),
+        new("OpenCoWork.McpFixture", "net10.0", "Exe", [], []),
         new(
             "OpenCoWork.PluginFixture",
             "net10.0",
@@ -50,7 +51,12 @@ public sealed class ProjectGraphTests
         new("OpenCoWork.Protocol.Tests", "net10.0", "Exe", ["OpenCoWork.Protocol"], []),
         new("OpenCoWork.Generators.Tests", "net10.0", "Exe", ["OpenCoWork.Generators"], []),
         new("OpenCoWork.ArchitectureTests", "net10.0", "Exe", [], []),
-        new("OpenCoWork.IntegrationTests", "net10.0", "Exe", ["OpenCoWork.App"], []),
+        new(
+            "OpenCoWork.IntegrationTests",
+            "net10.0",
+            "Exe",
+            ["OpenCoWork.App", "OpenCoWork.McpFixture"],
+            []),
         new("OpenCoWork.Protocol.TestClient", "net10.0", "Exe", ["OpenCoWork.Protocol"], []),
     ];
 
@@ -389,6 +395,7 @@ public sealed class ProjectGraphTests
             !Name.EndsWith("TestClient", StringComparison.Ordinal)
                 ? "tests"
                 : Name is
+                    "OpenCoWork.McpFixture" or
                     "OpenCoWork.PluginFixture" or
                     "OpenCoWork.Protocol.TestClient"
                     ? "tests"

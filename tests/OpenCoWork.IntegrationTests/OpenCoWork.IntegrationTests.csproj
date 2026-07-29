@@ -17,6 +17,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\OpenCoWork.App\OpenCoWork.App.csproj" />
+    <ProjectReference Include="..\OpenCoWork.McpFixture\OpenCoWork.McpFixture.csproj" />
   </ItemGroup>
 
 </Project>

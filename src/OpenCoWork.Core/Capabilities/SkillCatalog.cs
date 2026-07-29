@@ -26,13 +26,15 @@ internal sealed record WorkspaceCapabilityDiscoveryResult(
 internal sealed class WorkspaceCapabilityDiscovery(
     SkillCatalog skills,
     ProviderDeclarationCatalog providers,
-    PluginRuntime? plugins = null)
+    PluginRuntime? plugins = null,
+    McpCapabilitySource? mcp = null)
 {
     private readonly SkillCatalog _skills =
         skills ?? throw new ArgumentNullException(nameof(skills));
     private readonly ProviderDeclarationCatalog _providers =
         providers ?? throw new ArgumentNullException(nameof(providers));
     private readonly PluginRuntime? _plugins = plugins;
+    private readonly McpCapabilitySource? _mcp = mcp;
 
     public async Task<WorkspaceCapabilityDiscoveryResult> DiscoverAsync(
         CancellationToken cancellationToken)
@@ -42,11 +44,15 @@ internal sealed class WorkspaceCapabilityDiscovery(
         var pluginResult = _plugins is null
             ? new PluginDiscoveryResult([])
             : await _plugins.DiscoverAsync(cancellationToken);
+        var mcpResult = _mcp is null
+            ? new McpDiscoveryResult([])
+            : await _mcp.DiscoverAsync(cancellationToken);
         return new WorkspaceCapabilityDiscoveryResult(
             Array.AsReadOnly(
                 skillResult.Contributions
                     .Concat(_providers.Contributions)
                     .Concat(pluginResult.Contributions)
+                    .Concat(mcpResult.Contributions)
                     .ToArray()),
             skillResult.Snapshot);
     }
@@ -54,8 +60,27 @@ internal sealed class WorkspaceCapabilityDiscovery(
     public IDisposable? AcquirePluginSnapshot(EffectiveToolSnapshot snapshot) =>
         _plugins?.AcquireSnapshotLease(snapshot);
 
-    public Task StopAsync(CancellationToken cancellationToken) =>
-        _plugins?.StopAsync(cancellationToken) ?? Task.CompletedTask;
+    public async Task StopAsync(CancellationToken cancellationToken)
+    {
+        if (_mcp is not null)
+        {
+            await _mcp.StopAsync(cancellationToken);
+        }
+
+        if (_plugins is not null)
+        {
+            await _plugins.StopAsync(cancellationToken);
+        }
+    }
+
+    public void SetRefresh(Func<CancellationToken, Task> refresh)
+    {
+        ArgumentNullException.ThrowIfNull(refresh);
+        if (_mcp is not null)
+        {
+            _mcp.Changed = refresh;
+        }
+    }
 }
 
 internal sealed partial class SkillCatalog(

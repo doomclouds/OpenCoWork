@@ -29,6 +29,7 @@ public sealed class OpenCoWorkPaths
         SkillsDirectory = Path.Combine(OpenCoWorkDirectory, "skills");
         AuthPath = Path.Combine(OpenCoWorkDirectory, "auth.json");
         ProvidersPath = Path.Combine(OpenCoWorkDirectory, "providers.json");
+        McpPath = Path.Combine(OpenCoWorkDirectory, "mcp.json");
         RuntimeDirectory = Path.Combine(OpenCoWorkDirectory, "runtime");
         StateDatabasePath = Path.Combine(RuntimeDirectory, "state.db");
         LogsDirectory = Path.Combine(RuntimeDirectory, "logs");
@@ -56,6 +57,8 @@ public sealed class OpenCoWorkPaths
     public string AuthPath { get; }
 
     public string ProvidersPath { get; }
+
+    public string McpPath { get; }
 
     public string RuntimeDirectory { get; }
 

@@ -48,10 +48,18 @@ public static class OpenCoWorkCapabilityExtensions
                 serviceProvider.GetService<
                     Microsoft.Extensions.Logging.ILogger<CapabilityHookRuntime>>()));
         services.TryAddSingleton(serviceProvider =>
+            new McpCapabilitySource(
+                serviceProvider.GetRequiredService<
+                    OpenCoWork.Core.Workspaces.OpenCoWorkPaths>(),
+                serviceProvider.GetRequiredService<CapabilityFileStore>(),
+                serviceProvider.GetRequiredService<ToolRuntime>(),
+                serviceProvider.GetRequiredService<ProviderAuthService>()));
+        services.TryAddSingleton(serviceProvider =>
             new WorkspaceCapabilityDiscovery(
                 serviceProvider.GetRequiredService<SkillCatalog>(),
                 serviceProvider.GetRequiredService<ProviderDeclarationCatalog>(),
-                serviceProvider.GetRequiredService<PluginRuntime>()));
+                serviceProvider.GetRequiredService<PluginRuntime>(),
+                serviceProvider.GetRequiredService<McpCapabilitySource>()));
         services.TryAddSingleton(serviceProvider =>
             new WorkspaceCapabilityRuntime(
             [
@@ -89,6 +97,14 @@ public sealed class WorkspaceCapabilityRuntime
         ArgumentNullException.ThrowIfNull(coreContributions);
         _coreContributions = coreContributions.ToArray();
         _discovery = discovery;
+        _discovery?.SetRefresh(async cancellationToken =>
+        {
+            if (Status is CapabilityRuntimeState.Ready or
+                CapabilityRuntimeState.Degraded)
+            {
+                _ = await RefreshDiscoveredAsync(cancellationToken);
+            }
+        });
         if (_coreContributions.Any(set =>
                 set.Source.Kind != CapabilitySourceKind.Core))
         {

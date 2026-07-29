@@ -828,7 +828,8 @@ internal sealed class ToolInvocationPipeline : IToolInvocationPipeline
     private static bool IsStableToolCode(string? code) =>
         code is { Length: > 5 and <= 128 } &&
         (code.StartsWith("tool.", StringComparison.Ordinal) ||
-         code.StartsWith("dynamicTool.", StringComparison.Ordinal)) &&
+         code.StartsWith("dynamicTool.", StringComparison.Ordinal) ||
+         code.StartsWith("mcp.", StringComparison.Ordinal)) &&
         code.All(character =>
             char.IsAsciiLetterOrDigit(character) || character == '.');
 

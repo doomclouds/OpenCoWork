@@ -47,7 +47,8 @@ internal sealed record ProviderAuthProfile(
     ProviderAuthSourceKind SourceKind,
     string? SourceName,
     ProviderAuthPlacement Placement,
-    bool Available);
+    bool Available,
+    IReadOnlyList<string>? Scopes = null);
 
 internal sealed record ExternalProviderModel(
     string Id,
@@ -354,12 +355,9 @@ internal sealed partial class ProviderDeclarationCatalog
             "oauth" => ProviderAuthKind.OAuth,
             _ => throw Invalid(),
         };
-        if (kind == ProviderAuthKind.OAuth)
-        {
-            _ = RequireArray(element, "scopes");
-        }
-
-        var source = element.GetProperty("source");
+        var source = kind == ProviderAuthKind.ApiKey
+            ? element.GetProperty("source")
+            : default;
         var (sourceKind, sourceName, available) = kind switch
         {
             ProviderAuthKind.None =>
@@ -372,13 +370,26 @@ internal sealed partial class ProviderDeclarationCatalog
         var placement = kind == ProviderAuthKind.ApiKey
             ? ParsePlacement(element.GetProperty("placement"))
             : ProviderAuthPlacement.None;
+        var scopes = kind == ProviderAuthKind.OAuth
+            ? RequireArray(element, "scopes")
+                .EnumerateArray()
+                .Select(scope =>
+                    scope.ValueKind == JsonValueKind.String &&
+                    !string.IsNullOrWhiteSpace(scope.GetString())
+                        ? scope.GetString()!
+                        : throw Invalid())
+                .Distinct(StringComparer.Ordinal)
+                .Order(StringComparer.Ordinal)
+                .ToArray()
+            : [];
         return new ProviderAuthProfile(
             id,
             kind,
             sourceKind,
             sourceName,
             placement,
-            available);
+            available,
+            scopes);
     }
 
     private (ProviderAuthSourceKind Kind, string? Name, bool Available)

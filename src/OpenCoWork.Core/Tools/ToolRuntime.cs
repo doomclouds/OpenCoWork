@@ -354,6 +354,12 @@ internal sealed partial class ToolRuntime
                    }).IsValid;
     }
 
+    internal static bool IsValidDefinition(ToolDefinition definition)
+    {
+        ArgumentNullException.ThrowIfNull(definition);
+        return TryCompileSchema(definition, out _);
+    }
+
     public bool TryResolveBinding(
         RuntimeBindingId bindingId,
         out ToolRuntimeBinding? binding)
@@ -426,23 +432,53 @@ internal sealed partial class ToolRuntime
     internal void PublishPlugin(
         string pluginId,
         IReadOnlyList<ToolRegistration> registrations,
-        IReadOnlyList<ToolRuntimeBinding> bindings)
+        IReadOnlyList<ToolRuntimeBinding> bindings) =>
+        PublishExternal(
+            ToolSourceKind.PluginNative,
+            pluginId,
+            registrations,
+            bindings,
+            "Plugin");
+
+    internal void PublishMcp(
+        string serverId,
+        IReadOnlyList<ToolRegistration> registrations,
+        IReadOnlyList<ToolRuntimeBinding> bindings) =>
+        PublishExternal(
+            ToolSourceKind.Mcp,
+            serverId,
+            registrations,
+            bindings,
+            "MCP");
+
+    internal void RemovePlugin(string pluginId) =>
+        RemoveExternal(ToolSourceKind.PluginNative, pluginId);
+
+    internal void RemoveMcp(string serverId) =>
+        RemoveExternal(ToolSourceKind.Mcp, serverId);
+
+    private void PublishExternal(
+        ToolSourceKind sourceKind,
+        string sourceId,
+        IReadOnlyList<ToolRegistration> registrations,
+        IReadOnlyList<ToolRuntimeBinding> bindings,
+        string displayName)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(pluginId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(sourceId);
         ArgumentNullException.ThrowIfNull(registrations);
         ArgumentNullException.ThrowIfNull(bindings);
         var candidates = registrations.Select(registration =>
         {
-            if (registration.Definition.Id.SourceKind != ToolSourceKind.PluginNative ||
+            if (registration.Definition.Id.SourceKind != sourceKind ||
                 !string.Equals(
                     registration.Definition.Id.SourceId,
-                    pluginId,
+                    sourceId,
                     StringComparison.Ordinal) ||
                 !TryCompileSchema(registration.Definition, out var schema))
             {
                 throw new ToolRuntimeException(
                     ToolErrorCodes.DefinitionInvalid,
-                    "Plugin Tool definition is invalid.");
+                    $"{displayName} Tool definition is invalid.");
             }
 
             return new Candidate(registration, schema);
@@ -456,7 +492,7 @@ internal sealed partial class ToolRuntime
         {
             throw new ToolRuntimeException(
                 ToolErrorCodes.DefinitionInvalid,
-                "Plugin Tool registrations are invalid.");
+                $"{displayName} Tool registrations are invalid.");
         }
 
         foreach (var binding in bindings)
@@ -471,7 +507,7 @@ internal sealed partial class ToolRuntime
         {
             throw new ToolRuntimeException(
                 ToolErrorCodes.DefinitionInvalid,
-                "Plugin Tool binding is missing.");
+                $"{displayName} Tool binding is missing.");
         }
 
         lock (_bindingGate)
@@ -479,10 +515,10 @@ internal sealed partial class ToolRuntime
             _candidates = _candidates
                 .Where(candidate =>
                     candidate.Registration.Definition.Id.SourceKind !=
-                    ToolSourceKind.PluginNative ||
+                    sourceKind ||
                     !string.Equals(
                         candidate.Registration.Definition.Id.SourceId,
-                        pluginId,
+                        sourceId,
                         StringComparison.Ordinal))
                 .Concat(candidates)
                 .ToArray();
@@ -494,18 +530,18 @@ internal sealed partial class ToolRuntime
         }
     }
 
-    internal void RemovePlugin(string pluginId)
+    private void RemoveExternal(ToolSourceKind sourceKind, string sourceId)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(pluginId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(sourceId);
         lock (_bindingGate)
         {
             _candidates = _candidates
                 .Where(candidate =>
                     candidate.Registration.Definition.Id.SourceKind !=
-                    ToolSourceKind.PluginNative ||
+                    sourceKind ||
                     !string.Equals(
                         candidate.Registration.Definition.Id.SourceId,
-                        pluginId,
+                        sourceId,
                         StringComparison.Ordinal))
                 .ToArray();
             _schemas = CreateSchemas(_candidates);
