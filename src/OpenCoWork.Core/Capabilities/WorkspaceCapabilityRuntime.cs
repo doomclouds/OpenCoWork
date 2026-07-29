@@ -55,6 +55,10 @@ public static class OpenCoWorkCapabilityExtensions
                 serviceProvider.GetService<
                     Microsoft.Extensions.Logging.ILogger<CapabilityHookRuntime>>()));
         services.TryAddSingleton(serviceProvider =>
+            new DynamicToolRegistry(
+                serviceProvider.GetRequiredService<ToolRuntime>(),
+                serviceProvider.GetRequiredService<TimeProvider>()));
+        services.TryAddSingleton(serviceProvider =>
             new McpCapabilitySource(
                 serviceProvider.GetRequiredService<
                     OpenCoWork.Core.Workspaces.OpenCoWorkPaths>(),
@@ -88,6 +92,21 @@ public static class OpenCoWorkCapabilityExtensions
                 serviceProvider.GetRequiredService<PluginPackageStore>(),
                 serviceProvider.GetRequiredService<CapabilityFileStore>(),
                 serviceProvider.GetRequiredService<WorkspaceCapabilityRuntime>()));
+        services.TryAddSingleton<ICapabilityService>(serviceProvider =>
+            new WorkspaceCapabilityService(
+                serviceProvider.GetRequiredService<WorkspaceCapabilityRuntime>(),
+                serviceProvider.GetRequiredService<CapabilityFileStore>(),
+                serviceProvider.GetRequiredService<
+                    OpenCoWork.Core.Workspaces.OpenCoWorkPaths>(),
+                serviceProvider.GetRequiredService<PluginManager>(),
+                serviceProvider.GetRequiredService<SkillCatalog>(),
+                serviceProvider.GetRequiredService<McpCapabilitySource>(),
+                serviceProvider.GetRequiredService<LspCapabilitySource>(),
+                serviceProvider.GetRequiredService<ProviderAuthService>(),
+                serviceProvider.GetRequiredService<DynamicToolRegistry>(),
+                serviceProvider.GetRequiredService<CoreSourceControlTool>(),
+                serviceProvider.GetRequiredService<BackgroundTerminalRuntime>(),
+                serviceProvider.GetRequiredService<WorkspaceMemoryRuntime>()));
         return services;
     }
 }
@@ -134,6 +153,8 @@ public sealed class WorkspaceCapabilityRuntime
 
     public CapabilityRuntimeState Status =>
         (CapabilityRuntimeState)Volatile.Read(ref _status);
+
+    public event EventHandler<CapabilityCatalogChangedEventArgs>? CatalogChanged;
 
     public CapabilityCatalog CurrentCatalog => Volatile.Read(ref _catalog);
 
@@ -459,6 +480,7 @@ public sealed class WorkspaceCapabilityRuntime
         EffectiveSkillSnapshot? skills = null)
     {
         var hash = HashCatalog(runtimeState, items);
+        CapabilityCatalog? changed = null;
         lock (_leaseGate)
         {
             var previous = CurrentCatalog;
@@ -477,6 +499,19 @@ public sealed class WorkspaceCapabilityRuntime
             _skills = skills ?? _skills;
             Volatile.Write(ref _catalog, catalog);
             Volatile.Write(ref _status, (int)runtimeState);
+            if (catalog.Revision != previous.Revision)
+            {
+                changed = catalog;
+            }
+        }
+
+        if (changed is not null)
+        {
+            CatalogChanged?.Invoke(
+                this,
+                new CapabilityCatalogChangedEventArgs(
+                    changed.Revision,
+                    changed.RuntimeState));
         }
     }
 

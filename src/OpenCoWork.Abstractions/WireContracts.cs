@@ -5,10 +5,14 @@ namespace OpenCoWork.Abstractions;
 public static class OpenCoWorkWire
 {
     public const string Version = "1.0";
+    public const string LatestVersion = "1.1";
     public const string ClientToServer = "clientToServer";
+    public const string ServerToClient = "serverToClient";
     public const string SessionOwner = "session";
+    public const string CapabilityOwner = "capability";
     public const string ConnectionAuthority = "connection";
     public const string ThreadAuthority = "thread";
+    public const string WorkspaceAuthority = "workspace";
     public const string NoIdempotency = "none";
     public const string RequiredIdempotency = "required";
     public const int MaximumMessageBytes = 1024 * 1024;
@@ -113,7 +117,112 @@ public sealed record WireErrorData(
     string ErrorCode,
     bool Retryable,
     string CorrelationId,
-    long? CurrentSequence = null);
+    long? CurrentSequence = null,
+    long? CurrentRevision = null,
+    long? CurrentGeneration = null,
+    long? CurrentVersion = null);
+
+public sealed record WireCapabilityCatalogRequest(
+    int Limit = 50,
+    string? Cursor = null);
+
+public sealed record WireCapabilityReadRequest(string Kind, string Id);
+
+public sealed record WireCapabilityRefreshRequest(long ExpectedRevision);
+
+public sealed record WireCapabilitySetEnabledRequest(
+    string Kind,
+    string Id,
+    bool Enabled,
+    long ExpectedRevision);
+
+public sealed record WireCapabilitySource(
+    string Kind,
+    string Id,
+    string? Version,
+    string Sha256);
+
+public sealed record WireCapabilityItem(
+    string Kind,
+    string Id,
+    string DisplayName,
+    string Description,
+    WireCapabilitySource Source,
+    string Status,
+    string[] RequiredTrustScopes,
+    long Generation,
+    string[] DiagnosticCodes,
+    WireCapabilitySource[] ConflictingSources);
+
+public sealed record WireCapabilityCatalogResponse(
+    int SchemaVersion,
+    long Revision,
+    string CatalogSha256,
+    string RuntimeState,
+    WireCapabilityItem[] Items,
+    string? NextCursor);
+
+public sealed record WireCapabilityReadResponse(
+    long Revision,
+    WireCapabilityItem Item);
+
+public sealed record WireCapabilityMutationResponse(
+    long Revision,
+    string RuntimeState,
+    bool Changed);
+
+public sealed record WireCapabilityChangedNotification(
+    long Revision,
+    string RuntimeState);
+
+public sealed record WireCapabilityOperationRequest(JsonElement Arguments);
+
+public sealed record WireThreadCapabilityOperationRequest(
+    Guid ThreadId,
+    JsonElement Arguments);
+
+public sealed record WireCapabilityOperationResponse(
+    JsonElement Result,
+    long? Revision = null);
+
+public sealed record WireDynamicToolDefinition(
+    string Name,
+    string Description,
+    JsonElement InputSchema,
+    string[] Effects,
+    string ReplaySafety);
+
+public sealed record WireDynamicToolRegisterRequest(
+    Guid ThreadId,
+    Guid RegistrationId,
+    WireDynamicToolDefinition Definition,
+    string DefinitionSha256,
+    int? LeaseSeconds = null);
+
+public sealed record WireDynamicToolRenewRequest(
+    Guid ThreadId,
+    Guid RegistrationId,
+    int LeaseSeconds);
+
+public sealed record WireDynamicToolUnregisterRequest(
+    Guid ThreadId,
+    Guid RegistrationId);
+
+public sealed record WireDynamicToolRegistrationResponse(
+    Guid ConnectionId,
+    Guid ThreadId,
+    Guid RegistrationId,
+    string DefinitionSha256,
+    string Status,
+    string RuntimeBindingId,
+    DateTimeOffset ExpiresAt);
+
+public sealed record WireToolInvokeRequest(
+    Guid ThreadId,
+    Guid RegistrationId,
+    JsonElement Arguments);
+
+public sealed record WireToolInvokeResponse(JsonElement Result);
 
 public sealed record WireEventEnvelope(
     Guid EventId,

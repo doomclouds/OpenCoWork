@@ -31,6 +31,21 @@ public static class OpenCoWorkProtocolServer
         string workspacePath,
         Stream input,
         Stream output,
+        CancellationToken cancellationToken = default) =>
+        RunStdioAsync(
+            sessions,
+            capabilities: null,
+            workspacePath,
+            input,
+            output,
+            cancellationToken);
+
+    public static Task RunStdioAsync(
+        ISessionService sessions,
+        ICapabilityService? capabilities,
+        string workspacePath,
+        Stream input,
+        Stream output,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(input);
@@ -45,6 +60,7 @@ public static class OpenCoWorkProtocolServer
             },
             send => new OpenCoWorkJsonRpcConnection(
                 sessions,
+                capabilities,
                 workspacePath,
                 "stdio",
                 send),
@@ -55,6 +71,21 @@ public static class OpenCoWorkProtocolServer
 
     public static Task RunJsonLinesAsync(
         ISessionService sessions,
+        string workspacePath,
+        TextReader input,
+        TextWriter output,
+        CancellationToken cancellationToken = default) =>
+        RunJsonLinesAsync(
+            sessions,
+            capabilities: null,
+            workspacePath,
+            input,
+            output,
+            cancellationToken);
+
+    public static Task RunJsonLinesAsync(
+        ISessionService sessions,
+        ICapabilityService? capabilities,
         string workspacePath,
         TextReader input,
         TextWriter output,
@@ -72,6 +103,7 @@ public static class OpenCoWorkProtocolServer
             },
             send => new OpenCoWorkJsonRpcConnection(
                 sessions,
+                capabilities,
                 workspacePath,
                 "stdio",
                 send),
@@ -145,6 +177,21 @@ public static class OpenCoWorkProtocolServer
         string workspacePath,
         int port,
         string bearerToken,
+        CancellationToken cancellationToken = default) =>
+        await RunWebSocketAsync(
+            sessions,
+            capabilities: null,
+            workspacePath,
+            port,
+            bearerToken,
+            cancellationToken);
+
+    public static async Task RunWebSocketAsync(
+        ISessionService sessions,
+        ICapabilityService? capabilities,
+        string workspacePath,
+        int port,
+        string bearerToken,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(sessions);
@@ -197,6 +244,7 @@ public static class OpenCoWorkProtocolServer
                                 token),
                         send => new OpenCoWorkJsonRpcConnection(
                             sessions,
+                            capabilities,
                             workspacePath,
                             "websocket",
                             send),

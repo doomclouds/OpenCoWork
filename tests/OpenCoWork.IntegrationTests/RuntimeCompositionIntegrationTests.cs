@@ -56,6 +56,45 @@ public sealed class RuntimeCompositionIntegrationTests
                         Id: "file.read",
                         Status: CapabilityStatus.Ready,
                     });
+                var capabilityService = host.Services
+                    .GetRequiredService<ICapabilityService>();
+                var page = await capabilityService.GetCatalogAsync(
+                    new CapabilityCatalogQuery(Limit: 1),
+                    cancellationToken);
+                Assert.Equal(capabilities.CurrentCatalog.Revision, page.Revision);
+                Assert.Single(page.Items);
+                Assert.NotNull(page.NextCursor);
+                var entry = await capabilityService.ReadAsync(
+                    new CapabilityIdentity(
+                        page.Items[0].Kind,
+                        page.Items[0].Id),
+                    cancellationToken);
+                Assert.Equal(page.Revision, entry.Revision);
+                var conflict = await Assert.ThrowsAsync<CapabilityServiceException>(
+                    () => capabilityService.RefreshAsync(
+                            page.Revision + 1,
+                            cancellationToken)
+                        .AsTask());
+                Assert.Equal(CapabilityErrorCodes.RevisionConflict, conflict.Code);
+                Assert.Equal(page.Revision, conflict.CurrentRevision);
+                var unchanged = await capabilityService.RefreshAsync(
+                    page.Revision,
+                    cancellationToken);
+                Assert.False(unchanged.Changed);
+                var preserved = await capabilityService.SetEnabledAsync(
+                    new CapabilitySetEnabledRequest(
+                        CapabilityKind.Skill,
+                        "unknown/preserved",
+                        Enabled: false,
+                        ExpectedRevision: page.Revision),
+                    cancellationToken);
+                Assert.False(preserved.Changed);
+                Assert.Contains(
+                    "unknown/preserved",
+                    await File.ReadAllTextAsync(
+                        new OpenCoWorkPaths(root).CapabilitiesPath,
+                        cancellationToken),
+                    StringComparison.Ordinal);
 
                 var service = host.Services.GetRequiredService<ISessionService>();
                 var created = await service.CreateThreadAsync(

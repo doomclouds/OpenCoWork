@@ -627,6 +627,8 @@ namespace OpenCoWork.App
                 try
                 {
                     var sessions = host.Services.GetRequiredService<ISessionService>();
+                    var capabilities =
+                        host.Services.GetRequiredService<ICapabilityService>();
                     if (acp)
                     {
                         var models = snapshot.GetRequiredSection<ModelsConfig>();
@@ -657,6 +659,7 @@ namespace OpenCoWork.App
                     {
                         await OpenCoWorkProtocolServer.RunWebSocketAsync(
                             sessions,
+                            capabilities,
                             paths.WorkspaceRoot,
                             port!.Value,
                             token!,
@@ -666,6 +669,7 @@ namespace OpenCoWork.App
                     {
                         await OpenCoWorkProtocolServer.RunStdioAsync(
                             sessions,
+                            capabilities,
                             paths.WorkspaceRoot,
                             protocolInput,
                             protocolOutput,
@@ -675,6 +679,7 @@ namespace OpenCoWork.App
                     {
                         await OpenCoWorkProtocolServer.RunJsonLinesAsync(
                             sessions,
+                            capabilities,
                             paths.WorkspaceRoot,
                             input,
                             output,

@@ -31,17 +31,34 @@ public sealed class OpenCoWorkJsonRpcConnection : IAsyncDisposable
     };
 
     private readonly ISessionService _sessions;
+    private readonly ICapabilityService? _capabilities;
     private readonly string _workspacePath;
     private readonly string _transport;
     private readonly Func<ReadOnlyMemory<byte>, CancellationToken, ValueTask> _send;
     private readonly CancellationTokenSource _lifetime = new();
+    private readonly Guid _connectionId = Guid.CreateVersion7();
     private readonly ConcurrentDictionary<string, CancellationTokenSource> _inFlight = [];
+    private readonly ConcurrentDictionary<string, PendingClientRequest> _clientRequests = [];
     private readonly ConcurrentDictionary<string, ActiveSubscription> _subscriptions = [];
+    private HashSet<string> _clientCapabilities = new(StringComparer.Ordinal);
+    private long _nextClientRequestId;
+    private string _wireVersion = OpenCoWorkWire.Version;
+    private int _capabilitySubscribed;
     private int _initialized;
     private int _disposed;
 
     public OpenCoWorkJsonRpcConnection(
         ISessionService sessions,
+        string workspacePath,
+        string transport,
+        Func<ReadOnlyMemory<byte>, CancellationToken, ValueTask> send)
+        : this(sessions, capabilities: null, workspacePath, transport, send)
+    {
+    }
+
+    public OpenCoWorkJsonRpcConnection(
+        ISessionService sessions,
+        ICapabilityService? capabilities,
         string workspacePath,
         string transport,
         Func<ReadOnlyMemory<byte>, CancellationToken, ValueTask> send)
@@ -51,6 +68,7 @@ public sealed class OpenCoWorkJsonRpcConnection : IAsyncDisposable
         ArgumentException.ThrowIfNullOrWhiteSpace(transport);
         ArgumentNullException.ThrowIfNull(send);
         _sessions = sessions;
+        _capabilities = capabilities;
         _workspacePath = Path.GetFullPath(workspacePath);
         _transport = transport;
         _send = send;
@@ -90,6 +108,11 @@ public sealed class OpenCoWorkJsonRpcConnection : IAsyncDisposable
                 "Parse error.",
                 data: null,
                 cancellationToken);
+            return;
+        }
+
+        if (TryCompleteClientRequest(request))
+        {
             return;
         }
 
@@ -213,6 +236,17 @@ public sealed class OpenCoWorkJsonRpcConnection : IAsyncDisposable
                     cancellationToken);
             }
         }
+        catch (CapabilityServiceException exception)
+        {
+            if (hasId)
+            {
+                await SendCapabilityErrorAsync(
+                    id,
+                    exception,
+                    correlationId,
+                    cancellationToken);
+            }
+        }
         catch (OperationCanceledException) when (
             requestCancellation?.IsCancellationRequested == true &&
             !cancellationToken.IsCancellationRequested &&
@@ -282,6 +316,19 @@ public sealed class OpenCoWorkJsonRpcConnection : IAsyncDisposable
         }
 
         await _lifetime.CancelAsync();
+        _capabilities?.DisconnectDynamicTools(_connectionId);
+        foreach (var pending in _clientRequests.Values)
+        {
+            pending.Completion.TrySetException(
+                new IOException("Dynamic Tool client disconnected."));
+        }
+
+        _clientRequests.Clear();
+        if (Interlocked.Exchange(ref _capabilitySubscribed, 0) != 0)
+        {
+            _capabilities!.CatalogChanged -= OnCapabilityCatalogChanged;
+        }
+
         foreach (var cancellation in _inFlight.Values)
         {
             await cancellation.CancelAsync();
@@ -308,9 +355,18 @@ public sealed class OpenCoWorkJsonRpcConnection : IAsyncDisposable
         ArgumentException.ThrowIfNullOrWhiteSpace(request.Client.Version);
         ArgumentNullException.ThrowIfNull(request.WireVersions);
         ArgumentException.ThrowIfNullOrWhiteSpace(request.Workspace.Path);
-        if (!request.WireVersions.Contains(
-                OpenCoWorkWire.Version,
-                StringComparer.Ordinal))
+        var wireVersion =
+            _capabilities is not null &&
+            request.WireVersions.Contains(
+                OpenCoWorkWire.LatestVersion,
+                StringComparer.Ordinal)
+                ? OpenCoWorkWire.LatestVersion
+                : request.WireVersions.Contains(
+                    OpenCoWorkWire.Version,
+                    StringComparer.Ordinal)
+                    ? OpenCoWorkWire.Version
+                    : null;
+        if (wireVersion is null)
         {
             throw new WireRpcException(
                 new SessionError(
@@ -341,11 +397,36 @@ public sealed class OpenCoWorkJsonRpcConnection : IAsyncDisposable
                     IsRetryable: false));
         }
 
+        _wireVersion = wireVersion;
+        _clientCapabilities = request.Capabilities?
+            .ToHashSet(StringComparer.Ordinal) ?? new HashSet<string>(
+            StringComparer.Ordinal);
+        var dynamicToolExecution =
+            _clientCapabilities.Contains("serverRequests") &&
+            _clientCapabilities.Contains("dynamicToolExecution");
+        if (wireVersion == OpenCoWorkWire.LatestVersion &&
+            Interlocked.CompareExchange(ref _capabilitySubscribed, 1, 0) == 0)
+        {
+            _capabilities!.CatalogChanged += OnCapabilityCatalogChanged;
+        }
+
         return new WireInitializeResponse(
-            new WireServerInfo("OpenCoWork", OpenCoWorkWire.Version),
-            OpenCoWorkWire.Version,
+            new WireServerInfo("OpenCoWork", wireVersion),
+            wireVersion,
             new WireWorkspaceInfo(_workspacePath),
-            ["requestCancellation", "semanticEvents", "threadSubscriptions"],
+            wireVersion == OpenCoWorkWire.LatestVersion
+                ?
+                [
+                    "requestCancellation",
+                    "semanticEvents",
+                    "threadSubscriptions",
+                    "capabilityCatalog",
+                    "capabilityNotifications",
+                    .. dynamicToolExecution
+                        ? new[] { "serverRequests", "dynamicToolExecution" }
+                        : [],
+                ]
+                : ["requestCancellation", "semanticEvents", "threadSubscriptions"],
             new WireProtocolLimits(
                 OpenCoWorkWire.MaximumMessageBytes,
                 OpenCoWorkWire.MaximumInputBytes,
@@ -434,8 +515,392 @@ public sealed class OpenCoWorkJsonRpcConnection : IAsyncDisposable
             "item/input/resolve" => await ResolveInputAsync(
                 Deserialize<WireResolveInputRequest>(parameters),
                 cancellationToken),
+            "capability/catalog" => await GetCapabilityCatalogAsync(
+                Deserialize<WireCapabilityCatalogRequest>(parameters),
+                cancellationToken),
+            "capability/read" => await ReadCapabilityAsync(
+                Deserialize<WireCapabilityReadRequest>(parameters),
+                cancellationToken),
+            "capability/refresh" => await RefreshCapabilitiesAsync(
+                Deserialize<WireCapabilityRefreshRequest>(parameters),
+                cancellationToken),
+            "capability/setEnabled" => await SetCapabilityEnabledAsync(
+                Deserialize<WireCapabilitySetEnabledRequest>(parameters),
+                cancellationToken),
+            "plugin/install" => await ExecuteCapabilityOperationAsync(
+                "plugin/install",
+                Deserialize<WireCapabilityOperationRequest>(parameters),
+                cancellationToken),
+            "plugin/remove" => await ExecuteCapabilityOperationAsync(
+                "plugin/remove",
+                Deserialize<WireCapabilityOperationRequest>(parameters),
+                cancellationToken),
+            "plugin/setEnabled" => await ExecuteCapabilityOperationAsync(
+                "plugin/setEnabled",
+                Deserialize<WireCapabilityOperationRequest>(parameters),
+                cancellationToken),
+            "skill/read" => await ExecuteCapabilityOperationAsync(
+                "skill/read",
+                Deserialize<WireCapabilityOperationRequest>(parameters),
+                cancellationToken),
+            "skill/selectVariant" => await ExecuteCapabilityOperationAsync(
+                "skill/selectVariant",
+                Deserialize<WireCapabilityOperationRequest>(parameters),
+                cancellationToken),
+            "trust/decide" => await ExecuteCapabilityOperationAsync(
+                "trust/decide",
+                Deserialize<WireCapabilityOperationRequest>(parameters),
+                cancellationToken),
+            "trust/revoke" => await ExecuteCapabilityOperationAsync(
+                "trust/revoke",
+                Deserialize<WireCapabilityOperationRequest>(parameters),
+                cancellationToken),
+            "mcp/resource/list" => await ExecuteCapabilityOperationAsync(
+                "mcp/resource/list",
+                Deserialize<WireCapabilityOperationRequest>(parameters),
+                cancellationToken),
+            "mcp/resource/read" => await ExecuteCapabilityOperationAsync(
+                "mcp/resource/read",
+                Deserialize<WireCapabilityOperationRequest>(parameters),
+                cancellationToken),
+            "mcp/restart" => await ExecuteCapabilityOperationAsync(
+                "mcp/restart",
+                Deserialize<WireCapabilityOperationRequest>(parameters),
+                cancellationToken),
+            "lsp/request" => await ExecuteCapabilityOperationAsync(
+                "lsp/request",
+                Deserialize<WireCapabilityOperationRequest>(parameters),
+                cancellationToken),
+            "lsp/restart" => await ExecuteCapabilityOperationAsync(
+                "lsp/restart",
+                Deserialize<WireCapabilityOperationRequest>(parameters),
+                cancellationToken),
+            "auth/secret/set" => await ExecuteCapabilityOperationAsync(
+                "auth/secret/set",
+                Deserialize<WireCapabilityOperationRequest>(parameters),
+                cancellationToken),
+            "auth/secret/clear" => await ExecuteCapabilityOperationAsync(
+                "auth/secret/clear",
+                Deserialize<WireCapabilityOperationRequest>(parameters),
+                cancellationToken),
+            "sourceControl/inspect" => await ExecuteCapabilityOperationAsync(
+                "sourceControl/inspect",
+                Deserialize<WireCapabilityOperationRequest>(parameters),
+                cancellationToken),
+            "sourceControl/status" => await ExecuteCapabilityOperationAsync(
+                "sourceControl/status",
+                Deserialize<WireCapabilityOperationRequest>(parameters),
+                cancellationToken),
+            "sourceControl/diff" => await ExecuteCapabilityOperationAsync(
+                "sourceControl/diff",
+                Deserialize<WireCapabilityOperationRequest>(parameters),
+                cancellationToken),
+            "sourceControl/log" => await ExecuteCapabilityOperationAsync(
+                "sourceControl/log",
+                Deserialize<WireCapabilityOperationRequest>(parameters),
+                cancellationToken),
+            "sourceControl/show" => await ExecuteCapabilityOperationAsync(
+                "sourceControl/show",
+                Deserialize<WireCapabilityOperationRequest>(parameters),
+                cancellationToken),
+            "terminal/start" => await ExecuteThreadCapabilityOperationAsync(
+                "terminal/start",
+                Deserialize<WireThreadCapabilityOperationRequest>(parameters),
+                cancellationToken),
+            "terminal/list" => await ExecuteThreadCapabilityOperationAsync(
+                "terminal/list",
+                Deserialize<WireThreadCapabilityOperationRequest>(parameters),
+                cancellationToken),
+            "terminal/read" => await ExecuteThreadCapabilityOperationAsync(
+                "terminal/read",
+                Deserialize<WireThreadCapabilityOperationRequest>(parameters),
+                cancellationToken),
+            "terminal/write" => await ExecuteThreadCapabilityOperationAsync(
+                "terminal/write",
+                Deserialize<WireThreadCapabilityOperationRequest>(parameters),
+                cancellationToken),
+            "terminal/stop" => await ExecuteThreadCapabilityOperationAsync(
+                "terminal/stop",
+                Deserialize<WireThreadCapabilityOperationRequest>(parameters),
+                cancellationToken),
+            "terminal/release" => await ExecuteThreadCapabilityOperationAsync(
+                "terminal/release",
+                Deserialize<WireThreadCapabilityOperationRequest>(parameters),
+                cancellationToken),
+            "memory/list" => await ExecuteCapabilityOperationAsync(
+                "memory/list",
+                Deserialize<WireCapabilityOperationRequest>(parameters),
+                cancellationToken),
+            "memory/search" => await ExecuteCapabilityOperationAsync(
+                "memory/search",
+                Deserialize<WireCapabilityOperationRequest>(parameters),
+                cancellationToken),
+            "memory/read" => await ExecuteCapabilityOperationAsync(
+                "memory/read",
+                Deserialize<WireCapabilityOperationRequest>(parameters),
+                cancellationToken),
+            "memory/write" => await ExecuteCapabilityOperationAsync(
+                "memory/write",
+                Deserialize<WireCapabilityOperationRequest>(parameters),
+                cancellationToken),
+            "memory/archive" => await ExecuteCapabilityOperationAsync(
+                "memory/archive",
+                Deserialize<WireCapabilityOperationRequest>(parameters),
+                cancellationToken),
+            "tool/dynamic/register" => await RegisterDynamicToolAsync(
+                Deserialize<WireDynamicToolRegisterRequest>(parameters),
+                cancellationToken),
+            "tool/dynamic/renew" => await RenewDynamicToolAsync(
+                Deserialize<WireDynamicToolRenewRequest>(parameters),
+                cancellationToken),
+            "tool/dynamic/unregister" => await UnregisterDynamicToolAsync(
+                Deserialize<WireDynamicToolUnregisterRequest>(parameters),
+                cancellationToken),
             _ => throw new WireMethodNotFoundException(),
         };
+
+    [OpenCoWorkWireMethod(
+        "capability/catalog",
+        OpenCoWorkWire.ClientToServer,
+        OpenCoWorkWire.CapabilityOwner,
+        OpenCoWorkWire.LatestVersion,
+        typeof(WireCapabilityCatalogRequest),
+        typeof(WireCapabilityCatalogResponse),
+        OpenCoWorkWire.WorkspaceAuthority,
+        false,
+        OpenCoWorkWire.NoIdempotency)]
+    public async Task<WireCapabilityCatalogResponse> GetCapabilityCatalogAsync(
+        WireCapabilityCatalogRequest request,
+        CancellationToken cancellationToken)
+    {
+        RequireWire11();
+        var page = await _capabilities!.GetCatalogAsync(
+            new CapabilityCatalogQuery(request.Limit, request.Cursor),
+            cancellationToken);
+        return new WireCapabilityCatalogResponse(
+            page.SchemaVersion,
+            page.Revision,
+            page.CatalogSha256,
+            WireName(page.RuntimeState),
+            page.Items.Select(MapCapability).ToArray(),
+            page.NextCursor);
+    }
+
+    [OpenCoWorkWireMethod(
+        "capability/read",
+        OpenCoWorkWire.ClientToServer,
+        OpenCoWorkWire.CapabilityOwner,
+        OpenCoWorkWire.LatestVersion,
+        typeof(WireCapabilityReadRequest),
+        typeof(WireCapabilityReadResponse),
+        OpenCoWorkWire.WorkspaceAuthority,
+        false,
+        OpenCoWorkWire.NoIdempotency)]
+    public async Task<WireCapabilityReadResponse> ReadCapabilityAsync(
+        WireCapabilityReadRequest request,
+        CancellationToken cancellationToken)
+    {
+        RequireWire11();
+        var entry = await _capabilities!.ReadAsync(
+            new CapabilityIdentity(
+                ParseCapabilityKind(request.Kind),
+                request.Id),
+            cancellationToken);
+        return new WireCapabilityReadResponse(
+            entry.Revision,
+            MapCapability(entry.Item));
+    }
+
+    [OpenCoWorkWireMethod(
+        "capability/refresh",
+        OpenCoWorkWire.ClientToServer,
+        OpenCoWorkWire.CapabilityOwner,
+        OpenCoWorkWire.LatestVersion,
+        typeof(WireCapabilityRefreshRequest),
+        typeof(WireCapabilityMutationResponse),
+        OpenCoWorkWire.WorkspaceAuthority,
+        true,
+        OpenCoWorkWire.NoIdempotency)]
+    public async Task<WireCapabilityMutationResponse> RefreshCapabilitiesAsync(
+        WireCapabilityRefreshRequest request,
+        CancellationToken cancellationToken)
+    {
+        RequireWire11();
+        return MapCapabilityChange(await _capabilities!.RefreshAsync(
+            request.ExpectedRevision,
+            cancellationToken));
+    }
+
+    [OpenCoWorkWireMethod(
+        "capability/setEnabled",
+        OpenCoWorkWire.ClientToServer,
+        OpenCoWorkWire.CapabilityOwner,
+        OpenCoWorkWire.LatestVersion,
+        typeof(WireCapabilitySetEnabledRequest),
+        typeof(WireCapabilityMutationResponse),
+        OpenCoWorkWire.WorkspaceAuthority,
+        true,
+        OpenCoWorkWire.NoIdempotency)]
+    public async Task<WireCapabilityMutationResponse> SetCapabilityEnabledAsync(
+        WireCapabilitySetEnabledRequest request,
+        CancellationToken cancellationToken)
+    {
+        RequireWire11();
+        return MapCapabilityChange(await _capabilities!.SetEnabledAsync(
+            new CapabilitySetEnabledRequest(
+                ParseCapabilityKind(request.Kind),
+                request.Id,
+                request.Enabled,
+                request.ExpectedRevision),
+            cancellationToken));
+    }
+
+    private async Task<WireCapabilityOperationResponse>
+        ExecuteCapabilityOperationAsync(
+            string operation,
+            WireCapabilityOperationRequest request,
+            CancellationToken cancellationToken)
+    {
+        RequireWire11();
+        var result = await _capabilities!.ExecuteDomainAsync(
+            new CapabilityDomainRequest(
+                operation,
+                RequireObject(request.Arguments),
+                _connectionId),
+            cancellationToken);
+        return new WireCapabilityOperationResponse(
+            result.Result,
+            result.Revision);
+    }
+
+    private Task<WireCapabilityOperationResponse>
+        ExecuteThreadCapabilityOperationAsync(
+            string operation,
+            WireThreadCapabilityOperationRequest request,
+            CancellationToken cancellationToken) =>
+        ExecuteCapabilityOperationAsync(
+            operation,
+            new WireCapabilityOperationRequest(
+                JsonSerializer.SerializeToElement(new
+                {
+                    request.ThreadId,
+                    arguments = RequireObject(request.Arguments),
+                }, JsonOptions)),
+            cancellationToken);
+
+    private async Task<WireDynamicToolRegistrationResponse>
+        RegisterDynamicToolAsync(
+            WireDynamicToolRegisterRequest request,
+            CancellationToken cancellationToken)
+    {
+        RequireDynamicToolExecution();
+        var registration = await _capabilities!.RegisterDynamicToolAsync(
+            _connectionId,
+            new CapabilityDynamicToolRegistrationRequest(
+                request.ThreadId,
+                request.RegistrationId,
+                new CapabilityDynamicToolDefinition(
+                    request.Definition.Name,
+                    request.Definition.Description,
+                    RequireObject(request.Definition.InputSchema),
+                    ParseToolEffects(request.Definition.Effects),
+                    ParseWireEnum<ToolReplaySafety>(
+                        request.Definition.ReplaySafety)),
+                request.DefinitionSha256,
+                request.LeaseSeconds is { } seconds
+                    ? TimeSpan.FromSeconds(seconds)
+                    : null),
+            (arguments, token) => InvokeDynamicToolAsync(
+                request.ThreadId,
+                request.RegistrationId,
+                arguments,
+                token),
+            cancellationToken);
+        return MapDynamicTool(registration);
+    }
+
+    private async Task<WireDynamicToolRegistrationResponse> RenewDynamicToolAsync(
+        WireDynamicToolRenewRequest request,
+        CancellationToken cancellationToken)
+    {
+        RequireDynamicToolExecution();
+        return MapDynamicTool(await _capabilities!.RenewDynamicToolAsync(
+            _connectionId,
+            request.ThreadId,
+            request.RegistrationId,
+            TimeSpan.FromSeconds(request.LeaseSeconds),
+            cancellationToken));
+    }
+
+    private async Task<WireAcknowledgement> UnregisterDynamicToolAsync(
+        WireDynamicToolUnregisterRequest request,
+        CancellationToken cancellationToken)
+    {
+        RequireDynamicToolExecution();
+        await _capabilities!.UnregisterDynamicToolAsync(
+            _connectionId,
+            request.ThreadId,
+            request.RegistrationId,
+            cancellationToken);
+        return new WireAcknowledgement();
+    }
+
+    private async ValueTask<ToolBindingResult> InvokeDynamicToolAsync(
+        Guid threadId,
+        Guid registrationId,
+        JsonElement arguments,
+        CancellationToken cancellationToken)
+    {
+        var id = $"tool-{Interlocked.Increment(ref _nextClientRequestId)}";
+        var pending = new PendingClientRequest();
+        if (!_clientRequests.TryAdd(id, pending))
+        {
+            return DynamicFailure(
+                DynamicToolErrorCodes.Disconnected,
+                "Dynamic Tool request could not be created.");
+        }
+
+        try
+        {
+            var request = new JsonRpcClientRequest(
+                "2.0",
+                id,
+                "tool/invoke",
+                new WireToolInvokeRequest(
+                    threadId,
+                    registrationId,
+                    arguments.Clone()));
+            await _send(
+                JsonSerializer.SerializeToUtf8Bytes(request, JsonOptions),
+                cancellationToken);
+            using var registration = cancellationToken.Register(
+                static state =>
+                {
+                    var (completion, token) =
+                        ((TaskCompletionSource<ToolBindingResult>, CancellationToken))
+                        state!;
+                    completion.TrySetCanceled(token);
+                },
+                (pending.Completion, cancellationToken));
+            return await pending.Completion.Task;
+        }
+        catch (OperationCanceledException)
+        {
+            await SendClientCancellationAsync(id);
+            throw;
+        }
+        catch (Exception exception) when (
+            exception is IOException or ObjectDisposedException)
+        {
+            return DynamicFailure(
+                DynamicToolErrorCodes.Disconnected,
+                "Dynamic Tool client disconnected.");
+        }
+        finally
+        {
+            _clientRequests.TryRemove(id, out _);
+        }
+    }
 
     [OpenCoWorkWireMethod(
         "thread/create",
@@ -1220,6 +1685,46 @@ public sealed class OpenCoWorkJsonRpcConnection : IAsyncDisposable
         return parameters.ValueKind is JsonValueKind.Object or JsonValueKind.Null;
     }
 
+    private bool TryCompleteClientRequest(JsonElement root)
+    {
+        if (root.ValueKind != JsonValueKind.Object ||
+            !root.TryGetProperty("jsonrpc", out var jsonrpc) ||
+            jsonrpc.ValueKind != JsonValueKind.String ||
+            jsonrpc.GetString() != "2.0" ||
+            root.TryGetProperty("method", out _) ||
+            !root.TryGetProperty("id", out var id) ||
+            id.ValueKind != JsonValueKind.String ||
+            !_clientRequests.TryGetValue(id.GetString()!, out var pending))
+        {
+            return false;
+        }
+
+        if (root.TryGetProperty("result", out var result) &&
+            !root.TryGetProperty("error", out _))
+        {
+            pending.Completion.TrySetResult(
+                ToolBindingResult.Success(result.Clone()));
+            return true;
+        }
+
+        var code = ToolErrorCodes.ExecutionFailed;
+        if (root.TryGetProperty("error", out var error) &&
+            error.ValueKind == JsonValueKind.Object &&
+            error.TryGetProperty("data", out var data) &&
+            data.ValueKind == JsonValueKind.Object &&
+            data.TryGetProperty("errorCode", out var errorCode) &&
+            errorCode.ValueKind == JsonValueKind.String &&
+            !string.IsNullOrWhiteSpace(errorCode.GetString()))
+        {
+            code = errorCode.GetString()!;
+        }
+
+        pending.Completion.TrySetResult(DynamicFailure(
+            code,
+            "Dynamic Tool client returned an error."));
+        return true;
+    }
+
     private async ValueTask SendResultAsync(
         JsonElement? id,
         object result,
@@ -1245,7 +1750,31 @@ public sealed class OpenCoWorkJsonRpcConnection : IAsyncDisposable
                 error.Code,
                 error.IsRetryable,
                 correlationId,
-                currentSequence),
+            currentSequence),
+            cancellationToken);
+
+    private ValueTask SendCapabilityErrorAsync(
+        JsonElement? id,
+        CapabilityServiceException error,
+        string correlationId,
+        CancellationToken cancellationToken) =>
+        SendErrorAsync(
+            id,
+            error.Code switch
+            {
+                CapabilityErrorCodes.RevisionConflict => ConflictError,
+                CapabilityErrorCodes.NotFound => NotFoundError,
+                CapabilityErrorCodes.RuntimeUnavailable => UnavailableError,
+                _ => BusinessError,
+            },
+            "Capability operation failed.",
+            new WireErrorData(
+                error.Code,
+                error.IsRetryable,
+                correlationId,
+                CurrentRevision: error.CurrentRevision,
+                CurrentGeneration: error.CurrentGeneration,
+                CurrentVersion: error.CurrentVersion),
             cancellationToken);
 
     private async ValueTask SendErrorAsync(
@@ -1304,6 +1833,157 @@ public sealed class OpenCoWorkJsonRpcConnection : IAsyncDisposable
 
         return result.Value;
     }
+
+    private void RequireWire11()
+    {
+        if (_wireVersion != OpenCoWorkWire.LatestVersion || _capabilities is null)
+        {
+            throw new WireMethodNotFoundException();
+        }
+    }
+
+    private void RequireDynamicToolExecution()
+    {
+        RequireWire11();
+        if (!_clientCapabilities.Contains("serverRequests") ||
+            !_clientCapabilities.Contains("dynamicToolExecution"))
+        {
+            throw new CapabilityServiceException(
+                DynamicToolErrorCodes.Disconnected,
+                "Dynamic Tool execution was not negotiated.");
+        }
+    }
+
+    private static CapabilityKind ParseCapabilityKind(string kind) =>
+        Enum.TryParse<CapabilityKind>(kind, ignoreCase: true, out var value) &&
+        string.Equals(WireName(value), kind, StringComparison.Ordinal)
+            ? value
+            : throw new ArgumentException("Invalid Capability kind.", nameof(kind));
+
+    private static WireCapabilityMutationResponse MapCapabilityChange(
+        CapabilityCatalogChange change) =>
+        new(
+            change.Revision,
+            WireName(change.RuntimeState),
+            change.Changed);
+
+    private static WireDynamicToolRegistrationResponse MapDynamicTool(
+        CapabilityDynamicToolRegistration registration) =>
+        new(
+            registration.ConnectionId,
+            registration.ThreadId,
+            registration.RegistrationId,
+            registration.DefinitionSha256,
+            WireName(registration.Status),
+            registration.RuntimeBindingId,
+            registration.ExpiresAt);
+
+    private static ToolEffect ParseToolEffects(IEnumerable<string> effects)
+    {
+        ArgumentNullException.ThrowIfNull(effects);
+        var result = ToolEffect.None;
+        foreach (var effect in effects)
+        {
+            result |= ParseWireEnum<ToolEffect>(effect);
+        }
+
+        return result;
+    }
+
+    private static T ParseWireEnum<T>(string value)
+        where T : struct, Enum =>
+        Enum.TryParse<T>(value, ignoreCase: true, out var parsed) &&
+        string.Equals(WireName(parsed), value, StringComparison.Ordinal)
+            ? parsed
+            : throw new ArgumentException($"{typeof(T).Name} is invalid.");
+
+    private static JsonElement RequireObject(JsonElement value) =>
+        value.ValueKind == JsonValueKind.Object
+            ? value.Clone()
+            : throw new ArgumentException("JSON object is required.");
+
+    private static WireCapabilityItem MapCapability(CapabilityCatalogItem item) =>
+        new(
+            WireName(item.Kind),
+            item.Id,
+            item.DisplayName,
+            item.Description,
+            MapCapabilitySource(item.Source),
+            WireName(item.Status),
+            item.RequiredTrustScopes.Select(WireName).ToArray(),
+            item.Generation,
+            item.DiagnosticCodes.ToArray(),
+            item.ConflictingSources.Select(MapCapabilitySource).ToArray());
+
+    private static WireCapabilitySource MapCapabilitySource(
+        CapabilitySourceDescriptor source) =>
+        new(
+            WireName(source.Kind),
+            source.Id,
+            source.Version,
+            source.Sha256);
+
+    private static string WireName<T>(T value)
+        where T : struct, Enum =>
+        JsonNamingPolicy.CamelCase.ConvertName(value.ToString());
+
+    private void OnCapabilityCatalogChanged(
+        object? sender,
+        CapabilityCatalogChangedEventArgs args) =>
+        _ = SendCapabilityChangedAsync(args);
+
+    private async Task SendCapabilityChangedAsync(
+        CapabilityCatalogChangedEventArgs args)
+    {
+        try
+        {
+            var notification = new JsonRpcNotification(
+                "2.0",
+                "capability/changed",
+                new WireCapabilityChangedNotification(
+                    args.Revision,
+                    WireName(args.RuntimeState)));
+            await _send(
+                JsonSerializer.SerializeToUtf8Bytes(notification, JsonOptions),
+                _lifetime.Token);
+        }
+        catch (OperationCanceledException) when (_lifetime.IsCancellationRequested)
+        {
+        }
+        catch (Exception exception) when (
+            exception is IOException or ObjectDisposedException)
+        {
+        }
+    }
+
+    private async Task SendClientCancellationAsync(string id)
+    {
+        if (_lifetime.IsCancellationRequested)
+        {
+            return;
+        }
+
+        try
+        {
+            var notification = new JsonRpcNotification(
+                "2.0",
+                "$/cancelRequest",
+                new { id });
+            await _send(
+                JsonSerializer.SerializeToUtf8Bytes(notification, JsonOptions),
+                _lifetime.Token);
+        }
+        catch (OperationCanceledException) when (_lifetime.IsCancellationRequested)
+        {
+        }
+        catch (IOException)
+        {
+        }
+    }
+
+    private static ToolBindingResult DynamicFailure(string code, string message) =>
+        ToolBindingResult.Failure(
+            new SessionError(code, message, IsRetryable: false));
 
     private static long RequireSequence(long? sequence) =>
         sequence ?? throw new InvalidOperationException();
@@ -1799,4 +2479,16 @@ public sealed class OpenCoWorkJsonRpcConnection : IAsyncDisposable
         string Jsonrpc,
         string Method,
         [property: JsonPropertyName("params")] object Params);
+
+    private sealed record JsonRpcClientRequest(
+        string Jsonrpc,
+        string Id,
+        string Method,
+        [property: JsonPropertyName("params")] object Params);
+
+    private sealed class PendingClientRequest
+    {
+        public TaskCompletionSource<ToolBindingResult> Completion { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+    }
 }

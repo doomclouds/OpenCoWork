@@ -8,6 +8,8 @@
 - 本清单不代表支持承诺；未激活并取得真实证据的 Provider 不得标记为已支持。
 - 共享 `openai-compatible` 适配器和离线 Fixture 通过，不等于具体 Provider、
   套餐、模型或平台已经通过真实兼容性验证。
+- M6 Wire 1.1 TestClient 只使用本地 Fake OpenAI-compatible Server 验证动态工具
+  回调，没有新增 Provider、模型或平台兼容性声明。
 
 ## 已验证基线
 

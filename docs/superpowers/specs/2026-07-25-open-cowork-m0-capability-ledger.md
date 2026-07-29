@@ -5,6 +5,7 @@
 - 状态：已冻结
 - 日期：2026-07-25
 - 修订：2026-07-28，按 M5 Desktop-first 方案澄清 Wire 与 ACP 边界
+- 修订：2026-07-29，复核 M6 实现映射；能力结论与契约边界无变更
 - 所属里程碑：OpenCoWork Runtime 1.0 / M0
 - 契约规格：
   [OpenCoWork M0 Contract Freeze](2026-07-25-open-cowork-m0-contract-freeze-design.md)

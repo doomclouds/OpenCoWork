@@ -1,3 +1,5 @@
+using System.Text.Json;
+
 namespace OpenCoWork.Abstractions;
 
 public enum CapabilityKind
@@ -61,6 +63,8 @@ public static class CapabilityErrorCodes
 {
     public const string DefinitionInvalid = "capability.definitionInvalid";
     public const string Conflict = "capability.conflict";
+    public const string CursorInvalid = "capability.cursorInvalid";
+    public const string NotFound = "capability.notFound";
     public const string RevisionConflict = "capability.revisionConflict";
     public const string RuntimeUnavailable = "capability.runtimeUnavailable";
     public const string PersistenceInvalid = "capability.persistenceInvalid";
@@ -269,4 +273,132 @@ public sealed class CapabilityCatalog
     public CapabilityRuntimeState RuntimeState { get; }
 
     public IReadOnlyList<CapabilityCatalogItem> Items { get; }
+}
+
+public sealed record CapabilityCatalogQuery(int Limit = 50, string? Cursor = null);
+
+public sealed record CapabilityCatalogPage(
+    int SchemaVersion,
+    long Revision,
+    string CatalogSha256,
+    CapabilityRuntimeState RuntimeState,
+    IReadOnlyList<CapabilityCatalogItem> Items,
+    string? NextCursor);
+
+public sealed record CapabilityIdentity(CapabilityKind Kind, string Id);
+
+public sealed record CapabilityCatalogEntry(
+    long Revision,
+    CapabilityCatalogItem Item);
+
+public sealed record CapabilitySetEnabledRequest(
+    CapabilityKind Kind,
+    string Id,
+    bool Enabled,
+    long ExpectedRevision);
+
+public sealed record CapabilityCatalogChange(
+    long Revision,
+    CapabilityRuntimeState RuntimeState,
+    bool Changed);
+
+public sealed record CapabilityCatalogChangedEventArgs(
+    long Revision,
+    CapabilityRuntimeState RuntimeState);
+
+public sealed record CapabilityDomainRequest(
+    string Operation,
+    JsonElement Arguments,
+    Guid ConnectionId);
+
+public sealed record CapabilityDomainResult(
+    JsonElement Result,
+    long? Revision = null);
+
+public sealed record CapabilityDynamicToolDefinition(
+    string Name,
+    string Description,
+    JsonElement InputSchema,
+    ToolEffect Effects,
+    ToolReplaySafety ReplaySafety);
+
+public sealed record CapabilityDynamicToolRegistrationRequest(
+    Guid ThreadId,
+    Guid RegistrationId,
+    CapabilityDynamicToolDefinition Definition,
+    string DefinitionSha256,
+    TimeSpan? LeaseDuration = null);
+
+public sealed record CapabilityDynamicToolRegistration(
+    Guid ConnectionId,
+    Guid ThreadId,
+    Guid RegistrationId,
+    string DefinitionSha256,
+    CapabilityStatus Status,
+    string RuntimeBindingId,
+    DateTimeOffset ExpiresAt);
+
+public sealed class CapabilityServiceException(
+    string code,
+    string message,
+    bool isRetryable = false,
+    long? currentRevision = null,
+    long? currentGeneration = null,
+    long? currentVersion = null) : InvalidOperationException(message)
+{
+    public string Code { get; } = code;
+
+    public bool IsRetryable { get; } = isRetryable;
+
+    public long? CurrentRevision { get; } = currentRevision;
+
+    public long? CurrentGeneration { get; } = currentGeneration;
+
+    public long? CurrentVersion { get; } = currentVersion;
+}
+
+public interface ICapabilityService
+{
+    event EventHandler<CapabilityCatalogChangedEventArgs>? CatalogChanged;
+
+    ValueTask<CapabilityCatalogPage> GetCatalogAsync(
+        CapabilityCatalogQuery query,
+        CancellationToken cancellationToken = default);
+
+    ValueTask<CapabilityCatalogEntry> ReadAsync(
+        CapabilityIdentity identity,
+        CancellationToken cancellationToken = default);
+
+    ValueTask<CapabilityCatalogChange> RefreshAsync(
+        long expectedRevision,
+        CancellationToken cancellationToken = default);
+
+    ValueTask<CapabilityCatalogChange> SetEnabledAsync(
+        CapabilitySetEnabledRequest request,
+        CancellationToken cancellationToken = default);
+
+    ValueTask<CapabilityDomainResult> ExecuteDomainAsync(
+        CapabilityDomainRequest request,
+        CancellationToken cancellationToken = default);
+
+    ValueTask<CapabilityDynamicToolRegistration> RegisterDynamicToolAsync(
+        Guid connectionId,
+        CapabilityDynamicToolRegistrationRequest request,
+        ToolExecutor executor,
+        CancellationToken cancellationToken = default);
+
+    ValueTask<CapabilityDynamicToolRegistration> RenewDynamicToolAsync(
+        Guid connectionId,
+        Guid threadId,
+        Guid registrationId,
+        TimeSpan leaseDuration,
+        CancellationToken cancellationToken = default);
+
+    ValueTask UnregisterDynamicToolAsync(
+        Guid connectionId,
+        Guid threadId,
+        Guid registrationId,
+        CancellationToken cancellationToken = default);
+
+    void DisconnectDynamicTools(Guid connectionId);
 }

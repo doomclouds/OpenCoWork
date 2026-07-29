@@ -73,6 +73,56 @@ public sealed class PluginManager
         }
     }
 
+    public async Task SetEnabledAsync(
+        string pluginId,
+        bool enabled,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(pluginId);
+        await _mutationLock.WaitAsync(cancellationToken);
+        try
+        {
+            var previous = await _files.LoadPluginLockAsync(cancellationToken);
+            var found = false;
+            var plugins = previous.Plugins
+                .Select(plugin =>
+                {
+                    if (!string.Equals(
+                            plugin.Id,
+                            pluginId,
+                            StringComparison.Ordinal))
+                    {
+                        return plugin;
+                    }
+
+                    found = true;
+                    return plugin with { Enabled = enabled };
+                })
+                .ToArray();
+            if (!found)
+            {
+                throw new PluginPackageException(
+                    PluginErrorCodes.PackageInvalid,
+                    "Plugin was not found.");
+            }
+
+            if (previous.Plugins.SequenceEqual(plugins))
+            {
+                return;
+            }
+
+            await ApplyAsync(
+                previous,
+                new PluginLockDocument(1, Array.AsReadOnly(plugins)),
+                validate: null,
+                cancellationToken);
+        }
+        finally
+        {
+            _mutationLock.Release();
+        }
+    }
+
     private async Task<PluginInstallResult> InstallAsync(
         Func<CancellationToken, Task<StoredPluginPackage>> store,
         CancellationToken cancellationToken)

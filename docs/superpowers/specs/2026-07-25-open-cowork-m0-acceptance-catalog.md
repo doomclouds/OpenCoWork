@@ -160,16 +160,16 @@ M10 仍须在最终发布候选上重跑双平台验收。
 
 | AcceptanceId | Requirement | CapabilityIds | EvidenceType | Platforms | ExpectedEvidence | Status | SupersededBy |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| M6-ACC-001 | Provider、Model 与 Auth 扩展域使用稳定 ID 和中立认证契约。 | CAP-026, CAP-027 | ContractSnapshot | All | Wire Catalog 与 Provider Contract Snapshot。 | Planned | — |
-| M6-ACC-002 | 未授信工作区或插件不能加载原生工具、可信 Hook 或外部命令。 | CAP-018, CAP-050 | SecurityTest | DualPlatform | Trust Digest 变化、拒绝与重新授信测试。 | Planned | — |
-| M6-ACC-003 | Skill 来源、优先级、变体和提示注入确定，冲突不靠扫描顺序覆盖。 | CAP-049 | AutomatedTest | All | Skill Resolution Snapshot。 | Planned | — |
-| M6-ACC-004 | Plugin Manifest/Lock 固定来源、版本、摘要和贡献，安装失败可回滚。 | CAP-050, CAP-051 | SecurityTest | DualPlatform | 供应链篡改、离线恢复和 Lock 测试。 | Planned | — |
-| M6-ACC-005 | MCP Tool/Resource/OAuth/Status 生命周期、取消和故障隔离符合契约。 | CAP-052, CAP-054 | FaultInjection | DualPlatform | MCP Test Server 场景矩阵。 | Planned | — |
-| M6-ACC-006 | LSP 启动、请求路由、断连和进程树终止在双平台无残留。 | CAP-052 | RealPlatformValidation | DualPlatform | 两平台 LSP Harness 与进程检查。 | Planned | — |
-| M6-ACC-007 | Dynamic Binding Lease 过期或来源断连后旧 Binding 立即失效。 | CAP-032, CAP-053 | FaultInjection | All | Lease/断连竞态和旧 Snapshot 测试。 | Planned | — |
-| M6-ACC-008 | 工具、Hook、协议扩展冲突隔离单个贡献，不能覆盖内置能力。 | CAP-005, CAP-050 | SecurityTest | All | 冲突插件组合测试和隔离诊断。 | Planned | — |
-| M6-ACC-009 | Workspace Memory、SourceControl 与 Terminal 均经过统一路径、权限和工具管线。 | CAP-041, CAP-033 | SecurityTest | DualPlatform | 越界路径、Dirty Repo 和 Shell 信任测试。 | Planned | — |
-| M6-ACC-010 | 插件卸载或能力热更新只影响下一 Turn，故障插件不阻止运行时清理。 | CAP-032, CAP-050, CAP-052 | FaultInjection | All | 热更新、卸载、启动失败和停止测试。 | Planned | — |
+| M6-ACC-001 | Provider、Model 与 Auth 扩展域使用稳定 ID 和中立认证契约。 | CAP-026, CAP-027 | ContractSnapshot | All | `ProviderAuthTests`、`CapabilityProviderIntegrationTests` 与 Wire 1.1 Catalog Snapshot。 | Passed | — |
+| M6-ACC-002 | 未授信工作区或插件不能加载原生工具、可信 Hook 或外部命令。 | CAP-018, CAP-050 | SecurityTest | DualPlatform | Trust/Plugin/Hook 拒绝与重授信自动化测试、macOS Keychain 发布目录场景已通过；Windows 真机待补。 | Planned | — |
+| M6-ACC-003 | Skill 来源、优先级、变体和提示注入确定，冲突不靠扫描顺序覆盖。 | CAP-049 | AutomatedTest | All | `SkillCatalogTests`、`ToolSnapshotTests` 与 Wire Catalog 分页/Override 黑盒。 | Passed | — |
+| M6-ACC-004 | Plugin Manifest/Lock 固定来源、版本、摘要和贡献，安装失败可回滚。 | CAP-050, CAP-051 | SecurityTest | DualPlatform | `PluginPackageTests`、`PluginRuntimeTests` 与 macOS 回滚/清理通过；Windows 真机待补。 | Planned | — |
+| M6-ACC-005 | MCP Tool/Resource/OAuth/Status 生命周期、取消和故障隔离符合契约。 | CAP-052, CAP-054 | FaultInjection | DualPlatform | `McpCapabilityTests`、`McpCapabilityIntegrationTests` 在 macOS 通过；Windows 真机待补。 | Planned | — |
+| M6-ACC-006 | LSP 启动、请求路由、断连和进程树终止在双平台无残留。 | CAP-052 | RealPlatformValidation | DualPlatform | `LspCapabilityTests`、`LspCapabilityIntegrationTests` 在 macOS 通过；Windows 真机待补。 | Planned | — |
+| M6-ACC-007 | Dynamic Binding Lease 过期或来源断连后旧 Binding 立即失效。 | CAP-032, CAP-053 | FaultInjection | All | `DynamicToolTests`、`DeferredToolTests`、Wire server-request cancel/disconnect 与真实动态回调黑盒。 | Passed | — |
+| M6-ACC-008 | 工具、Hook、协议扩展冲突隔离单个贡献，不能覆盖内置能力。 | CAP-005, CAP-050 | SecurityTest | All | `CapabilityRuntimeTests`、`CapabilityHookTests`、Plugin 冲突与 Wire 1.0/1.1 Catalog Snapshot。 | Passed | — |
+| M6-ACC-009 | Workspace Memory、SourceControl 与 Terminal 均经过统一路径、权限和工具管线。 | CAP-041, CAP-033 | SecurityTest | DualPlatform | 对应 Core 测试与 macOS 发布目录 Git/Memory/Terminal/进程树/Secret Canary 已通过；Windows 真机待补。 | Planned | — |
+| M6-ACC-010 | 插件卸载或能力热更新只影响下一 Turn，故障插件不阻止运行时清理。 | CAP-032, CAP-050, CAP-052 | FaultInjection | All | Catalog Revision、Turn Snapshot、Plugin/MCP/LSP 故障与停止清理测试。 | Passed | — |
 
 ## 9. M7 - Multi-Agent CoWork（10）
 
@@ -242,12 +242,12 @@ M10 仍须在最终发布候选上重跑双平台验收。
 | M3 | 8 | Passed |
 | M4 | 10 | Passed |
 | M5 | 9 | Passed |
-| M6 | 10 | Planned |
+| M6 | 10 | 5 Passed / 5 Planned |
 | M7 | 10 | Planned |
 | M8 | 9 | Planned |
 | M9 | 10 | Planned |
 | M10 | 12 | Planned |
-| **Total** | **104** | **53 Passed / 51 Planned** |
+| **Total** | **104** | **58 Passed / 46 Planned** |
 
 每个 Slice 标记 Done 前必须：
 

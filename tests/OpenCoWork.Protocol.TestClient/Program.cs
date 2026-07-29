@@ -1,11 +1,14 @@
+using System.Buffers;
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
 using System.Net.WebSockets;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Threading.Channels;
+using OpenCoWork.Abstractions;
 using OpenCoWork.Protocol;
 
 return await ProtocolTestClient.RunAsync(args);
@@ -27,16 +30,20 @@ internal static class ProtocolTestClient
 
         var workspace = Path.Combine(
             Path.GetTempPath(),
-            $"opencowork-m5-{Guid.NewGuid():N}");
+            $"opencowork-m6-{Guid.NewGuid():N}");
         var transcript = new ConcurrentQueue<string>();
-        var secret = $"m5-secret-{Guid.NewGuid():N}";
+        var secret = $"m6-secret-{Guid.NewGuid():N}";
         var stage = "workspace initialization";
         Directory.CreateDirectory(workspace);
         try
         {
             await InitializeWorkspaceAsync(server, workspace, transcript);
+            await WriteCapabilitySkillAsync(workspace);
+            await WriteCapabilityAuthAsync(workspace);
+            await InitializeGitAsync(workspace);
             await using var provider = new HoldingHttpEndpoint();
-            await WriteConfigAsync(workspace, provider.Port);
+            await using var dynamicProvider = new DynamicToolHttpEndpoint(secret);
+            await WriteConfigAsync(workspace, provider.Port, dynamicProvider.Port);
 
             stage = "Wire stdio";
             var wire = await RunWireAsync(
@@ -44,6 +51,13 @@ internal static class ProtocolTestClient
                 workspace,
                 secret,
                 provider,
+                transcript);
+            stage = "Wire 1.1 capabilities";
+            var capabilities = await RunCapabilityWireAsync(
+                server,
+                workspace,
+                secret,
+                dynamicProvider,
                 transcript);
             stage = "ACP";
             var acp = await RunAcpAsync(
@@ -70,6 +84,7 @@ internal static class ProtocolTestClient
                 scenarios = new[]
                 {
                     wire,
+                    capabilities,
                     acp,
                     websocket,
                     "secret-canary",
@@ -91,6 +106,349 @@ internal static class ProtocolTestClient
         {
             TryDelete(workspace);
         }
+    }
+
+    private static async Task<string> RunCapabilityWireAsync(
+        string server,
+        string workspace,
+        string secret,
+        DynamicToolHttpEndpoint dynamicProvider,
+        ConcurrentQueue<string> transcript)
+    {
+        var childPidPath = Path.Combine(workspace, "m6-terminal-child.pid");
+        int childPid;
+        await using (var client = StartLineClient(
+                         server,
+                         workspace,
+                         secret,
+                         transcript,
+                         "app-server"))
+        {
+            var initialized = await InitializeWire11Async(client, workspace);
+            Require(
+                initialized.GetProperty("result").GetProperty("wireVersion")
+                    .GetString() == "1.1",
+                "Wire 1.1 negotiation failed.");
+
+            var firstPage = await client.RequestAsync(
+                2,
+                "capability/catalog",
+                new { limit = 1 });
+            var catalog = firstPage.GetProperty("result");
+            var revision = catalog.GetProperty("revision").GetInt64();
+            var first = catalog.GetProperty("items")[0];
+            Require(
+                catalog.GetProperty("nextCursor").ValueKind == JsonValueKind.String,
+                "Capability Catalog pagination cursor is missing.");
+            var secondPage = await client.RequestAsync(
+                3,
+                "capability/catalog",
+                new
+                {
+                    limit = 100,
+                    cursor = catalog.GetProperty("nextCursor").GetString(),
+                });
+            _ = await client.RequestAsync(
+                4,
+                "capability/read",
+                new
+                {
+                    kind = first.GetProperty("kind").GetString(),
+                    id = first.GetProperty("id").GetString(),
+                });
+            var conflict = await client.RequestRawAsync(
+                5,
+                "capability/refresh",
+                new { expectedRevision = revision + 1 });
+            Require(
+                conflict.GetProperty("error").GetProperty("data")
+                    .GetProperty("errorCode").GetString() ==
+                "capability.revisionConflict",
+                "Capability revision conflict was not projected.");
+            _ = await client.RequestAsync(
+                6,
+                "capability/refresh",
+                new { expectedRevision = revision });
+            Require(
+                new[] { first }
+                    .Concat(secondPage.GetProperty("result").GetProperty("items")
+                        .EnumerateArray())
+                    .Any(item =>
+                        item.GetProperty("kind").GetString() == "skill" &&
+                        item.GetProperty("id").GetString() == "m6/wire"),
+                "Wire 1.1 catalog did not include the workspace Skill.");
+            var disabled = await client.RequestAsync(
+                60,
+                "capability/setEnabled",
+                new
+                {
+                    kind = "skill",
+                    id = "m6/wire",
+                    enabled = false,
+                    expectedRevision = revision,
+                });
+            revision = disabled.GetProperty("result").GetProperty("revision").GetInt64();
+            Require(
+                disabled.GetProperty("result").GetProperty("changed").GetBoolean(),
+                "Capability override did not change the catalog.");
+            if (!client.Messages.Any(message =>
+                    message.TryGetProperty("method", out var changedMethod) &&
+                    changedMethod.GetString() == "capability/changed"))
+            {
+                var changed = await client.ReadMessageAsync();
+                Require(
+                    changed.GetProperty("method").GetString() == "capability/changed",
+                    "Capability change notification was not emitted.");
+            }
+
+            var staleCursor = await client.RequestRawAsync(
+                61,
+                "capability/catalog",
+                new
+                {
+                    limit = 100,
+                    cursor = catalog.GetProperty("nextCursor").GetString(),
+                });
+            Require(
+                staleCursor.GetProperty("error").GetProperty("data")
+                    .GetProperty("errorCode").GetString() ==
+                "capability.revisionConflict",
+                "Stale Capability cursor was accepted.");
+
+            var secretStored = false;
+            try
+            {
+                var stored = await client.RequestSensitiveAsync(
+                    62,
+                    "auth/secret/set",
+                    new
+                    {
+                        arguments = new
+                        {
+                            profileId = "auth/m6-os",
+                            secret,
+                        },
+                    },
+                    secret);
+                secretStored = stored.GetProperty("result").GetProperty("result")
+                    .GetProperty("stored").GetBoolean();
+                Require(secretStored, "OS Secret Store write failed.");
+            }
+            finally
+            {
+                if (secretStored)
+                {
+                    var cleared = await client.RequestAsync(
+                        63,
+                        "auth/secret/clear",
+                        new
+                        {
+                            arguments = new { profileId = "auth/m6-os" },
+                        });
+                    Require(
+                        !cleared.GetProperty("result").GetProperty("result")
+                            .GetProperty("stored").GetBoolean(),
+                        "OS Secret Store cleanup failed.");
+                }
+            }
+
+            var created = await client.RequestAsync(
+                7,
+                "thread/create",
+                new
+                {
+                    idempotencyKey = Guid.CreateVersion7(),
+                    expectedSequence = 0,
+                    displayName = "M6 capability black-box",
+                    providerId = "m6-dynamic",
+                    modelId = "qwen3.8-max-preview",
+                    mode = "agent",
+                });
+            var threadId = created.GetProperty("result").GetProperty("thread")
+                .GetProperty("threadId").GetGuid();
+            var sequence = created.GetProperty("result")
+                .GetProperty("currentSequence").GetInt64();
+            var memoryId = Guid.CreateVersion7();
+            var written = await client.RequestAsync(
+                8,
+                "memory/write",
+                new
+                {
+                    arguments = new
+                    {
+                        memoryId,
+                        expectedVersion = 0,
+                        title = "M6 memory",
+                        summary = "Wire black-box memory.",
+                        tags = new[] { "m6", "wire" },
+                        body = "M6 memory body.",
+                    },
+                });
+            Require(
+                written.GetProperty("result").GetProperty("result")
+                    .GetProperty("version").GetInt32() == 1,
+                "Workspace Memory write failed.");
+            var memory = await client.RequestAsync(
+                9,
+                "memory/read",
+                new { arguments = new { memoryId } });
+            Require(
+                memory.GetProperty("result").GetProperty("result")
+                    .GetProperty("body").GetString() == "M6 memory body.",
+                "Workspace Memory read failed.");
+            _ = await client.RequestAsync(
+                10,
+                "memory/archive",
+                new { arguments = new { memoryId, expectedVersion = 1 } });
+
+            var sourceIdentity = await client.RequestAsync(
+                11,
+                "sourceControl/inspect",
+                new { arguments = new { } });
+            var source = sourceIdentity.GetProperty("result").GetProperty("result");
+            _ = await client.RequestAsync(
+                12,
+                "trust/decide",
+                new
+                {
+                    arguments = new
+                    {
+                        expectedRevision = revision,
+                        sourceKind = "workspace",
+                        sourceId = source.GetProperty("sourceId").GetString(),
+                        sourceVersion = source.GetProperty("version").GetString(),
+                        sha256 = source.GetProperty("sha256").GetString(),
+                        allowedScopes = new[] { "outOfProcess" },
+                        deniedScopes = Array.Empty<string>(),
+                    },
+                });
+            var git = await client.RequestAsync(
+                13,
+                "sourceControl/status",
+                new { arguments = new { } });
+            Require(
+                git.GetProperty("result").GetProperty("result")
+                    .GetProperty("operation").GetString() == "status",
+                "Source Control status failed.");
+
+            var registrationId = Guid.CreateVersion7();
+            var inputSchema = JsonSerializer.SerializeToElement(new
+            {
+                type = "object",
+                properties = new { text = new { type = "string" } },
+                required = new[] { "text" },
+                additionalProperties = false,
+            });
+            const string dynamicName = "echo";
+            const string dynamicDescription = "Echo one text value.";
+            _ = await client.RequestAsync(
+                14,
+                "tool/dynamic/register",
+                new
+                {
+                    threadId,
+                    registrationId,
+                    definition = new
+                    {
+                        name = dynamicName,
+                        description = dynamicDescription,
+                        inputSchema,
+                        effects = Array.Empty<string>(),
+                        replaySafety = "safe",
+                    },
+                    definitionSha256 = DynamicDefinitionSha256(
+                        dynamicName,
+                        dynamicDescription,
+                        inputSchema),
+                    leaseSeconds = 60,
+                });
+            _ = await client.RequestAsync(
+                15,
+                "trust/decide",
+                new { arguments = new { dynamicConnection = true } });
+            _ = await client.RequestAsync(
+                16,
+                "thread/subscribe",
+                new { threadId, mode = "snapshotThenLive" });
+            await client.SendRequestAsync(
+                17,
+                "turn/start",
+                new
+                {
+                    threadId,
+                    idempotencyKey = Guid.CreateVersion7(),
+                    expectedSequence = sequence,
+                    text = "Call the dynamic echo tool once.",
+                });
+            var turnAccepted = false;
+            var callbackCompleted = false;
+            while (!turnAccepted || !callbackCompleted)
+            {
+                var message = await client.ReadMessageAsync();
+                if (message.TryGetProperty("id", out var messageId) &&
+                    messageId.ValueKind == JsonValueKind.Number &&
+                    messageId.GetInt64() == 17)
+                {
+                    Require(
+                        message.TryGetProperty("result", out _),
+                        "Dynamic Tool turn was not accepted.");
+                    turnAccepted = true;
+                }
+                else if (message.TryGetProperty("method", out var method) &&
+                         method.GetString() == "tool/invoke")
+                {
+                    var parameters = message.GetProperty("params");
+                    Require(
+                        parameters.GetProperty("threadId").GetGuid() == threadId &&
+                        parameters.GetProperty("registrationId").GetGuid() ==
+                        registrationId &&
+                        parameters.GetProperty("arguments").GetProperty("text")
+                            .GetString() == "ping",
+                        "Dynamic Tool callback parameters changed.");
+                    await client.SendResultAsync(
+                        message.GetProperty("id").GetString()!,
+                        new { text = "pong" });
+                    callbackCompleted = true;
+                }
+            }
+
+            await dynamicProvider.Completion.WaitAsync(Timeout);
+            for (var attempt = 0; attempt < 100; attempt++)
+            {
+                var current = await client.RequestAsync(
+                    18 + attempt,
+                    "thread/get",
+                    new { threadId });
+                var thread = current.GetProperty("result").GetProperty("thread");
+                if (!thread.TryGetProperty("activeTurnId", out var activeTurnId) ||
+                    activeTurnId.ValueKind == JsonValueKind.Null)
+                {
+                    break;
+                }
+
+                await Task.Delay(25);
+                Require(attempt < 99, "Dynamic Tool turn did not complete.");
+            }
+
+            var terminalId = Guid.CreateVersion7();
+            _ = await client.RequestAsync(
+                120,
+                "terminal/start",
+                new
+                {
+                    threadId,
+                    arguments = TerminalStartArguments(
+                        terminalId,
+                        childPidPath),
+                });
+            await WaitForFileAsync(childPidPath);
+            childPid = int.Parse(
+                await File.ReadAllTextAsync(childPidPath),
+                System.Globalization.CultureInfo.InvariantCulture);
+        }
+
+        await WaitForProcessExitAsync(childPid);
+        return "wire-11-catalog-dynamic-memory-git-terminal-cleanup";
     }
 
     private static async Task<string> RunWireAsync(
@@ -400,6 +758,24 @@ internal static class ProtocolTestClient
                 workspace = new { path = workspace },
             });
 
+    private static Task<JsonElement> InitializeWire11Async(
+        LineClient client,
+        string workspace) =>
+        client.RequestAsync(
+            1,
+            "initialize",
+            new
+            {
+                client = new { name = "m6-test-client", version = "1" },
+                wireVersions = new[] { "1.1", "1.0" },
+                workspace = new { path = workspace },
+                capabilities = new[]
+                {
+                    "serverRequests",
+                    "dynamicToolExecution",
+                },
+            });
+
     private static async Task InitializeWorkspaceAsync(
         string server,
         string workspace,
@@ -415,7 +791,185 @@ internal static class ProtocolTestClient
         Require(process.ExitCode == 0, "Workspace initialization failed.");
     }
 
-    private static Task WriteConfigAsync(string workspace, int providerPort)
+    private static async Task InitializeGitAsync(string workspace)
+    {
+        using var process = Process.Start(new ProcessStartInfo("git")
+        {
+            WorkingDirectory = workspace,
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            ArgumentList = { "init", "--quiet" },
+        }) ?? throw new InvalidOperationException("Could not start git.");
+        await process.WaitForExitAsync();
+        Require(process.ExitCode == 0, "Git workspace initialization failed.");
+    }
+
+    private static async Task WriteCapabilitySkillAsync(string workspace)
+    {
+        var directory = Path.Combine(
+            workspace,
+            ".opencowork",
+            "skills",
+            "m6-wire");
+        Directory.CreateDirectory(directory);
+        await File.WriteAllTextAsync(
+            Path.Combine(directory, "SKILL.md"),
+            """
+            ---
+            id: m6/wire
+            name: M6 Wire
+            description: Exercise Wire capability overrides.
+            ---
+            Use the M6 Wire capability path.
+            """);
+    }
+
+    private static object TerminalStartArguments(Guid sessionId, string pidPath)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            var escaped = pidPath.Replace("'", "''", StringComparison.Ordinal);
+            return new
+            {
+                sessionId,
+                command = "powershell.exe",
+                arguments = new[]
+                {
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-Command",
+                    "$p=Start-Process ping.exe -ArgumentList '-n','30'," +
+                    $"'127.0.0.1' -PassThru; Set-Content -LiteralPath '{escaped}' " +
+                    "-Value $p.Id; $p.WaitForExit()",
+                },
+                maxDurationSeconds = 60,
+            };
+        }
+
+        var shellPath = pidPath.Replace("'", "'\\''", StringComparison.Ordinal);
+        return new
+        {
+            sessionId,
+            command = "/bin/sh",
+            arguments = new[]
+            {
+                "-c",
+                $"sleep 30 & echo $! > '{shellPath}'; wait",
+            },
+            maxDurationSeconds = 60,
+        };
+    }
+
+    private static async Task WaitForFileAsync(string path)
+    {
+        using var timeout = new CancellationTokenSource(Timeout);
+        while (!File.Exists(path))
+        {
+            await Task.Delay(25, timeout.Token);
+        }
+    }
+
+    private static async Task WaitForProcessExitAsync(int processId)
+    {
+        using var timeout = new CancellationTokenSource(Timeout);
+        while (true)
+        {
+            try
+            {
+                using var process = Process.GetProcessById(processId);
+                if (process.HasExited)
+                {
+                    return;
+                }
+            }
+            catch (ArgumentException)
+            {
+                return;
+            }
+
+            await Task.Delay(25, timeout.Token);
+        }
+    }
+
+    private static string DynamicDefinitionSha256(
+        string name,
+        string description,
+        JsonElement inputSchema)
+    {
+        var definition = JsonSerializer.SerializeToElement(new
+        {
+            Name = name,
+            Description = description,
+            InputSchema = inputSchema,
+            Effects = ToolEffect.None,
+            ReplaySafety = ToolReplaySafety.Safe,
+        });
+        var buffer = new ArrayBufferWriter<byte>();
+        using var writer = new Utf8JsonWriter(buffer);
+        WriteCanonical(writer, definition);
+        writer.Flush();
+        return Convert.ToHexString(SHA256.HashData(buffer.WrittenSpan))
+            .ToLowerInvariant();
+    }
+
+    private static void WriteCanonical(Utf8JsonWriter writer, JsonElement value)
+    {
+        switch (value.ValueKind)
+        {
+            case JsonValueKind.Object:
+                writer.WriteStartObject();
+                foreach (var property in value.EnumerateObject()
+                             .OrderBy(property => property.Name, StringComparer.Ordinal))
+                {
+                    writer.WritePropertyName(property.Name);
+                    WriteCanonical(writer, property.Value);
+                }
+
+                writer.WriteEndObject();
+                break;
+            case JsonValueKind.Array:
+                writer.WriteStartArray();
+                foreach (var item in value.EnumerateArray())
+                {
+                    WriteCanonical(writer, item);
+                }
+
+                writer.WriteEndArray();
+                break;
+            case JsonValueKind.String:
+                writer.WriteStringValue(value.GetString());
+                break;
+            case JsonValueKind.Number when value.TryGetInt64(out var signed):
+                writer.WriteNumberValue(signed);
+                break;
+            case JsonValueKind.Number when value.TryGetUInt64(out var unsigned):
+                writer.WriteNumberValue(unsigned);
+                break;
+            case JsonValueKind.Number when value.TryGetDecimal(out var decimalValue):
+                writer.WriteNumberValue(decimalValue);
+                break;
+            case JsonValueKind.Number:
+                writer.WriteNumberValue(value.GetDouble());
+                break;
+            case JsonValueKind.True:
+                writer.WriteBooleanValue(true);
+                break;
+            case JsonValueKind.False:
+                writer.WriteBooleanValue(false);
+                break;
+            case JsonValueKind.Null:
+                writer.WriteNullValue();
+                break;
+            default:
+                throw new JsonException("Unsupported JSON value.");
+        }
+    }
+
+    private static Task WriteConfigAsync(
+        string workspace,
+        int providerPort,
+        int dynamicProviderPort)
     {
         var path = Path.Combine(workspace, ".opencowork", "config.jsonc");
         var content =
@@ -436,6 +990,18 @@ internal static class ProtocolTestClient
                         "maxOutputTokens": 131072
                       }
                     }
+                  },
+                  "m6-dynamic": {
+                    "baseUrl": "http://127.0.0.1:{{dynamicProviderPort}}/v1",
+                    "apiKey": { "environment": "{{SecretEnvironment}}" },
+                    "models": {
+                      "qwen3.8-max-preview": {
+                        "tokenizerProfileId": "qwen-o200k",
+                        "tokenizerProfileVersion": "1",
+                        "contextWindowTokens": 983616,
+                        "maxOutputTokens": 131072
+                      }
+                    }
                   }
                 }
               }
@@ -443,6 +1009,21 @@ internal static class ProtocolTestClient
             """;
         return File.WriteAllTextAsync(path, content);
     }
+
+    private static Task WriteCapabilityAuthAsync(string workspace) =>
+        File.WriteAllTextAsync(
+            Path.Combine(workspace, ".opencowork", "auth.json"),
+            """
+            {
+              "schemaVersion": 1,
+              "profiles": [{
+                "id": "auth/m6-os",
+                "kind": "apiKey",
+                "source": { "kind": "osSecretStore" },
+                "placement": { "kind": "bearer" }
+              }]
+            }
+            """);
 
     private static async Task WaitForWebSocketServerAsync(int port, string token)
     {
@@ -608,6 +1189,33 @@ internal sealed class LineClient : IAsyncDisposable
         return await ReadResponseAsync(id);
     }
 
+    public async Task<JsonElement> RequestRawAsync(
+        long id,
+        string method,
+        object parameters)
+    {
+        await SendRequestAsync(id, method, parameters);
+        return await ReadResponseAsync(id, throwOnError: false);
+    }
+
+    public async Task<JsonElement> RequestSensitiveAsync(
+        long id,
+        string method,
+        object parameters,
+        string sensitiveValue)
+    {
+        await SendAsync(
+            new
+            {
+                jsonrpc = "2.0",
+                id,
+                method,
+                @params = parameters,
+            },
+            sensitiveValue);
+        return await ReadResponseAsync(id);
+    }
+
     public Task SendRequestAsync(long id, string method, object parameters) =>
         SendAsync(new
         {
@@ -625,7 +1233,24 @@ internal sealed class LineClient : IAsyncDisposable
             @params = parameters,
         });
 
+    public Task SendResultAsync(string id, object result) =>
+        SendAsync(new
+        {
+            jsonrpc = "2.0",
+            id,
+            result,
+        });
+
+    public Task<JsonElement> ReadMessageAsync() => ReadAsync();
+
     public async Task<JsonElement> ReadResponseAsync(long id)
+    {
+        return await ReadResponseAsync(id, throwOnError: true);
+    }
+
+    private async Task<JsonElement> ReadResponseAsync(
+        long id,
+        bool throwOnError)
     {
         while (true)
         {
@@ -637,7 +1262,7 @@ internal sealed class LineClient : IAsyncDisposable
                 continue;
             }
 
-            if (message.TryGetProperty("error", out var error))
+            if (throwOnError && message.TryGetProperty("error", out var error))
             {
                 throw new InvalidOperationException(
                     $"Protocol request {id} failed: {error.GetRawText()}");
@@ -655,10 +1280,12 @@ internal sealed class LineClient : IAsyncDisposable
         }
     }
 
-    private async Task SendAsync(object message)
+    private async Task SendAsync(object message, string? sensitiveValue = null)
     {
         var line = JsonSerializer.Serialize(message);
-        _transcript.Enqueue(line);
+        _transcript.Enqueue(sensitiveValue is null
+            ? line
+            : line.Replace(sensitiveValue, "[REDACTED]", StringComparison.Ordinal));
         await _process.Process.StandardInput.WriteLineAsync(line);
         await _process.Process.StandardInput.FlushAsync();
     }
@@ -797,6 +1424,178 @@ internal sealed class ChildProcess : IAsyncDisposable
 
         await _errorReader;
         Process.Dispose();
+    }
+}
+
+internal sealed class DynamicToolHttpEndpoint : IAsyncDisposable
+{
+    private readonly string _secret;
+    private readonly TcpListener _listener = new(IPAddress.Loopback, 0);
+    private readonly Task _run;
+
+    public DynamicToolHttpEndpoint(string secret)
+    {
+        _secret = secret;
+        _listener.Start();
+        Port = ((IPEndPoint)_listener.LocalEndpoint).Port;
+        _run = RunAsync();
+    }
+
+    public int Port { get; }
+
+    public Task Completion => _run;
+
+    private async Task RunAsync()
+    {
+        for (var round = 0; round < 2; round++)
+        {
+            using var client = await _listener.AcceptTcpClientAsync();
+            await using var stream = client.GetStream();
+            using var request = await ReadRequestAsync(stream);
+            var root = request.RootElement;
+            if (round == 0)
+            {
+                var toolName = root.GetProperty("tools")
+                    .EnumerateArray()
+                    .Select(tool => tool.GetProperty("function")
+                        .GetProperty("name").GetString())
+                    .Single(name =>
+                        name?.StartsWith("dynamic_", StringComparison.Ordinal) == true &&
+                        name.EndsWith("__echo", StringComparison.Ordinal));
+                var chunk = JsonSerializer.Serialize(new
+                {
+                    choices = new[]
+                    {
+                        new
+                        {
+                            index = 0,
+                            delta = new
+                            {
+                                tool_calls = new[]
+                                {
+                                    new
+                                    {
+                                        index = 0,
+                                        id = "call-dynamic",
+                                        function = new
+                                        {
+                                            name = toolName,
+                                            arguments = """{"text":"ping"}""",
+                                        },
+                                    },
+                                },
+                            },
+                            finish_reason = "tool_calls",
+                        },
+                    },
+                    usage = new
+                    {
+                        prompt_tokens = 10,
+                        completion_tokens = 1,
+                        total_tokens = 11,
+                    },
+                });
+                await WriteSseAsync(
+                    stream,
+                    $"data: {chunk}\n\ndata: [DONE]\n\n");
+            }
+            else
+            {
+                var toolResult = root.GetProperty("messages")
+                    .EnumerateArray()
+                    .Single(message =>
+                        message.GetProperty("role").GetString() == "tool")
+                    .GetProperty("content").GetString();
+                if (toolResult?.Contains("pong", StringComparison.Ordinal) != true)
+                {
+                    throw new InvalidOperationException(
+                        "Dynamic Tool result did not return to the provider.");
+                }
+
+                await WriteSseAsync(
+                    stream,
+                    """
+                    data: {"choices":[{"index":0,"delta":{"content":"OK"},"finish_reason":"stop"}],"usage":{"prompt_tokens":12,"completion_tokens":1,"total_tokens":13}}
+
+                    data: [DONE]
+
+                    """);
+            }
+        }
+    }
+
+    private async Task<JsonDocument> ReadRequestAsync(NetworkStream stream)
+    {
+        var header = new ArrayBufferWriter<byte>();
+        var one = new byte[1];
+        while (header.WrittenCount < 64 * 1024)
+        {
+            if (await stream.ReadAsync(one) == 0)
+            {
+                throw new InvalidOperationException("Provider request ended early.");
+            }
+
+            header.Write(one);
+            if (header.WrittenCount >= 4 &&
+                header.WrittenSpan[^4..].SequenceEqual("\r\n\r\n"u8))
+            {
+                break;
+            }
+        }
+
+        if (header.WrittenCount < 4 ||
+            !header.WrittenSpan[^4..].SequenceEqual("\r\n\r\n"u8))
+        {
+            throw new InvalidOperationException(
+                "Provider request headers are too large.");
+        }
+
+        var headers = Encoding.ASCII.GetString(header.WrittenSpan);
+        if (!headers.Contains(
+                $"Authorization: Bearer {_secret}",
+                StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException(
+                "Provider authorization header is missing.");
+        }
+
+        var contentLength = headers.Split("\r\n", StringSplitOptions.RemoveEmptyEntries)
+            .Where(line => line.StartsWith(
+                "Content-Length:",
+                StringComparison.OrdinalIgnoreCase))
+            .Select(line => int.Parse(
+                line["Content-Length:".Length..].Trim(),
+                System.Globalization.CultureInfo.InvariantCulture))
+            .Single();
+        var body = new byte[contentLength];
+        await stream.ReadExactlyAsync(body);
+        return JsonDocument.Parse(body);
+    }
+
+    private static async Task WriteSseAsync(NetworkStream stream, string sse)
+    {
+        var body = Encoding.UTF8.GetBytes(sse);
+        var header = Encoding.ASCII.GetBytes(
+            "HTTP/1.1 200 OK\r\n" +
+            "Content-Type: text/event-stream\r\n" +
+            $"Content-Length: {body.Length}\r\n" +
+            "Connection: close\r\n\r\n");
+        await stream.WriteAsync(header);
+        await stream.WriteAsync(body);
+        await stream.FlushAsync();
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        _listener.Stop();
+        try
+        {
+            await _run;
+        }
+        catch (Exception exception) when (
+            exception is OperationCanceledException or SocketException)
+        {
+        }
     }
 }
 

@@ -57,6 +57,7 @@ Milestone standard: [README.md](README.md)
   - Related spec: docs/superpowers/specs/2026-07-29-open-cowork-m6-capability-ecosystem-design.md
   - Related plan: docs/superpowers/plans/2026-07-29-open-cowork-m6-capability-ecosystem-implementation-plan.md
   - Related archive: None yet.
+  - Current evidence: Outcome 1-10 实现、全量回归和 osx-arm64 发布目录黑盒已通过；win-x64 真机证据仍为 Pending，因此尚未归档或关闭。
   - Completion signal: Capability Catalog、插件与 Skill、Provider/Auth、MCP/LSP、动态与延迟工具、Hook、Git/Terminal/Memory 和 Wire 1.1 均通过故障注入及 win-x64、osx-arm64 真机验收。
 - [ ] 8. M7 - Multi-Agent CoWork
   - Status: Not Started

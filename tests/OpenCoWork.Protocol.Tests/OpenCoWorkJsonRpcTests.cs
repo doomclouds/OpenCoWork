@@ -136,8 +136,9 @@ public sealed class OpenCoWorkJsonRpcTests
                 BindingFlags.Instance |
                 BindingFlags.Public |
                 BindingFlags.NonPublic)
-            .Where(method =>
-                method.GetCustomAttribute<OpenCoWorkWireMethodAttribute>() is not null)
+            .Where(method => method
+                .GetCustomAttribute<OpenCoWorkWireMethodAttribute>()?.Since ==
+                OpenCoWorkWire.Version)
             .ToArray();
         var methods = declarations
             .Select(method =>
@@ -151,6 +152,31 @@ public sealed class OpenCoWorkJsonRpcTests
         Assert.Contains("thread/model/set", methods);
         Assert.Contains("thread/mode/set", methods);
         Assert.Contains("thread/delete/prepare", methods);
+    }
+
+    [Fact]
+    public void OpenCoWorkWire_11_declares_the_frozen_39_method_catalog()
+    {
+        var declarations = typeof(OpenCoWorkJsonRpcConnection).Assembly
+            .GetTypes()
+            .SelectMany(type => type.GetMethods(
+                BindingFlags.Instance |
+                BindingFlags.Static |
+                BindingFlags.Public |
+                BindingFlags.NonPublic))
+            .Select(method => method
+                .GetCustomAttribute<OpenCoWorkWireMethodAttribute>())
+            .Where(attribute => attribute?.Since == OpenCoWorkWire.LatestVersion)
+            .Cast<OpenCoWorkWireMethodAttribute>()
+            .ToArray();
+        var methods = declarations.Select(attribute => attribute.Method).ToArray();
+
+        Assert.Equal(39, methods.Length);
+        Assert.Equal(39, methods.Distinct(StringComparer.Ordinal).Count());
+        Assert.Contains("capability/catalog", methods);
+        Assert.Contains("tool/dynamic/register", methods);
+        Assert.Contains("tool/invoke", methods);
+        Assert.Contains("memory/archive", methods);
     }
 
     [Fact]
