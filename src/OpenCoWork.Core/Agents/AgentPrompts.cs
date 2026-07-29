@@ -1,3 +1,4 @@
+using System.Net;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -118,7 +119,8 @@ internal static class AgentPrompts
         AgentMode mode,
         string workspaceDisplayName,
         WorkspaceInstructionDocument? instructions,
-        ModelTokenizer tokenizer)
+        ModelTokenizer tokenizer,
+        EffectiveSkillSnapshot? skills = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(workspaceDisplayName);
         ArgumentNullException.ThrowIfNull(tokenizer);
@@ -158,6 +160,42 @@ internal static class AgentPrompts
                 instructions.ContentSha256,
                 instructions.RawByteCount,
                 tokenizer.CountTokens(instructions.Content));
+        }
+
+        skills ??= EffectiveSkillSnapshot.Empty;
+        var activeSkills = skills.Items.Where(item => item.IsActive).ToArray();
+        foreach (var skill in activeSkills)
+        {
+            builder.Append("\n<active_skill id=\"");
+            builder.Append(WebUtility.HtmlEncode(skill.Id));
+            builder.Append("\">\n");
+            builder.Append(skill.MarkdownBody);
+            if (!skill.MarkdownBody.EndsWith('\n'))
+            {
+                builder.Append('\n');
+            }
+
+            builder.Append("</active_skill>\n");
+            sources.Add($"skill:{skill.Id}:{skill.ContentSha256}");
+        }
+
+        if (skills.Items.Count > 0)
+        {
+            builder.Append("\n<skill_catalog>\n");
+            foreach (var skill in skills.Items)
+            {
+                builder.Append(JsonSerializer.Serialize(new
+                {
+                    id = skill.Id,
+                    description = skill.Description,
+                    active = skill.IsActive,
+                    selectedVariantId = skill.SelectedVariantId,
+                }));
+                builder.Append('\n');
+            }
+
+            builder.Append("</skill_catalog>\n");
+            sources.Add($"skillCatalog:{skills.SnapshotSha256}");
         }
 
         builder.Append("\nRuntime facts:\nWorkspace name: ");

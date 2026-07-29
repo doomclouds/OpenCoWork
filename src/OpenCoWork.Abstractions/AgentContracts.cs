@@ -1,4 +1,6 @@
 using System.Net;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 
 namespace OpenCoWork.Abstractions;
@@ -218,6 +220,84 @@ public sealed record WorkspaceInstructionSnapshot(
     int RawByteCount,
     int TokenCount);
 
+public sealed record EffectiveSkillSnapshotItem(
+    string Id,
+    CapabilitySourceDescriptor Source,
+    string Description,
+    string MarkdownBody,
+    string ContentSha256,
+    bool IsActive,
+    string? SelectedVariantId);
+
+public sealed class EffectiveSkillSnapshot
+{
+    private const int MaximumSkillBytes = 64 * 1024;
+    private const int MaximumSnapshotBytes = 1024 * 1024;
+
+    public EffectiveSkillSnapshot(
+        int schemaVersion,
+        IReadOnlyList<EffectiveSkillSnapshotItem> items,
+        string snapshotSha256)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(schemaVersion, 1);
+        ArgumentNullException.ThrowIfNull(items);
+        if (!IsSha256(snapshotSha256))
+        {
+            throw new ArgumentException(
+                "Skill snapshot SHA-256 must contain 64 lowercase hexadecimal characters.",
+                nameof(snapshotSha256));
+        }
+
+        var copied = items.ToArray();
+        if (copied.Any(item => item is null))
+        {
+            throw new ArgumentException("Effective Skill Snapshot is invalid.", nameof(items));
+        }
+
+        var ordered = copied.OrderBy(item => item.Id, StringComparer.Ordinal).ToArray();
+        if (ordered.Any(item =>
+                string.IsNullOrWhiteSpace(item.Id) ||
+                item.Source is null ||
+                item.Description is null ||
+                item.MarkdownBody is null ||
+                !IsSha256(item.ContentSha256) ||
+                !string.Equals(
+                    item.ContentSha256,
+                    Hash(item.MarkdownBody),
+                    StringComparison.Ordinal) ||
+                Encoding.UTF8.GetByteCount(item.MarkdownBody) > MaximumSkillBytes) ||
+            ordered.GroupBy(item => item.Id, StringComparer.Ordinal)
+                .Any(group => group.Skip(1).Any()) ||
+            JsonSerializer.SerializeToUtf8Bytes(ordered).Length > MaximumSnapshotBytes)
+        {
+            throw new ArgumentException("Effective Skill Snapshot is invalid.", nameof(items));
+        }
+
+        SchemaVersion = schemaVersion;
+        Items = Array.AsReadOnly(ordered);
+        SnapshotSha256 = snapshotSha256;
+    }
+
+    public static EffectiveSkillSnapshot Empty { get; } =
+        new(1, [], Hash("[]"u8));
+
+    public int SchemaVersion { get; }
+
+    public IReadOnlyList<EffectiveSkillSnapshotItem> Items { get; }
+
+    public string SnapshotSha256 { get; }
+
+    private static string Hash(string value) =>
+        Hash(Encoding.UTF8.GetBytes(value));
+
+    private static string Hash(ReadOnlySpan<byte> value) =>
+        Convert.ToHexString(SHA256.HashData(value)).ToLowerInvariant();
+
+    private static bool IsSha256(string? value) =>
+        value is { Length: 64 } &&
+        value.All(character => character is >= '0' and <= '9' or >= 'a' and <= 'f');
+}
+
 public sealed record AgentInvocationSnapshot(
     Guid InvocationId,
     string ProviderId,
@@ -231,7 +311,9 @@ public sealed record AgentInvocationSnapshot(
     int ContextWindowTokens,
     int MaxOutputTokens,
     string ConfigurationSha256,
-    EffectiveToolSnapshot? Tools = null);
+    EffectiveToolSnapshot? Tools = null,
+    long CapabilityRevision = 0,
+    EffectiveSkillSnapshot? Skills = null);
 
 public sealed record ProviderUsageSnapshot(
     Guid InvocationId,

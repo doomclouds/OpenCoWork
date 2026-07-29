@@ -5,7 +5,9 @@ using System.Text;
 using System.Text.Json;
 using OpenCoWork.Abstractions;
 using OpenCoWork.Core.Agents;
+using OpenCoWork.Core.Capabilities;
 using OpenCoWork.Core.Configuration;
+using OpenCoWork.Core.Tools;
 using OpenCoWork.Core.Workspaces;
 using Xunit;
 
@@ -236,7 +238,72 @@ public sealed class AgentFactoryTests
     }
 
     [Fact]
-    public void Agent_factory_produces_a_deterministic_secret_free_ready_draft()
+    public void Response_prompt_injects_active_skills_before_catalog_and_runtime_facts()
+    {
+        var tokenizer = TokenizerProfiles
+            .GetRequiredForModel("qwen3.8-max-preview")
+            .CreateTokenizer(TokenizerBaseDirectory);
+        const string body = "Always review correctness first.";
+        var source = new CapabilitySourceDescriptor(
+            CapabilitySourceKind.Workspace,
+            "workspace.skills",
+            "1",
+            new string('a', 64));
+        var skills = new EffectiveSkillSnapshot(
+            1,
+            [
+                new EffectiveSkillSnapshotItem(
+                    "acme/review",
+                    source,
+                    "Review changes.",
+                    body,
+                    Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(body)))
+                        .ToLowerInvariant(),
+                    IsActive: true,
+                    SelectedVariantId: null),
+                new EffectiveSkillSnapshotItem(
+                    "acme/test",
+                    source,
+                    "Run tests.",
+                    "Run focused tests.",
+                    Convert.ToHexString(
+                            SHA256.HashData(Encoding.UTF8.GetBytes("Run focused tests.")))
+                        .ToLowerInvariant(),
+                    IsActive: false,
+                    SelectedVariantId: null),
+            ],
+            new string('b', 64));
+
+        var response = AgentPrompts.CreateResponse(
+            AgentMode.Agent,
+            "workspace",
+            instructions: null,
+            tokenizer,
+            skills);
+        var compaction = AgentPrompts.CreateCompaction(tokenizer);
+
+        var activeIndex = response.SystemMessage.IndexOf(
+            "<active_skill id=\"acme/review\">",
+            StringComparison.Ordinal);
+        var catalogIndex = response.SystemMessage.IndexOf(
+            "<skill_catalog>",
+            StringComparison.Ordinal);
+        var runtimeIndex = response.SystemMessage.IndexOf(
+            "Runtime facts:",
+            StringComparison.Ordinal);
+        Assert.True(activeIndex >= 0);
+        Assert.True(activeIndex < catalogIndex);
+        Assert.True(catalogIndex < runtimeIndex);
+        Assert.Contains(body, response.SystemMessage, StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "Run focused tests.",
+            response.SystemMessage,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain("acme/review", compaction.SystemMessage, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Agent_factory_freezes_capability_revision_per_turn()
     {
         const string secret = "factory-secret-9127af";
         var directory = Path.Combine(
@@ -273,13 +340,22 @@ public sealed class AgentFactoryTests
                 models,
                 name => name == "TOKEN_PLAN_KEY" ? secret : null);
             var paths = new OpenCoWorkPaths(directory);
+            var tools = new ToolRuntime();
+            var capabilities = new WorkspaceCapabilityRuntime(
+            [
+                WorkspaceCapabilityRuntime.CreateCoreContributions(tools),
+            ]);
+            await capabilities.StartAsync(TestContext.Current.CancellationToken);
             var factory = new AgentFactory(
                 new ProviderRegistry(
                     models,
                     credentials,
                     TokenizerBaseDirectory,
                     directory),
-                paths);
+                paths,
+                tools,
+                new ToolsConfig(),
+                capabilities);
             var currentTurnId = Guid.Parse("019f2f95-7b3f-7b5f-8f39-8398ffb2bd85");
             var priorTurnId = Guid.Parse("019f2f95-7b3f-78aa-88e6-817282335c72");
             var timestamp = new DateTimeOffset(
@@ -404,6 +480,8 @@ public sealed class AgentFactoryTests
                 message => message.Content == "Current question");
             Assert.Equal(5, first.Tools.Count);
             Assert.NotNull(first.Snapshot.Tools);
+            Assert.Equal(capabilities.CurrentCatalog.Revision, first.Snapshot.CapabilityRevision);
+            Assert.Empty(first.Snapshot.Skills!.Items);
             Assert.Equal(
                 first.Tools.Select(tool => tool.ProviderName),
                 first.Snapshot.Tools!.CanonicalToProviderNames.Values.Order());
@@ -415,6 +493,50 @@ public sealed class AgentFactoryTests
                 AgentFactory.CountPromptTokens(
                     first.Provider.Tokenizer,
                     first.Messages));
+
+            await capabilities.RefreshAsync(
+                [
+                    new CapabilityContributionSet(
+                        new CapabilitySourceDescriptor(
+                            CapabilitySourceKind.Plugin,
+                            "acme/provider",
+                            "1.0.0",
+                            new string('c', 64)),
+                        [
+                            new CapabilityContribution(
+                                CapabilityKind.Provider,
+                                "acme/provider",
+                                "Acme Provider",
+                                "Test provider contribution.",
+                                CapabilityStatus.Ready,
+                                [],
+                                generation: 1,
+                                []),
+                        ]),
+                ],
+                TestContext.Current.CancellationToken);
+            var next = factory.Create(
+                session,
+                Guid.CreateVersion7(),
+                instructions: null);
+            var restoredSession = new AgentSession(
+                session.Thread,
+                session.Turn,
+                session.ModelHistory,
+                session.Checkpoint,
+                session.CompactionCheckpoint,
+                first.Snapshot,
+                session.ToolInvocations,
+                session.ProviderUsage);
+            var restored = factory.Create(
+                restoredSession,
+                invocationId,
+                instructions: null);
+
+            Assert.True(next.Snapshot.CapabilityRevision > first.Snapshot.CapabilityRevision);
+            Assert.Equal(
+                first.Snapshot.CapabilityRevision,
+                restored.Snapshot.CapabilityRevision);
         }
         finally
         {

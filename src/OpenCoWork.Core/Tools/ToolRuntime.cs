@@ -13,7 +13,7 @@ namespace OpenCoWork.Core.Tools;
 
 internal sealed partial class ToolRuntime
 {
-    private const int SnapshotSchemaVersion = 1;
+    private const int SnapshotSchemaVersion = 2;
     private const ToolEffect KnownEffects =
         ToolEffect.WorkspaceRead |
         ToolEffect.WorkspaceWrite |
@@ -23,6 +23,10 @@ internal sealed partial class ToolRuntime
     private const ToolEffect PlanEffects =
         ToolEffect.WorkspaceRead |
         ToolEffect.NetworkRead;
+    private const ToolInvocationAudience KnownAudiences =
+        ToolInvocationAudience.Model |
+        ToolInvocationAudience.Host |
+        ToolInvocationAudience.App;
     private static readonly Uri Draft202012Uri =
         new("https://json-schema.org/draft/2020-12/schema", UriKind.Absolute);
     private static readonly HashSet<string> AllowedVocabularies =
@@ -37,7 +41,8 @@ internal sealed partial class ToolRuntime
     ];
 
     private readonly Candidate[] _candidates;
-    private readonly IReadOnlyDictionary<RuntimeBindingId, ToolRuntimeBinding> _bindings;
+    private readonly object _bindingGate = new();
+    private readonly Dictionary<RuntimeBindingId, ToolRuntimeBinding> _bindings;
     private readonly IReadOnlyDictionary<ToolDefinitionId, JsonSchema> _schemas;
 
     internal IReadOnlyList<ToolRegistration> Registrations =>
@@ -92,7 +97,12 @@ internal sealed partial class ToolRuntime
             .ToArray();
 
         var bindingArray = bindings.ToArray();
-        if (bindingArray
+        if (bindingArray.Any(binding =>
+                binding is null ||
+                string.IsNullOrWhiteSpace(binding.Id.Value) ||
+                !Enum.IsDefined(binding.Availability) ||
+                binding.Generation <= 0) ||
+            bindingArray
             .GroupBy(binding => binding.Id)
             .Any(group => group.Count() != 1))
         {
@@ -134,11 +144,18 @@ internal sealed partial class ToolRuntime
             {
                 rejection = ToolErrorCodes.NameConflict;
             }
-            else if (definition.Id.SourceKind != ToolSourceKind.CoreNative ||
+            else if (!Enum.IsDefined(definition.Id.SourceKind) ||
+                !IsCleanIdentity(definition.Id.SourceId) ||
+                !IsCleanIdentity(definition.Id.SourceToolId) ||
                 !NamePartPattern().IsMatch(definition.Name.Namespace) ||
                 !NamePartPattern().IsMatch(definition.Name.Name) ||
+                !Enum.IsDefined(definition.ReplaySafety) ||
                 (definition.Effects & ~KnownEffects) != 0 ||
-                candidate.Schema is null)
+                candidate.Schema is null ||
+                registration.BindingGeneration <= 0 ||
+                !IsCleanIdentity(registration.RuntimeBindingId.Value) ||
+                !Enum.IsDefined(registration.Exposure) ||
+                (registration.Audience & ~KnownAudiences) != 0)
             {
                 rejection = ToolErrorCodes.DefinitionInvalid;
             }
@@ -292,7 +309,46 @@ internal sealed partial class ToolRuntime
         out ToolRuntimeBinding? binding)
     {
         ArgumentNullException.ThrowIfNull(bindingId);
-        return _bindings.TryGetValue(bindingId, out binding);
+        lock (_bindingGate)
+        {
+            return _bindings.TryGetValue(bindingId, out binding);
+        }
+    }
+
+    internal void PublishBinding(ToolRuntimeBinding binding)
+    {
+        ArgumentNullException.ThrowIfNull(binding);
+        if (!IsCleanIdentity(binding.Id.Value) ||
+            !Enum.IsDefined(binding.Availability) ||
+            binding.Generation <= 0)
+        {
+            throw new ToolRuntimeException(
+                ToolErrorCodes.DefinitionInvalid,
+                "Runtime Binding is invalid.");
+        }
+
+        lock (_bindingGate)
+        {
+            if (_bindings.TryGetValue(binding.Id, out var current) &&
+                binding.Generation < current.Generation)
+            {
+                throw new ToolRuntimeException(
+                    ToolErrorCodes.DefinitionInvalid,
+                    "Runtime Binding generation cannot move backwards.");
+            }
+
+            if (current is not null &&
+                binding.Generation == current.Generation &&
+                (binding.Executor != current.Executor ||
+                 binding.DefaultTimeout != current.DefaultTimeout))
+            {
+                throw new ToolRuntimeException(
+                    ToolErrorCodes.DefinitionInvalid,
+                    "Runtime Binding implementation changes require a new generation.");
+            }
+
+            _bindings[binding.Id] = binding;
+        }
     }
 
     private static HashSet<Candidate> FindConflicts(
@@ -564,6 +620,7 @@ internal sealed partial class ToolRuntime
             writer.WriteNumber("effects", (int)definition.Effects);
             writer.WriteString("replaySafety", EnumText(definition.ReplaySafety));
             writer.WriteString("runtimeBindingId", registration.RuntimeBindingId.Value);
+            writer.WriteNumber("bindingGeneration", registration.BindingGeneration);
             writer.WriteString("exposure", EnumText(registration.Exposure));
             writer.WriteNumber("audience", (int)registration.Audience);
             writer.WriteEndObject();
@@ -845,6 +902,11 @@ internal sealed partial class ToolRuntime
         id is null
             ? string.Empty
             : $"{id.SourceKind}\0{id.SourceId}\0{id.SourceToolId}";
+
+    private static bool IsCleanIdentity(string? value) =>
+        !string.IsNullOrWhiteSpace(value) &&
+        string.Equals(value, value.Trim(), StringComparison.Ordinal) &&
+        !value.Any(char.IsControl);
 
     private static string EnumText<T>(T value) where T : struct, Enum =>
         JsonNamingPolicy.CamelCase.ConvertName(value.ToString());

@@ -1368,6 +1368,10 @@ internal sealed partial class SessionService
             !IsLowerSha256(snapshot.ResponsePrompt.SystemMessageSha256) ||
             !IsLowerSha256(snapshot.CompactionPrompt.SystemMessageSha256) ||
             !IsLowerSha256(snapshot.ConfigurationSha256) ||
+            snapshot.CapabilityRevision < 0 ||
+            (snapshot.CapabilityRevision > 0 && snapshot.Skills is null) ||
+            (snapshot.Skills is { } skills &&
+             !IsLowerSha256(skills.SnapshotSha256)) ||
             snapshot.ResponsePrompt.TokenCount < 0 ||
             snapshot.CompactionPrompt.TokenCount < 0 ||
             snapshot.ContextWindowTokens <= 0 ||

@@ -229,6 +229,24 @@ internal sealed class ToolInvocationPipeline : IToolInvocationPipeline
                 "Runtime binding lease has expired.");
         }
 
+        if (binding.Generation != registration.BindingGeneration)
+        {
+            return await RejectAsync(
+                context,
+                sink,
+                ToolErrorCodes.BindingGenerationMismatch,
+                "Runtime binding generation no longer matches the frozen snapshot.");
+        }
+
+        if (!binding.IsTrusted)
+        {
+            return await RejectAsync(
+                context,
+                sink,
+                ToolErrorCodes.TrustRequired,
+                "Runtime binding is not trusted.");
+        }
+
         Record(ToolInvocationStage.Authority);
         var snapshotAuthority = DecisionFor(
             definition.Effects,

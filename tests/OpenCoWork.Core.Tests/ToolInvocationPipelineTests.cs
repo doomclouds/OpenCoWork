@@ -157,6 +157,8 @@ public sealed class ToolInvocationPipelineTests
     [InlineData("exposure", ToolErrorCodes.ExposureDenied)]
     [InlineData("mode", ToolErrorCodes.ModeDenied)]
     [InlineData("binding", ToolErrorCodes.BindingUnavailable)]
+    [InlineData("binding-generation", ToolErrorCodes.BindingGenerationMismatch)]
+    [InlineData("trust", ToolErrorCodes.TrustRequired)]
     [InlineData("lease", ToolErrorCodes.LeaseExpired)]
     [InlineData("authority", ToolErrorCodes.AuthorityDenied)]
     [InlineData("runtime-authority", ToolErrorCodes.AuthorityDenied)]
@@ -192,6 +194,12 @@ public sealed class ToolInvocationPipelineTests
             case "binding":
                 harness = CreateHarness(
                     availability: ToolBindingAvailability.Unavailable);
+                break;
+            case "binding-generation":
+                harness = CreateHarness(bindingGeneration: 2);
+                break;
+            case "trust":
+                harness = CreateHarness(bindingTrusted: false);
                 break;
             case "lease":
                 harness = CreateHarness(
@@ -351,6 +359,34 @@ public sealed class ToolInvocationPipelineTests
                 Assert.IsType<RecordToolInvocationAttemptStartedIntent>(intent)
                     .AttemptNumber),
             intent => Assert.IsType<RecordToolInvocationTerminalIntent>(intent));
+    }
+
+    [Fact]
+    public async Task Replacing_a_live_binding_invalidates_an_older_frozen_snapshot()
+    {
+        var harness = CreateHarness();
+        Assert.True(
+            harness.Runtime.TryResolveBinding(
+                new RuntimeBindingId("core.test.read.v1"),
+                out var current));
+        Assert.Throws<ToolRuntimeException>(() =>
+            harness.Runtime.PublishBinding(current! with
+            {
+                Executor = SuccessOutput(new { changed = true }),
+            }));
+        harness.Runtime.PublishBinding(current! with { Generation = 2 });
+
+        var result = await new ToolInvocationPipeline(
+                harness.Runtime,
+                new SecretRedactor([]))
+            .InvokeAsync(
+                harness.Context,
+                new RecordingSink(),
+                TestContext.Current.CancellationToken);
+
+        Assert.Equal(ToolInvocationStatus.Rejected, result.Status);
+        Assert.Equal(ToolErrorCodes.BindingGenerationMismatch, result.Error?.Code);
+        Assert.Equal(0, harness.Counter.Value);
     }
 
     [Fact]
@@ -647,7 +683,9 @@ public sealed class ToolInvocationPipelineTests
         string argumentsJson = """{"path":"src"}""",
         TimeSpan? timeout = null,
         ToolExecutor? executor = null,
-        bool runtimeSchemaRequiresNumber = false)
+        bool runtimeSchemaRequiresNumber = false,
+        long bindingGeneration = 1,
+        bool bindingTrusted = true)
     {
         using var schema = JsonDocument.Parse(
             """
@@ -712,7 +750,9 @@ public sealed class ToolInvocationPipelineTests
             {
                 counter.Value++;
                 return await implementation(value, token);
-            });
+            },
+            Generation: bindingGeneration,
+            IsTrusted: bindingTrusted);
         var runtime = new ToolRuntime([runtimeRegistration], [binding]);
         var policies = new[]
         {

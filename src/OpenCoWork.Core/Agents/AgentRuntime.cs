@@ -5,6 +5,7 @@ using System.Text.Json.Serialization;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using OpenCoWork.Abstractions;
+using OpenCoWork.Core.Capabilities;
 using OpenCoWork.Core.Configuration;
 using OpenCoWork.Core.Logging;
 using OpenCoWork.Core.Sessions;
@@ -59,7 +60,8 @@ public static class OpenCoWorkAgentExtensions
                 serviceProvider.GetRequiredService<ProviderRegistry>(),
                 serviceProvider.GetRequiredService<OpenCoWorkPaths>(),
                 serviceProvider.GetRequiredService<ToolRuntime>(),
-                serviceProvider.GetRequiredService<ToolsConfig>()));
+                serviceProvider.GetRequiredService<ToolsConfig>(),
+                serviceProvider.GetService<WorkspaceCapabilityRuntime>()));
         services.TryAddSingleton<IToolInvocationPipeline>(serviceProvider =>
             new ToolInvocationPipeline(
                 serviceProvider.GetRequiredService<ToolRuntime>(),
@@ -397,7 +399,8 @@ internal sealed class AgentFactory(
     ProviderRegistry providers,
     OpenCoWorkPaths paths,
     ToolRuntime? tools = null,
-    ToolsConfig? toolsConfig = null)
+    ToolsConfig? toolsConfig = null,
+    WorkspaceCapabilityRuntime? capabilities = null)
 {
     private readonly ProviderRegistry _providers =
         providers ?? throw new ArgumentNullException(nameof(providers));
@@ -405,6 +408,7 @@ internal sealed class AgentFactory(
         paths ?? throw new ArgumentNullException(nameof(paths));
     private readonly ToolRuntime _tools = tools ?? new ToolRuntime();
     private readonly ToolsConfig _toolsConfig = toolsConfig ?? new ToolsConfig();
+    private readonly WorkspaceCapabilityRuntime? _capabilities = capabilities;
 
     public AgentInvocationDraft Create(
         AgentSession session,
@@ -428,6 +432,12 @@ internal sealed class AgentFactory(
             session.Thread.ProviderId,
             session.Thread.ModelId);
         var frozen = session.Invocation;
+        using var capabilityLease = frozen is null
+            ? AcquireCapabilitySnapshot()
+            : null;
+        var capabilityRevision =
+            frozen?.CapabilityRevision ?? capabilityLease?.Catalog.Revision ?? 0;
+        var skillSnapshot = frozen?.Skills ?? EffectiveSkillSnapshot.Empty;
         EffectiveToolSnapshot toolSnapshot;
         if (frozen is not null)
         {
@@ -465,7 +475,8 @@ internal sealed class AgentFactory(
             session.Turn.EffectiveAgentMode,
             workspaceName,
             instructions,
-            provider.Tokenizer);
+            provider.Tokenizer,
+            skillSnapshot);
         var compactionPrompt =
             AgentPrompts.CreateCompaction(provider.Tokenizer);
         if (frozen is not null &&
@@ -547,7 +558,9 @@ internal sealed class AgentFactory(
             provider.ContextWindowTokens,
             provider.MaxOutputTokens,
             provider.ConfigurationSha256,
-            toolSnapshot);
+            toolSnapshot,
+            capabilityRevision,
+            skillSnapshot);
         return new AgentInvocationDraft(
             disposition,
             provider,
@@ -560,6 +573,18 @@ internal sealed class AgentFactory(
             usableInputBudget);
     }
 
+    private CapabilitySnapshotLease? AcquireCapabilitySnapshot()
+    {
+        try
+        {
+            return _capabilities?.AcquireSnapshot();
+        }
+        catch (CapabilityRuntimeException exception)
+        {
+            throw new AgentPreparationException(exception.Code, exception.Message);
+        }
+    }
+
     private static bool FrozenInvocationMatches(
         AgentInvocationSnapshot frozen,
         AgentSession session,
@@ -567,6 +592,7 @@ internal sealed class AgentFactory(
         AgentPromptMaterialization responsePrompt,
         AgentPromptMaterialization compactionPrompt,
         EffectiveToolSnapshot tools) =>
+        frozen.CapabilityRevision >= 0 &&
         string.Equals(frozen.ProviderId, provider.ProviderId, StringComparison.Ordinal) &&
         string.Equals(frozen.ModelId, provider.ModelId, StringComparison.Ordinal) &&
         string.Equals(

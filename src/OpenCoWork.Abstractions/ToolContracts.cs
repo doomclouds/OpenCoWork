@@ -100,6 +100,8 @@ public static class ToolErrorCodes
     public const string ExposureDenied = "tool.exposureDenied";
     public const string ModeDenied = "tool.modeDenied";
     public const string BindingUnavailable = "tool.bindingUnavailable";
+    public const string BindingGenerationMismatch = "tool.bindingGenerationMismatch";
+    public const string TrustRequired = "trust.required";
     public const string LeaseExpired = "tool.leaseExpired";
     public const string AuthorityDenied = "tool.authorityDenied";
     public const string InputInvalid = "tool.inputInvalid";
@@ -167,13 +169,16 @@ public sealed record ToolRuntimeBinding(
     ToolBindingAvailability Availability,
     ToolBindingLease? Lease,
     TimeSpan DefaultTimeout,
-    ToolExecutor Executor);
+    ToolExecutor Executor,
+    long Generation = 1,
+    bool IsTrusted = true);
 
 public sealed record ToolRegistration(
     ToolDefinition Definition,
     RuntimeBindingId RuntimeBindingId,
     ToolExposure Exposure,
-    ToolInvocationAudience Audience);
+    ToolInvocationAudience Audience,
+    long BindingGeneration = 1);
 
 public sealed record ToolSnapshotDiagnostic(
     string Code,
@@ -203,6 +208,13 @@ public sealed class EffectiveToolSnapshot
         ArgumentNullException.ThrowIfNull(providerToCanonicalNames);
         ArgumentNullException.ThrowIfNull(diagnostics);
         ArgumentException.ThrowIfNullOrWhiteSpace(snapshotSha256);
+        if (registrations.Any(registration =>
+                registration is null || registration.BindingGeneration <= 0))
+        {
+            throw new ArgumentException(
+                "Tool registrations must use a positive Binding Generation.",
+                nameof(registrations));
+        }
 
         SchemaVersion = schemaVersion;
         EffectiveAgentMode = effectiveAgentMode;

@@ -17,6 +17,7 @@ public sealed class ToolSnapshotTests
         var second = runtime.BuildSnapshot(AgentMode.Agent, new ToolsConfig());
 
         Assert.Equal(first.SnapshotSha256, second.SnapshotSha256);
+        Assert.Equal(2, first.SchemaVersion);
         Assert.Equal(
             ["file.list", "file.read", "file.write", "shell.run", "web.fetch"],
             first.Registrations.Select(CanonicalName));
@@ -143,6 +144,30 @@ public sealed class ToolSnapshotTests
         Assert.Contains(
             networkDenied.Diagnostics,
             item => item.Code == ToolErrorCodes.AuthorityDenied);
+    }
+
+    [Fact]
+    public void External_source_and_binding_generation_are_frozen_into_the_snapshot()
+    {
+        var generationThree = Registration(
+            "status",
+            new ToolName("acme_git", "status"),
+            ValidSchema(),
+            sourceKind: ToolSourceKind.PluginNative,
+            bindingGeneration: 3);
+        var generationFour = generationThree with { BindingGeneration = 4 };
+
+        var first = new ToolRuntime([generationThree]).BuildSnapshot(
+            AgentMode.Agent,
+            new ToolsConfig());
+        var second = new ToolRuntime([generationFour]).BuildSnapshot(
+            AgentMode.Agent,
+            new ToolsConfig());
+
+        var frozen = Assert.Single(first.Registrations);
+        Assert.Equal(ToolSourceKind.PluginNative, frozen.Definition.Id.SourceKind);
+        Assert.Equal(3, frozen.BindingGeneration);
+        Assert.NotEqual(first.SnapshotSha256, second.SnapshotSha256);
     }
 
     [Fact]
@@ -278,14 +303,18 @@ public sealed class ToolSnapshotTests
         string sourceToolId,
         ToolName name,
         string schema,
-        string description = "test")
+        string description = "test",
+        ToolSourceKind sourceKind = ToolSourceKind.CoreNative,
+        long bindingGeneration = 1)
     {
         using var document = JsonDocument.Parse(schema);
         return new ToolRegistration(
             new ToolDefinition(
                 new ToolDefinitionId(
-                    ToolSourceKind.CoreNative,
-                    "opencowork.core",
+                    sourceKind,
+                    sourceKind == ToolSourceKind.CoreNative
+                        ? "opencowork.core"
+                        : "acme/git",
                     sourceToolId),
                 name,
                 description,
@@ -293,7 +322,8 @@ public sealed class ToolSnapshotTests
                 ToolEffect.None),
             new RuntimeBindingId($"test.{sourceToolId}"),
             ToolExposure.Direct,
-            ToolInvocationAudience.Model);
+            ToolInvocationAudience.Model,
+            bindingGeneration);
     }
 
     private static string ValidSchema() =>

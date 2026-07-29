@@ -194,7 +194,7 @@ public sealed class WorkspaceCapabilityRuntime
                     registration.Definition.Description,
                     CapabilityStatus.Ready,
                     [],
-                    generation: 1,
+                    registration.BindingGeneration,
                     [])));
     }
 

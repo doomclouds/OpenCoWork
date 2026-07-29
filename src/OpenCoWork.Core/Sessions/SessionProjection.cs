@@ -2731,7 +2731,11 @@ internal sealed class SessionProjection
             string.IsNullOrWhiteSpace(snapshot.TokenizerProfileVersion) ||
             snapshot.ContextWindowTokens <= 0 ||
             snapshot.MaxOutputTokens <= 0 ||
-            !IsLowerSha256(snapshot.ConfigurationSha256))
+            !IsLowerSha256(snapshot.ConfigurationSha256) ||
+            snapshot.CapabilityRevision < 0 ||
+            (snapshot.CapabilityRevision > 0 && snapshot.Skills is null) ||
+            (snapshot.Skills is { } skills &&
+             !IsLowerSha256(skills.SnapshotSha256)))
         {
             throw ProjectionError(
                 SessionErrorCodes.InvalidState,

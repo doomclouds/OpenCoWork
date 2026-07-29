@@ -77,6 +77,8 @@ public sealed class ToolContractTests
                 "tool.exposureDenied",
                 "tool.modeDenied",
                 "tool.bindingUnavailable",
+                "tool.bindingGenerationMismatch",
+                "trust.required",
                 "tool.leaseExpired",
                 "tool.authorityDenied",
                 "tool.inputInvalid",
