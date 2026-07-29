@@ -2,6 +2,7 @@
 
 ## 2026-07
 
+- [2026-07-29-open-cowork-m6-capability-ecosystem-archives.md](./2026-07/2026-07-29-open-cowork-m6-capability-ecosystem-archives.md): 交付可授信、可冻结、可撤销的 Skills/Plugins/MCP/LSP/动态工具生态与 Wire 1.1 双平台运行能力。
 - [2026-07-28-open-cowork-m4-tool-runtime-alpha-archives.md](./2026-07/2026-07-28-open-cowork-m4-tool-runtime-alpha-archives.md): 交付固定安全管线、审批恢复、Journal 审计及最小 File/Shell/Web 工具运行时。
 - [2026-07-28-open-cowork-m5-wire-alpha-archives.md](./2026-07/2026-07-28-open-cowork-m5-wire-alpha-archives.md): 交付 Desktop-first stdio/loopback WebSocket Wire、稳定 ACP v1 Bridge 和双平台发布目录黑盒验证。
 - [2026-07-27-open-cowork-m3-agent-runtime-alpha-archives.md](./2026-07/2026-07-27-open-cowork-m3-agent-runtime-alpha-archives.md): 交付可恢复多轮对话、流式响应、Token 预算与压缩，并以 DeepSeek 官方完成首个真实 Provider 验收。

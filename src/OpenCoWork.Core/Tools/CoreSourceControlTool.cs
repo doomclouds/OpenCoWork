@@ -170,7 +170,7 @@ internal sealed class CoreSourceControlTool
                 FileName = identity.ExecutablePath,
                 WorkingDirectory = _paths.WorkspaceRoot,
                 UseShellExecute = false,
-                RedirectStandardInput = false,
+                RedirectStandardInput = true,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
                 CreateNoWindow = true,
@@ -203,6 +203,7 @@ internal sealed class CoreSourceControlTool
                     ToolErrorCodes.ExecutionFailed,
                     "Git process did not start.");
             }
+            process.StandardInput.Close();
 
             var budget = new OutputBudget();
             var stdout = ReadAsync(process.StandardOutput, budget, cancellationToken);

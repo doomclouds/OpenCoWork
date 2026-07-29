@@ -7,9 +7,9 @@ Milestone standard: [README.md](README.md)
 ## Progress Summary
 
 - Status: In Progress
-- Progress: 6/11
-- Done: 6
-- In progress: 1
+- Progress: 7/11
+- Done: 7
+- In progress: 0
 - Not started: 4
 - Deferred: 0
 - Split: 0
@@ -52,13 +52,12 @@ Milestone standard: [README.md](README.md)
   - Related plan: docs/superpowers/plans/2026-07-28-open-cowork-m5-wire-alpha-implementation-plan.md
   - Related archive: docs/superpowers/archives/2026-07/2026-07-28-open-cowork-m5-wire-alpha-archives.md
   - Completion signal: Desktop-first stdio/loopback WebSocket Wire、核心会话流与稳定 ACP v1 已通过 win-x64、osx-arm64 发布目录 TestClient 真机验收；M5-ACC-001 至 M5-ACC-009 全部 Passed，M10 仍须重跑最终发布候选。
-- [ ] 7. M6 - Capability Ecosystem
-  - Status: In Progress
+- [x] 7. M6 - Capability Ecosystem
+  - Status: Done
   - Related spec: docs/superpowers/specs/2026-07-29-open-cowork-m6-capability-ecosystem-design.md
   - Related plan: docs/superpowers/plans/2026-07-29-open-cowork-m6-capability-ecosystem-implementation-plan.md
-  - Related archive: None yet.
-  - Current evidence: Outcome 1-10 实现、全量回归和 osx-arm64 发布目录黑盒已通过；win-x64 真机证据仍为 Pending，因此尚未归档或关闭。
-  - Completion signal: Capability Catalog、插件与 Skill、Provider/Auth、MCP/LSP、动态与延迟工具、Hook、Git/Terminal/Memory 和 Wire 1.1 均通过故障注入及 win-x64、osx-arm64 真机验收。
+  - Related archive: docs/superpowers/archives/2026-07/2026-07-29-open-cowork-m6-capability-ecosystem-archives.md
+  - Completion signal: Capability Catalog、插件与 Skill、Provider/Auth、MCP/LSP、动态与延迟工具、Hook、Git/Terminal/Memory 和 Wire 1.1 已通过 win-x64、osx-arm64 发布目录真机验收；M6-ACC-001 至 M6-ACC-010 全部 Passed，M10 仍须重跑最终发布候选。
 - [ ] 8. M7 - Multi-Agent CoWork
   - Status: Not Started
   - Related spec: docs/superpowers/specs/2026-07-25-open-cowork-runtime-1-0-roadmap.md

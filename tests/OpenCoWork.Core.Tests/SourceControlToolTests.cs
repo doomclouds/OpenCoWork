@@ -196,7 +196,18 @@ public sealed class SourceControlToolTests
             await RunGitAsync(["commit", "-m", "initial"], cancellationToken);
         }
 
-        public void Dispose() => Directory.Delete(Root, recursive: true);
+        public void Dispose()
+        {
+            foreach (var file in Directory.EnumerateFiles(
+                         Root,
+                         "*",
+                         SearchOption.AllDirectories))
+            {
+                File.SetAttributes(file, FileAttributes.Normal);
+            }
+
+            Directory.Delete(Root, recursive: true);
+        }
 
         private async Task RunGitAsync(
             IReadOnlyList<string> arguments,

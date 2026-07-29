@@ -376,6 +376,7 @@ public sealed class BackgroundTerminalTests
         public async ValueTask DisposeAsync()
         {
             await Runtime.StopAllAsync(CancellationToken.None);
+            SqliteConnection.ClearAllPools();
             Workspace.Dispose();
         }
     }

@@ -126,7 +126,7 @@ public sealed partial class CoreToolTests
                     {
                         command = OperatingSystem.IsWindows()
                             ? """
-                              $child = Start-Process -FilePath $env:ComSpec -ArgumentList '/d','/c','ping -n 31 127.0.0.1 >nul' -PassThru
+                              $child = Start-Process -FilePath $env:ComSpec -ArgumentList '/d','/c','ping -n 31 127.0.0.1 >nul' -WindowStyle Hidden -PassThru
                               [IO.File]::WriteAllText((Join-Path (Get-Location) 'child.pid'), $child.Id.ToString())
                               $child.WaitForExit()
                               """

@@ -2,13 +2,14 @@
 
 ## 文档状态
 
-- 状态：设计已冻结，实施计划已创建
+- 状态：已实现并归档
 - 日期：2026-07-29
 - 所属里程碑：OpenCoWork Runtime 1.0 / M6
 - 已确认决策：43 项
 - 对应计划：
   [M6 Capability Ecosystem 实施计划](../plans/2026-07-29-open-cowork-m6-capability-ecosystem-implementation-plan.md)
-- 对应归档：尚未创建
+- 对应归档：
+  [M6 Capability Ecosystem 交付归档](../archives/2026-07/2026-07-29-open-cowork-m6-capability-ecosystem-archives.md)
 - 继续工作前必须先阅读：
   - [OpenCoWork Runtime 1.0 路线规格](2026-07-25-open-cowork-runtime-1-0-roadmap.md)
   - [M0 Contract Freeze](2026-07-25-open-cowork-m0-contract-freeze-design.md)
@@ -20,7 +21,7 @@
   - `DotCraft_Core_核心代码详细设计与一比一复刻规范_v1.0.md`
 
 本文冻结 M6 的产品边界、权威关系、安全顺序、外部契约、持久化模型和验收边界。
-未创建并确认 M6 实施计划前，不得开始生产代码实现。
+实现与双平台验证已按对应计划完成。
 
 ## 1. 目标、范围与既有不变量
 

@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
 using OpenCoWork.Abstractions;
@@ -151,16 +152,7 @@ public sealed class WorkspaceMemoryTests
             $"opencowork-memory-outside-{Guid.NewGuid():N}");
         Directory.CreateDirectory(outside);
         Directory.CreateDirectory(Path.GetDirectoryName(fixture.ContentDirectory)!);
-        try
-        {
-            Directory.CreateSymbolicLink(fixture.ContentDirectory, outside);
-        }
-        catch (Exception exception) when (
-            exception is UnauthorizedAccessException or PlatformNotSupportedException)
-        {
-            Directory.Delete(outside);
-            return;
-        }
+        CreateDirectoryLink(fixture.ContentDirectory, outside);
 
         try
         {
@@ -181,6 +173,7 @@ public sealed class WorkspaceMemoryTests
         }
         finally
         {
+            Directory.Delete(fixture.ContentDirectory);
             Directory.Delete(outside, recursive: true);
         }
     }
@@ -251,6 +244,27 @@ public sealed class WorkspaceMemoryTests
         }
 
         public void Dispose() => Workspace.Dispose();
+    }
+
+    private static void CreateDirectoryLink(string path, string target)
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            Directory.CreateSymbolicLink(path, target);
+            return;
+        }
+
+        using var process = Process.Start(new ProcessStartInfo
+        {
+            FileName = "cmd.exe",
+            Arguments = $"/d /c mklink /J \"{path}\" \"{target}\"",
+            CreateNoWindow = true,
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+        }) ?? throw new InvalidOperationException("Could not start mklink.");
+        process.WaitForExit();
+        Assert.Equal(0, process.ExitCode);
     }
 
     private sealed class TemporaryWorkspace : IDisposable

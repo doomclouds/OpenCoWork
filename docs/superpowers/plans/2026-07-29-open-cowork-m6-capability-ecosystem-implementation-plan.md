@@ -1,7 +1,7 @@
 # OpenCoWork M6 Capability Ecosystem 实施计划
 
-**Status:** In progress；Outcome 1-10 实现与 macOS arm64 证据已完成，Windows x64
-真机证据待补。
+**Status:** Completed；Outcome 1-10、全量回归及 macOS arm64 / Windows x64
+发布目录真机证据均已完成。
 
 **Goal:** 在现有 Workspace、Agent、Tool、Journal、SQLite 和 Wire 边界上交付
 Desktop-first 的工作区级 Capability Ecosystem，使受信来源能够被确定性发现、组合、
@@ -20,6 +20,9 @@ TestClient；macOS arm64 与 Windows x64 真机分别完成 M6 发布验证。
 
 验收目录：
 [M0-M10 验收目录](../specs/2026-07-25-open-cowork-m0-acceptance-catalog.md)
+
+交付归档：
+[M6 Capability Ecosystem 交付归档](../archives/2026-07/2026-07-29-open-cowork-m6-capability-ecosystem-archives.md)
 
 ## 执行规则
 

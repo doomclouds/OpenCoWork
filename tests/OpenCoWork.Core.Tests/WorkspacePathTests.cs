@@ -54,6 +54,22 @@ public sealed class WorkspacePathTests
     }
 
     [Fact]
+    public void Discovery_ignores_the_user_level_opencowork_directory()
+    {
+        using var files = new TempDirectory();
+        var userProfile = files.CreateDirectory("profile");
+        Directory.CreateDirectory(Path.Combine(userProfile, ".opencowork"));
+        var start = files.CreateDirectory("profile", "work", "src");
+
+        Assert.Equal(
+            Path.GetFullPath(start),
+            WorkspaceDiscovery.Discover(
+                start,
+                explicitWorkspace: null,
+                userProfile).WorkspaceRoot);
+    }
+
+    [Fact]
     public void Paths_are_absolute_and_do_not_depend_on_later_current_directory_changes()
     {
         using var files = new TempDirectory();

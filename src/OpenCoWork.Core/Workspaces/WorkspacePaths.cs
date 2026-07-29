@@ -84,10 +84,26 @@ public static class WorkspaceDiscovery
 {
     public static OpenCoWorkPaths Discover(
         string startupDirectory,
-        string? explicitWorkspace = null)
+        string? explicitWorkspace = null) =>
+        Discover(
+            startupDirectory,
+            explicitWorkspace,
+            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile));
+
+    internal static OpenCoWorkPaths Discover(
+        string startupDirectory,
+        string? explicitWorkspace,
+        string userProfileDirectory)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(startupDirectory);
         var startupRoot = Path.GetFullPath(startupDirectory);
+        var userProfileRoot = string.IsNullOrWhiteSpace(userProfileDirectory)
+            ? null
+            : Path.TrimEndingDirectorySeparator(
+                Path.GetFullPath(userProfileDirectory));
+        var comparison = OperatingSystem.IsWindows()
+            ? StringComparison.OrdinalIgnoreCase
+            : StringComparison.Ordinal;
 
         if (!Directory.Exists(startupRoot))
         {
@@ -122,7 +138,11 @@ public static class WorkspaceDiscovery
         var current = new DirectoryInfo(startupRoot);
         while (current is not null)
         {
-            if (Directory.Exists(Path.Combine(current.FullName, ".opencowork")))
+            if (!string.Equals(
+                    Path.TrimEndingDirectorySeparator(current.FullName),
+                    userProfileRoot,
+                    comparison) &&
+                Directory.Exists(Path.Combine(current.FullName, ".opencowork")))
             {
                 return new OpenCoWorkPaths(current.FullName);
             }

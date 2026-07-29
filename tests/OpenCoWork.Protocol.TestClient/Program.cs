@@ -306,30 +306,38 @@ internal static class ProtocolTestClient
                 "sourceControl/inspect",
                 new { arguments = new { } });
             var source = sourceIdentity.GetProperty("result").GetProperty("result");
+            var sourceTrust = new
+            {
+                expectedRevision = revision,
+                sourceKind = "workspace",
+                sourceId = source.GetProperty("sourceId").GetString(),
+                sourceVersion = source.GetProperty("version").GetString(),
+                sha256 = source.GetProperty("sha256").GetString(),
+                allowedScopes = new[] { "outOfProcess" },
+                deniedScopes = Array.Empty<string>(),
+            };
             _ = await client.RequestAsync(
                 12,
                 "trust/decide",
-                new
-                {
-                    arguments = new
-                    {
-                        expectedRevision = revision,
-                        sourceKind = "workspace",
-                        sourceId = source.GetProperty("sourceId").GetString(),
-                        sourceVersion = source.GetProperty("version").GetString(),
-                        sha256 = source.GetProperty("sha256").GetString(),
-                        allowedScopes = new[] { "outOfProcess" },
-                        deniedScopes = Array.Empty<string>(),
-                    },
-                });
-            var git = await client.RequestAsync(
-                13,
-                "sourceControl/status",
-                new { arguments = new { } });
-            Require(
-                git.GetProperty("result").GetProperty("result")
-                    .GetProperty("operation").GetString() == "status",
-                "Source Control status failed.");
+                new { arguments = sourceTrust });
+            try
+            {
+                var git = await client.RequestAsync(
+                    13,
+                    "sourceControl/status",
+                    new { arguments = new { } });
+                Require(
+                    git.GetProperty("result").GetProperty("result")
+                        .GetProperty("operation").GetString() == "status",
+                    "Source Control status failed.");
+            }
+            finally
+            {
+                _ = await client.RequestAsync(
+                    64,
+                    "trust/revoke",
+                    new { arguments = sourceTrust });
+            }
 
             var registrationId = Guid.CreateVersion7();
             var inputSchema = JsonSerializer.SerializeToElement(new
@@ -840,7 +848,8 @@ internal static class ProtocolTestClient
                     "-NonInteractive",
                     "-Command",
                     "$p=Start-Process ping.exe -ArgumentList '-n','30'," +
-                    $"'127.0.0.1' -PassThru; Set-Content -LiteralPath '{escaped}' " +
+                    "'127.0.0.1' -WindowStyle Hidden -PassThru; " +
+                    $"Set-Content -LiteralPath '{escaped}' " +
                     "-Value $p.Id; $p.WaitForExit()",
                 },
                 maxDurationSeconds = 60,
