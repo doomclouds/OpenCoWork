@@ -35,7 +35,18 @@ public sealed class ProjectGraphTests
             ["OpenCoWork.Generators"],
             "opencowork"),
         new("OpenCoWork.Generators", "netstandard2.0", "Library", [], []),
-        new("OpenCoWork.Core.Tests", "net10.0", "Exe", ["OpenCoWork.Core"], []),
+        new(
+            "OpenCoWork.PluginFixture",
+            "net10.0",
+            "Library",
+            ["OpenCoWork.Abstractions"],
+            []),
+        new(
+            "OpenCoWork.Core.Tests",
+            "net10.0",
+            "Exe",
+            ["OpenCoWork.Core", "OpenCoWork.PluginFixture"],
+            []),
         new("OpenCoWork.Protocol.Tests", "net10.0", "Exe", ["OpenCoWork.Protocol"], []),
         new("OpenCoWork.Generators.Tests", "net10.0", "Exe", ["OpenCoWork.Generators"], []),
         new("OpenCoWork.ArchitectureTests", "net10.0", "Exe", [], []),
@@ -377,7 +388,9 @@ public sealed class ProjectGraphTests
             Name.Contains("Tests", StringComparison.Ordinal) &&
             !Name.EndsWith("TestClient", StringComparison.Ordinal)
                 ? "tests"
-                : Name == "OpenCoWork.Protocol.TestClient"
+                : Name is
+                    "OpenCoWork.PluginFixture" or
+                    "OpenCoWork.Protocol.TestClient"
                     ? "tests"
                     : "src",
             Name,

@@ -17,6 +17,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\OpenCoWork.Core\OpenCoWork.Core.csproj" />
+    <ProjectReference Include="..\OpenCoWork.PluginFixture\OpenCoWork.PluginFixture.csproj" />
   </ItemGroup>
 
 </Project>

@@ -28,6 +28,8 @@ internal sealed class CapabilityPersistencePaths
         UserOpenCoWorkDirectory = Path.Combine(UserProfileDirectory, ".opencowork");
         UserCapabilitiesPath = Path.Combine(UserOpenCoWorkDirectory, "capabilities.json");
         UserSkillsDirectory = Path.Combine(UserOpenCoWorkDirectory, "skills");
+        UserPluginsDirectory = Path.Combine(UserOpenCoWorkDirectory, "plugins");
+        PluginStoreDirectory = Path.Combine(UserPluginsDirectory, "store");
         TrustDecisionsPath = Path.Combine(
             UserOpenCoWorkDirectory,
             "trust",
@@ -50,6 +52,10 @@ internal sealed class CapabilityPersistencePaths
 
     public string UserSkillsDirectory { get; }
 
+    public string UserPluginsDirectory { get; }
+
+    public string PluginStoreDirectory { get; }
+
     public string TrustDecisionsPath { get; }
 
     internal ResolvedWorkspacePath ResolvePluginLock() =>
@@ -69,6 +75,9 @@ internal sealed class CapabilityPersistencePaths
 
     internal ResolvedWorkspacePath ResolveUserSkill(string relativePath) =>
         ResolveUser(Path.Combine(UserSkillsDirectory, relativePath));
+
+    internal ResolvedWorkspacePath ResolvePluginStore(string sha256) =>
+        ResolveUser(Path.Combine(PluginStoreDirectory, sha256));
 
     private ResolvedWorkspacePath ResolveWorkspace(string path) =>
         WorkspacePathGuard.ResolveContained(

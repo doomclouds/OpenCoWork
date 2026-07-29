@@ -578,6 +578,10 @@ internal sealed record AgentInvocationDraft(
     int InputTokenCount,
     int UsableInputBudgetTokens);
 
+internal sealed record AgentExecutionDraft(
+    AgentInvocationDraft Draft,
+    IDisposable? PluginSnapshotLease);
+
 internal sealed class AgentFactory(
     ProviderRegistry providers,
     OpenCoWorkPaths paths,
@@ -759,11 +763,38 @@ internal sealed class AgentFactory(
             usableInputBudget);
     }
 
+    public AgentExecutionDraft CreateForExecution(
+        AgentSession session,
+        Guid invocationId,
+        WorkspaceInstructionDocument? instructions)
+    {
+        var draft = Create(session, invocationId, instructions);
+        return new AgentExecutionDraft(
+            draft,
+            AcquirePluginSnapshot(
+                draft.Snapshot.Tools ??
+                throw new AgentPreparationException(
+                    AgentErrorCodes.ContextInputInvalid,
+                    "The frozen tool snapshot is missing.")));
+    }
+
     private CapabilitySnapshotLease? AcquireCapabilitySnapshot()
     {
         try
         {
             return _capabilities?.AcquireSnapshot();
+        }
+        catch (CapabilityRuntimeException exception)
+        {
+            throw new AgentPreparationException(exception.Code, exception.Message);
+        }
+    }
+
+    private IDisposable? AcquirePluginSnapshot(EffectiveToolSnapshot snapshot)
+    {
+        try
+        {
+            return _capabilities?.AcquirePluginSnapshot(snapshot);
         }
         catch (CapabilityRuntimeException exception)
         {
@@ -1069,17 +1100,20 @@ internal sealed class AgentRuntimeExecutor : ISessionExecutor
         var invocationToken = invocationCancellation.Token;
         WorkspaceInstructionDocument? instructions;
         AgentInvocationDraft draft;
+        IDisposable? pluginSnapshotLease = null;
         ProviderSecretLease providerSecret;
         Dictionary<string, KnownToolCall> knownToolCalls;
         PendingToolFrame? pendingToolFrame;
         try
         {
             instructions = WorkspaceInstructionDocument.Read(_paths);
-            draft = _factory.Create(
+            var execution = _factory.CreateForExecution(
                 context,
                 context.Invocation?.InvocationId ??
                 Guid.CreateVersion7(_timeProvider.GetUtcNow()),
                 instructions);
+            draft = execution.Draft;
+            pluginSnapshotLease = execution.PluginSnapshotLease;
             if (context.Invocation is null)
             {
                 await sink.EmitAsync(
@@ -1099,6 +1133,7 @@ internal sealed class AgentRuntimeExecutor : ISessionExecutor
         }
         catch (AgentPreparationException exception)
         {
+            pluginSnapshotLease?.Dispose();
             await sink.EmitAsync(
                 new FailTurnIntent(new SessionError(
                     exception.Code,
@@ -1111,6 +1146,7 @@ internal sealed class AgentRuntimeExecutor : ISessionExecutor
             exception is InvalidOperationException or IOException or
             UnauthorizedAccessException)
         {
+            pluginSnapshotLease?.Dispose();
             await sink.EmitAsync(
                 new FailTurnIntent(new SessionError(
                     AgentErrorCodes.ContextInputInvalid,
@@ -1119,7 +1155,13 @@ internal sealed class AgentRuntimeExecutor : ISessionExecutor
                 cancellationToken);
             return;
         }
+        catch
+        {
+            pluginSnapshotLease?.Dispose();
+            throw;
+        }
 
+        using var frozenPluginSnapshot = pluginSnapshotLease;
         using var providerSecretLease = providerSecret;
         var activeContentItemId = Guid.Empty;
         var activeReasoningItemId = Guid.Empty;

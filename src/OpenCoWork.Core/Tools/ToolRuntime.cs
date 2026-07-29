@@ -40,15 +40,23 @@ internal sealed partial class ToolRuntime
         Vocabulary.Draft202012_Content.Id.AbsoluteUri,
     ];
 
-    private readonly Candidate[] _candidates;
+    private Candidate[] _candidates;
     private readonly object _bindingGate = new();
-    private readonly Dictionary<RuntimeBindingId, ToolRuntimeBinding> _bindings;
-    private readonly IReadOnlyDictionary<ToolDefinitionId, JsonSchema> _schemas;
+    private readonly Dictionary<BindingKey, ToolRuntimeBinding> _bindings;
+    private Dictionary<ToolDefinitionId, JsonSchema> _schemas;
 
-    internal IReadOnlyList<ToolRegistration> Registrations =>
-        Array.AsReadOnly(_candidates
-            .Select(candidate => candidate.Registration)
-            .ToArray());
+    internal IReadOnlyList<ToolRegistration> Registrations
+    {
+        get
+        {
+            lock (_bindingGate)
+            {
+                return Array.AsReadOnly(_candidates
+                    .Select(candidate => candidate.Registration)
+                    .ToArray());
+            }
+        }
+    }
 
     public ToolRuntime()
         : this(CreateCoreTools(
@@ -111,12 +119,9 @@ internal sealed partial class ToolRuntime
                 "Runtime Binding IDs must be unique.");
         }
 
-        _bindings = bindingArray.ToDictionary(binding => binding.Id);
-        _schemas = _candidates
-            .Where(candidate => candidate.Schema is not null)
-            .GroupBy(candidate => candidate.Registration.Definition.Id)
-            .Where(group => group.Count() == 1)
-            .ToDictionary(group => group.Key, group => group.Single().Schema!);
+        _bindings = bindingArray.ToDictionary(
+            binding => new BindingKey(binding.Id, binding.Generation));
+        _schemas = CreateSchemas(_candidates);
     }
 
     private ToolRuntime(CoreTools core)
@@ -132,9 +137,15 @@ internal sealed partial class ToolRuntime
         var authority = BuildAuthority(config);
         var diagnostics = new List<ToolSnapshotDiagnostic>();
         var eligible = new List<Candidate>();
-        var conflicts = FindConflicts(_candidates);
+        Candidate[] candidates;
+        lock (_bindingGate)
+        {
+            candidates = _candidates;
+        }
 
-        foreach (var candidate in Ordered(_candidates))
+        var conflicts = FindConflicts(candidates);
+
+        foreach (var candidate in Ordered(candidates))
         {
             var registration = candidate.Registration;
             var definition = registration.Definition;
@@ -279,14 +290,17 @@ internal sealed partial class ToolRuntime
         JsonElement arguments)
     {
         ArgumentNullException.ThrowIfNull(definitionId);
-        return _schemas.TryGetValue(definitionId, out var schema) &&
-               schema.Evaluate(
-                   arguments,
-                   new EvaluationOptions
-                   {
-                       OutputFormat = OutputFormat.Flag,
-                       RequireFormatValidation = false,
-                   }).IsValid;
+        lock (_bindingGate)
+        {
+            return _schemas.TryGetValue(definitionId, out var schema) &&
+                   schema.Evaluate(
+                       arguments,
+                       new EvaluationOptions
+                       {
+                           OutputFormat = OutputFormat.Flag,
+                           RequireFormatValidation = false,
+                       }).IsValid;
+        }
     }
 
     public bool ValidateArguments(
@@ -311,25 +325,39 @@ internal sealed partial class ToolRuntime
         ArgumentNullException.ThrowIfNull(bindingId);
         lock (_bindingGate)
         {
-            return _bindings.TryGetValue(bindingId, out binding);
+            binding = _bindings.Values
+                .Where(candidate => candidate.Id == bindingId)
+                .OrderByDescending(candidate => candidate.Generation)
+                .FirstOrDefault();
+            return binding is not null;
+        }
+    }
+
+    internal bool TryResolveBinding(
+        RuntimeBindingId bindingId,
+        long generation,
+        out ToolRuntimeBinding? binding)
+    {
+        ArgumentNullException.ThrowIfNull(bindingId);
+        lock (_bindingGate)
+        {
+            return _bindings.TryGetValue(
+                new BindingKey(bindingId, generation),
+                out binding);
         }
     }
 
     internal void PublishBinding(ToolRuntimeBinding binding)
     {
-        ArgumentNullException.ThrowIfNull(binding);
-        if (!IsCleanIdentity(binding.Id.Value) ||
-            !Enum.IsDefined(binding.Availability) ||
-            binding.Generation <= 0)
-        {
-            throw new ToolRuntimeException(
-                ToolErrorCodes.DefinitionInvalid,
-                "Runtime Binding is invalid.");
-        }
+        ValidateBinding(binding);
 
         lock (_bindingGate)
         {
-            if (_bindings.TryGetValue(binding.Id, out var current) &&
+            var current = _bindings.Values
+                .Where(candidate => candidate.Id == binding.Id)
+                .OrderByDescending(candidate => candidate.Generation)
+                .FirstOrDefault();
+            if (current is not null &&
                 binding.Generation < current.Generation)
             {
                 throw new ToolRuntimeException(
@@ -348,7 +376,133 @@ internal sealed partial class ToolRuntime
                     "Runtime Binding implementation changes require a new generation.");
             }
 
-            _bindings[binding.Id] = binding;
+            foreach (var key in _bindings.Keys
+                         .Where(key => key.Id == binding.Id)
+                         .ToArray())
+            {
+                _bindings.Remove(key);
+            }
+
+            _bindings[new BindingKey(binding.Id, binding.Generation)] = binding;
+        }
+    }
+
+    internal void PublishPlugin(
+        string pluginId,
+        IReadOnlyList<ToolRegistration> registrations,
+        IReadOnlyList<ToolRuntimeBinding> bindings)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(pluginId);
+        ArgumentNullException.ThrowIfNull(registrations);
+        ArgumentNullException.ThrowIfNull(bindings);
+        var candidates = registrations.Select(registration =>
+        {
+            if (registration.Definition.Id.SourceKind != ToolSourceKind.PluginNative ||
+                !string.Equals(
+                    registration.Definition.Id.SourceId,
+                    pluginId,
+                    StringComparison.Ordinal) ||
+                !TryCompileSchema(registration.Definition, out var schema))
+            {
+                throw new ToolRuntimeException(
+                    ToolErrorCodes.DefinitionInvalid,
+                    "Plugin Tool definition is invalid.");
+            }
+
+            return new Candidate(registration, schema);
+        }).ToArray();
+        if (candidates
+                .GroupBy(candidate => candidate.Registration.Definition.Id)
+                .Any(group => group.Skip(1).Any()) ||
+            bindings.Any(binding => binding is null) ||
+            bindings.GroupBy(binding => new BindingKey(binding.Id, binding.Generation))
+                .Any(group => group.Skip(1).Any()))
+        {
+            throw new ToolRuntimeException(
+                ToolErrorCodes.DefinitionInvalid,
+                "Plugin Tool registrations are invalid.");
+        }
+
+        foreach (var binding in bindings)
+        {
+            ValidateBinding(binding);
+        }
+
+        if (registrations.Any(registration =>
+                !bindings.Any(binding =>
+                    binding.Id == registration.RuntimeBindingId &&
+                    binding.Generation == registration.BindingGeneration)))
+        {
+            throw new ToolRuntimeException(
+                ToolErrorCodes.DefinitionInvalid,
+                "Plugin Tool binding is missing.");
+        }
+
+        lock (_bindingGate)
+        {
+            _candidates = _candidates
+                .Where(candidate =>
+                    candidate.Registration.Definition.Id.SourceKind !=
+                    ToolSourceKind.PluginNative ||
+                    !string.Equals(
+                        candidate.Registration.Definition.Id.SourceId,
+                        pluginId,
+                        StringComparison.Ordinal))
+                .Concat(candidates)
+                .ToArray();
+            _schemas = CreateSchemas(_candidates);
+            foreach (var binding in bindings)
+            {
+                _bindings[new BindingKey(binding.Id, binding.Generation)] = binding;
+            }
+        }
+    }
+
+    internal void RemovePlugin(string pluginId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(pluginId);
+        lock (_bindingGate)
+        {
+            _candidates = _candidates
+                .Where(candidate =>
+                    candidate.Registration.Definition.Id.SourceKind !=
+                    ToolSourceKind.PluginNative ||
+                    !string.Equals(
+                        candidate.Registration.Definition.Id.SourceId,
+                        pluginId,
+                        StringComparison.Ordinal))
+                .ToArray();
+            _schemas = CreateSchemas(_candidates);
+        }
+    }
+
+    internal void RemoveBinding(RuntimeBindingId id, long generation)
+    {
+        ArgumentNullException.ThrowIfNull(id);
+        lock (_bindingGate)
+        {
+            _bindings.Remove(new BindingKey(id, generation));
+        }
+    }
+
+    private static Dictionary<ToolDefinitionId, JsonSchema> CreateSchemas(
+        IReadOnlyList<Candidate> candidates) =>
+        candidates
+            .Where(candidate => candidate.Schema is not null)
+            .GroupBy(candidate => candidate.Registration.Definition.Id)
+            .Where(group => group.Count() == 1)
+            .ToDictionary(group => group.Key, group => group.Single().Schema!);
+
+    private static void ValidateBinding(ToolRuntimeBinding binding)
+    {
+        ArgumentNullException.ThrowIfNull(binding);
+        if (!IsCleanIdentity(binding.Id.Value) ||
+            !Enum.IsDefined(binding.Availability) ||
+            binding.Generation <= 0)
+        {
+            throw new ToolRuntimeException(
+                ToolErrorCodes.DefinitionInvalid,
+                "Runtime Binding is invalid.");
         }
     }
 
@@ -968,6 +1122,8 @@ internal sealed partial class ToolRuntime
     private sealed record Candidate(
         ToolRegistration Registration,
         JsonSchema? Schema);
+
+    private sealed record BindingKey(RuntimeBindingId Id, long Generation);
 
     private sealed record Projection(
         Candidate Candidate,

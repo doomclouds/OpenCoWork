@@ -25,25 +25,37 @@ internal sealed record WorkspaceCapabilityDiscoveryResult(
 
 internal sealed class WorkspaceCapabilityDiscovery(
     SkillCatalog skills,
-    ProviderDeclarationCatalog providers)
+    ProviderDeclarationCatalog providers,
+    PluginRuntime? plugins = null)
 {
     private readonly SkillCatalog _skills =
         skills ?? throw new ArgumentNullException(nameof(skills));
     private readonly ProviderDeclarationCatalog _providers =
         providers ?? throw new ArgumentNullException(nameof(providers));
+    private readonly PluginRuntime? _plugins = plugins;
 
     public async Task<WorkspaceCapabilityDiscoveryResult> DiscoverAsync(
         CancellationToken cancellationToken)
     {
         var skillResult = await _skills.DiscoverAsync(
             cancellationToken: cancellationToken);
+        var pluginResult = _plugins is null
+            ? new PluginDiscoveryResult([])
+            : await _plugins.DiscoverAsync(cancellationToken);
         return new WorkspaceCapabilityDiscoveryResult(
             Array.AsReadOnly(
                 skillResult.Contributions
                     .Concat(_providers.Contributions)
+                    .Concat(pluginResult.Contributions)
                     .ToArray()),
             skillResult.Snapshot);
     }
+
+    public IDisposable? AcquirePluginSnapshot(EffectiveToolSnapshot snapshot) =>
+        _plugins?.AcquireSnapshotLease(snapshot);
+
+    public Task StopAsync(CancellationToken cancellationToken) =>
+        _plugins?.StopAsync(cancellationToken) ?? Task.CompletedTask;
 }
 
 internal sealed partial class SkillCatalog(

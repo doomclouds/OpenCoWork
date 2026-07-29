@@ -207,11 +207,25 @@ internal sealed class ToolInvocationPipeline : IToolInvocationPipeline
         Record(ToolInvocationStage.BindingAvailabilityLease);
         if (!_runtime.TryResolveBinding(
                 registration.RuntimeBindingId,
+                registration.BindingGeneration,
                 out var binding) ||
             binding is null ||
             binding.Availability != ToolBindingAvailability.Available ||
             binding.DefaultTimeout <= TimeSpan.Zero)
         {
+            if (_runtime.TryResolveBinding(
+                    registration.RuntimeBindingId,
+                    out var current) &&
+                current is not null &&
+                current.Generation != registration.BindingGeneration)
+            {
+                return await RejectAsync(
+                    context,
+                    sink,
+                    ToolErrorCodes.BindingGenerationMismatch,
+                    "Runtime binding generation no longer matches the frozen snapshot.");
+            }
+
             return await RejectAsync(
                 context,
                 sink,
@@ -227,15 +241,6 @@ internal sealed class ToolInvocationPipeline : IToolInvocationPipeline
                 sink,
                 ToolErrorCodes.LeaseExpired,
                 "Runtime binding lease has expired.");
-        }
-
-        if (binding.Generation != registration.BindingGeneration)
-        {
-            return await RejectAsync(
-                context,
-                sink,
-                ToolErrorCodes.BindingGenerationMismatch,
-                "Runtime binding generation no longer matches the frozen snapshot.");
         }
 
         if (!binding.IsTrusted)

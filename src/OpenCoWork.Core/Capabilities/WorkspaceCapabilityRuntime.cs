@@ -26,9 +26,19 @@ public static class OpenCoWorkCapabilityExtensions
                 serviceProvider.GetRequiredService<CapabilityPersistencePaths>(),
                 serviceProvider.GetRequiredService<CapabilityFileStore>()));
         services.TryAddSingleton(serviceProvider =>
+            new PluginPackageStore(
+                serviceProvider.GetRequiredService<CapabilityPersistencePaths>()));
+        services.TryAddSingleton(serviceProvider =>
+            new PluginRuntime(
+                serviceProvider.GetRequiredService<CapabilityPersistencePaths>(),
+                serviceProvider.GetRequiredService<CapabilityFileStore>(),
+                serviceProvider.GetRequiredService<PluginPackageStore>(),
+                serviceProvider.GetRequiredService<ToolRuntime>()));
+        services.TryAddSingleton(serviceProvider =>
             new WorkspaceCapabilityDiscovery(
                 serviceProvider.GetRequiredService<SkillCatalog>(),
-                serviceProvider.GetRequiredService<ProviderDeclarationCatalog>()));
+                serviceProvider.GetRequiredService<ProviderDeclarationCatalog>(),
+                serviceProvider.GetRequiredService<PluginRuntime>()));
         services.TryAddSingleton(serviceProvider =>
             new WorkspaceCapabilityRuntime(
             [
@@ -38,6 +48,11 @@ public static class OpenCoWorkCapabilityExtensions
                     .CreateCoreContributions(),
             ],
             serviceProvider.GetRequiredService<WorkspaceCapabilityDiscovery>()));
+        services.TryAddSingleton(serviceProvider =>
+            new PluginManager(
+                serviceProvider.GetRequiredService<PluginPackageStore>(),
+                serviceProvider.GetRequiredService<CapabilityFileStore>(),
+                serviceProvider.GetRequiredService<WorkspaceCapabilityRuntime>()));
         return services;
     }
 }
@@ -150,6 +165,35 @@ public sealed class WorkspaceCapabilityRuntime
         }
     }
 
+    internal async Task<CapabilityCatalog> RefreshDiscoveredAsync(
+        CancellationToken cancellationToken = default)
+    {
+        if (_discovery is null)
+        {
+            throw Unavailable("Capability discovery is unavailable.");
+        }
+
+        await _lifecycleLock.WaitAsync(cancellationToken);
+        try
+        {
+            EnsureAvailable("refresh discovery");
+            var discovered = await _discovery.DiscoverAsync(cancellationToken);
+            var candidate = BuildCandidate(
+                _coreContributions.Concat(discovered.Contributions));
+            Publish(
+                candidate.IsDegraded
+                    ? CapabilityRuntimeState.Degraded
+                    : CapabilityRuntimeState.Ready,
+                candidate.Items,
+                discovered.Skills);
+            return CurrentCatalog;
+        }
+        finally
+        {
+            _lifecycleLock.Release();
+        }
+    }
+
     public async Task StopAsync(CancellationToken cancellationToken = default)
     {
         await _lifecycleLock.WaitAsync(cancellationToken);
@@ -169,7 +213,20 @@ public sealed class WorkspaceCapabilityRuntime
             }
 
             SetStatus(CapabilityRuntimeState.Stopping);
-            Publish(CapabilityRuntimeState.Stopped, CurrentCatalog.Items);
+            try
+            {
+                if (_discovery is not null)
+                {
+                    await _discovery.StopAsync(cancellationToken);
+                }
+
+                Publish(CapabilityRuntimeState.Stopped, CurrentCatalog.Items);
+            }
+            catch
+            {
+                SetStatus(CapabilityRuntimeState.Faulted);
+                throw;
+            }
         }
         finally
         {
@@ -197,6 +254,19 @@ public sealed class WorkspaceCapabilityRuntime
         lock (_leaseGate)
         {
             return _activeLeases.GetValueOrDefault(revision);
+        }
+    }
+
+    internal IDisposable? AcquirePluginSnapshot(EffectiveToolSnapshot snapshot)
+    {
+        ArgumentNullException.ThrowIfNull(snapshot);
+        try
+        {
+            return _discovery?.AcquirePluginSnapshot(snapshot);
+        }
+        catch (PluginPackageException exception)
+        {
+            throw Unavailable(exception.Message);
         }
     }
 
