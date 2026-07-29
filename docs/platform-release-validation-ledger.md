@@ -51,7 +51,7 @@ Passed`，不得把目标平台状态改为 `Passed`。M10 必须在最终发布
 | M5 OpenCoWork Wire Alpha | `win-x64` | Passed | `9cf7e1e366d04fd63ac55906924ea0dde630321d` + Source/Test Patch SHA-256 `848ec5c02b1ef9be5afc7d9e1ffeccfa74539d3d2978b09fa9aa6f96438b1725` | Windows 11 Home `10.0.26200` x64；.NET SDK `10.0.302`；Runtime `10.0.10` | 280 项离线测试、Release build 0/0、App/TestClient `win-x64` 发布目录真实运行；Wire stdio、ACP v1、loopback WebSocket Bearer Header、重连去重、慢读端、业务取消、Secret Canary 与子进程回收全部通过 | [M5 交付归档](superpowers/archives/2026-07/2026-07-28-open-cowork-m5-wire-alpha-archives.md) |
 | M5 OpenCoWork Wire Alpha | `osx-arm64` | Passed | 产品基线 `882efd9c22e2323060d23938501191dcc409b981` | Apple Silicon macOS 26.5.2 (`25F84`)；.NET SDK `10.0.302`；Runtime `10.0.10` | 280 项离线测试、Release build 0/0、App/TestClient Mach-O arm64 发布目录真实运行；Wire stdio、ACP v1、loopback WebSocket Bearer Header、重连去重、慢读端、业务取消、Secret Canary 与子进程回收全部通过 | [M5 实施计划 Outcome 6](superpowers/plans/2026-07-28-open-cowork-m5-wire-alpha-implementation-plan.md) |
 | M6 Capability Ecosystem | `win-x64` | Passed | `b25d2153805c5df158c3dde0d512f31107abdaa5` + Source/Test Patch SHA-256 `40c1dce1bacda69817b725086694c0ca34052924fbd04de5eb386a4edb55d7cb` | Windows 11 Home `10.0.26200` x64；.NET SDK `10.0.302`；Runtime `10.0.10`；Git `2.50.1.windows.1` | 373 项离线测试、Release build 0/0、App/TestClient `win-x64` 发布目录真实运行；Wire 1.0/1.1、ACP、Credential Manager、动态工具、Git、Memory、隐藏 Terminal、WebSocket、进程树与 Secret Canary 通过 | [M6 交付归档](superpowers/archives/2026-07/2026-07-29-open-cowork-m6-capability-ecosystem-archives.md) |
-| M6 Capability Ecosystem | `osx-arm64` | Passed | `1cf56423c147a8dcf9caea911930cd4708759fa0` + Source/Test Patch SHA-256 `cd5af8c5f1d6eeb7b7fef55c598dd28a4e42de7e08d5141b898d8ebb7fd6fd46` | Apple Silicon macOS 26.5.2 (`25F84`)；.NET SDK `10.0.302`；Runtime `10.0.10` | 372 项离线测试、Release build 0/0、App/TestClient Mach-O arm64 发布目录真实运行；Wire 1.0/1.1、ACP、Keychain、动态工具、Git、Memory、Terminal、WebSocket、进程树与 Secret Canary 通过 | [M6 交付归档](superpowers/archives/2026-07/2026-07-29-open-cowork-m6-capability-ecosystem-archives.md) |
+| M6 Capability Ecosystem | `osx-arm64` | Passed | `16768f490077585285a288e2fab01a425416ff51` | Apple Silicon macOS 26.5.2 (`25F84`)；.NET SDK `10.0.302`；Runtime `10.0.10` | 373 项离线测试、Release build 0/0、App/TestClient Mach-O arm64 发布目录真实运行；Wire 1.0/1.1、ACP、Keychain、动态工具、Git、Memory、Terminal、WebSocket、进程树与 Secret Canary 通过 | [M6 交付归档](superpowers/archives/2026-07/2026-07-29-open-cowork-m6-capability-ecosystem-archives.md) |
 | M10 OpenCoWork 1.0 Closure | `win-x64` | Pending | 最终发布候选待定 | 待登记 | 安装、升级、迁移、恢复、安全、性能、签名和完整发布候选验收 | [Runtime 1.0 里程碑](milestones/2026-07/open-cowork-runtime-1-0/README.md) |
 | M10 OpenCoWork 1.0 Closure | `osx-arm64` | Pending | 最终发布候选待定 | 待登记 | 安装、升级、迁移、恢复、安全、性能、签名/公证和完整发布候选验收 | [Runtime 1.0 里程碑](milestones/2026-07/open-cowork-runtime-1-0/README.md) |
 
@@ -99,14 +99,15 @@ Passed`，不得把目标平台状态改为 `Passed`。M10 必须在最终发布
 - `M5-ACC-002` 已由 `Planned` 改为 `Passed`，M5 为
   `9 Passed / 0 Planned`，交付归档和里程碑 Slice 已关闭。
 
-## M6 双平台验证结果（2026-07-29）
+## M6 双平台验证结果（Windows 2026-07-29；macOS 复验 2026-07-30）
 
-- macOS 验证源码基线为 `1cf56423c147a8dcf9caea911930cd4708759fa0` 加
-  Source/Test Patch SHA-256
-  `cd5af8c5f1d6eeb7b7fef55c598dd28a4e42de7e08d5141b898d8ebb7fd6fd46`；
-  Windows 基线为 `b25d2153805c5df158c3dde0d512f31107abdaa5` 加 Source/Test
-  Patch SHA-256
+- macOS 已于 2026-07-30 在包含 Windows 修正的提交
+  `16768f490077585285a288e2fab01a425416ff51` 上重新验证；Windows 基线为
+  `b25d2153805c5df158c3dde0d512f31107abdaa5` 加 Source/Test Patch SHA-256
   `40c1dce1bacda69817b725086694c0ca34052924fbd04de5eb386a4edb55d7cb`。
+- macOS `dotnet build OpenCoWork.slnx -c Release --no-restore` 为
+  `0` warning / `0` error；Architecture `5`、Core `298`、Generators `15`、
+  Integration `32`、Protocol `23`，合计 `373` passed / `0` failed。
 - Windows `dotnet build OpenCoWork.slnx -c Release --no-restore -m:1` 为
   `0` warning / `0` error；Architecture `5`、Core `298`、Generators `15`、
   Integration `32`、Protocol `23`，合计 `373` passed / `0` failed。真实
@@ -117,9 +118,10 @@ Passed`，不得把目标平台状态改为 `Passed`。M10 必须在最终发布
 - TestClient 通过 Wire 1.1 对 macOS Keychain 执行随机 Secret 的 set/clear；
   退出后 Terminal 子进程树已回收，协议、日志和工作区 Secret 扫描零命中。
 - `osx-arm64` App DLL SHA-256 为
-  `142cce81ec09cd88cf9a5b647be0cc24a820e88d67aa736e06c871958d3fee95`，
+  `bcf6a70b27541dc0fd2d10ed0c0269c232ec72fd136e45c0334c2e0116c03456`，
   TestClient DLL 为
-  `8c66598770fe6a128dd9ff103574c8bd49b40a0ba31309b8d8cf2e1c62117329`。
+  `e144ddac63c978adcb3cb448d6f057ebc57bb4106c79ecabebd0e56bee190781`；
+  TestClient 退出后未发现该发布目录的 App 残留进程。
 - Windows 发布目录 TestClient 在 `11.247` 秒内返回
   `passed: true`，通过 `wire-stdio-reconnect-cancel`、
   `wire-11-catalog-dynamic-memory-git-terminal-cleanup`、

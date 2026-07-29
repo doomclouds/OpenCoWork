@@ -37,8 +37,10 @@ LSP、Hooks 与动态能力可以被确定性发现、授信、冻结、调用�
 - App/TestClient `win-x64` framework-dependent 发布目录通过 Wire
   stdio/1.1、ACP v1、WebSocket、Credential Manager、Git、Memory、隐藏终端、
   动态工具、Secret Canary 与持久进程残留检查。
-- Apple Silicon macOS 26.5.2 基线完成 `372` 项离线测试及 App/TestClient
-  `osx-arm64` 发布目录 Keychain、Git、Memory、Terminal、Wire 与进程树验收。
+- Apple Silicon macOS 26.5.2 于 2026-07-30 在包含 Windows 修正的提交
+  `16768f490077585285a288e2fab01a425416ff51` 上完成 Release build
+  `0` warning / `0` error、`373` 项离线测试及 App/TestClient `osx-arm64`
+  发布目录 Keychain、Git、Memory、Terminal、Wire 与进程树复验。
 - `M6-ACC-001` 至 `M6-ACC-010` 全部为 `Passed`；M10 仍须在最终发布候选上
   重跑完整双平台验收。
 
