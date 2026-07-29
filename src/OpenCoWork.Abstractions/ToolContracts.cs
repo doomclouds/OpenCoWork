@@ -134,6 +134,19 @@ public static class DynamicToolErrorCodes
     public const string LeaseExpired = "dynamicTool.leaseExpired";
 }
 
+public static class BackgroundTerminalErrorCodes
+{
+    public const string SessionConflict = "terminal.sessionConflict";
+    public const string LimitExceeded = "terminal.limitExceeded";
+    public const string Lost = "terminal.lost";
+    public const string ResetRequired = "terminal.resetRequired";
+}
+
+public static class WorkspaceMemoryErrorCodes
+{
+    public const string VersionConflict = "memory.versionConflict";
+}
+
 public static class McpToolErrorCodes
 {
     public const string Disconnected = "mcp.disconnected";

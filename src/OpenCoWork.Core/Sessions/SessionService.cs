@@ -9,6 +9,7 @@ using Microsoft.Data.Sqlite;
 using OpenCoWork.Abstractions;
 using OpenCoWork.Core.Configuration;
 using OpenCoWork.Core.State;
+using OpenCoWork.Core.Tools;
 
 namespace OpenCoWork.Core.Sessions;
 
@@ -26,6 +27,7 @@ internal sealed partial class SessionService : ISessionService
     private readonly SessionEventChannel _eventChannel;
     private readonly TimeProvider _timeProvider;
     private readonly Func<string, string, SessionError?>? _providerModelValidator;
+    private readonly BackgroundTerminalRuntime? _terminal;
     private readonly ConcurrentDictionary<Guid, ThreadSnapshot> _snapshots = [];
     private readonly ConcurrentDictionary<Guid, SemaphoreSlim> _threadGates = [];
     private readonly ConcurrentDictionary<Guid, SemaphoreSlim> _idempotencyGates = [];
@@ -46,7 +48,8 @@ internal sealed partial class SessionService : ISessionService
         string? executorKind = null,
         Action<SessionExecutionFaultPoint>? executionFaultInjector = null,
         Action<SessionRecoveryFaultPoint>? recoveryFaultInjector = null,
-        Func<string, string, SessionError?>? providerModelValidator = null)
+        Func<string, string, SessionError?>? providerModelValidator = null,
+        BackgroundTerminalRuntime? terminal = null)
     {
         ArgumentNullException.ThrowIfNull(stateRuntime);
         ArgumentNullException.ThrowIfNull(journal);
@@ -63,6 +66,7 @@ internal sealed partial class SessionService : ISessionService
         _executionFaultInjector = executionFaultInjector;
         _recoveryFaultInjector = recoveryFaultInjector;
         _providerModelValidator = providerModelValidator;
+        _terminal = terminal;
     }
 
     public async Task<SessionCommandResult<ThreadSnapshot>> CreateThreadAsync(

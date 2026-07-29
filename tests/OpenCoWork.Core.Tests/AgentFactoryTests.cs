@@ -478,7 +478,7 @@ public sealed class AgentFactoryTests
             Assert.Single(
                 first.Messages,
                 message => message.Content == "Current question");
-            Assert.Equal(11, first.Tools.Count);
+            Assert.Equal(22, first.Tools.Count);
             Assert.NotNull(first.Snapshot.Tools);
             Assert.Equal(capabilities.CurrentCatalog.Revision, first.Snapshot.CapabilityRevision);
             Assert.Empty(first.Snapshot.Skills!.Items);

@@ -862,6 +862,14 @@ internal sealed partial class SessionService
                         thread.CurrentSequence);
                 }
 
+                if (eventType == SessionEventType.ThreadArchived &&
+                    _terminal is not null)
+                {
+                    await _terminal.StopThreadAsync(
+                        request.ThreadId,
+                        cancellationToken);
+                }
+
                 var timestamp = _timeProvider.GetUtcNow();
                 var nextThread = CopySnapshot(
                     thread,
@@ -1114,6 +1122,11 @@ internal sealed partial class SessionService
         ThreadDeletionRecoveryIntent intent,
         CancellationToken cancellationToken)
     {
+        if (_terminal is not null)
+        {
+            await _terminal.StopThreadAsync(intent.ThreadId, cancellationToken);
+        }
+
         await _journal.WriteDeletionRecoveryIntentAsync(intent, cancellationToken);
         await _projection.MarkDeletingAsync(intent.ThreadId, cancellationToken);
         _recoveryFaultInjector?.Invoke(

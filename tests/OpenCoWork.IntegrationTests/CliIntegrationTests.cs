@@ -102,6 +102,7 @@ public sealed class CliIntegrationTests
                     "paths",
                     "configuration",
                     "sqlite",
+                    "memory",
                     "trust",
                 ],
                 document.RootElement

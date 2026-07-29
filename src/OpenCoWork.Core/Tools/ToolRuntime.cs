@@ -65,7 +65,9 @@ internal sealed partial class ToolRuntime
             fileTools: null,
             shellTool: null,
             webTool: null,
-            sourceControl: null))
+            sourceControl: null,
+            terminal: null,
+            memory: null))
     {
     }
 
@@ -83,6 +85,16 @@ internal sealed partial class ToolRuntime
         OpenCoWorkPaths paths,
         ModelsConfig? models,
         CoreSourceControlTool? sourceControl)
+        : this(paths, models, sourceControl, terminal: null, memory: null)
+    {
+    }
+
+    internal ToolRuntime(
+        OpenCoWorkPaths paths,
+        ModelsConfig? models,
+        CoreSourceControlTool? sourceControl,
+        BackgroundTerminalRuntime? terminal,
+        WorkspaceMemoryRuntime? memory)
         : this(CreateCoreTools(
             new CoreFileTools(paths),
             new CoreShellTool(
@@ -91,7 +103,9 @@ internal sealed partial class ToolRuntime
                     .Select(provider => provider.ApiKey.Environment) ??
                 []),
             new CoreWebTool(),
-            sourceControl))
+            sourceControl,
+            terminal,
+            memory))
     {
     }
 
@@ -1000,7 +1014,9 @@ internal sealed partial class ToolRuntime
         CoreFileTools? fileTools,
         CoreShellTool? shellTool,
         CoreWebTool? webTool,
-        CoreSourceControlTool? sourceControl)
+        CoreSourceControlTool? sourceControl,
+        BackgroundTerminalRuntime? terminal,
+        WorkspaceMemoryRuntime? memory)
     {
         var registrations = new List<ToolRegistration>();
         var bindings = new List<ToolRuntimeBinding>();
@@ -1118,6 +1134,121 @@ internal sealed partial class ToolRuntime
             TimeSpan.FromSeconds(30),
             PlaceholderExecutor,
             SkillLoadAsync);
+        Add(
+            "memory.list",
+            new ToolName("memory", "list"),
+            "List Workspace Memory metadata.",
+            """
+            {
+              "$schema":"https://json-schema.org/draft/2020-12/schema",
+              "type":"object",
+              "properties":{
+                "includeArchived":{"type":"boolean"},
+                "limit":{"type":"integer","minimum":1,"maximum":50}
+              },
+              "additionalProperties":false
+            }
+            """,
+            ToolEffect.WorkspaceRead,
+            ToolReplaySafety.Safe,
+            TimeSpan.FromSeconds(30),
+            memory is null ? PlaceholderExecutor : memory.ListAsync,
+            audience: ToolInvocationAudience.Model | ToolInvocationAudience.Host);
+        Add(
+            "memory.search",
+            new ToolName("memory", "search"),
+            "Search Workspace Memory titles, summaries, and tags.",
+            """
+            {
+              "$schema":"https://json-schema.org/draft/2020-12/schema",
+              "type":"object",
+              "properties":{
+                "query":{"type":"string","minLength":1,"maxLength":256},
+                "includeArchived":{"type":"boolean"},
+                "limit":{"type":"integer","minimum":1,"maximum":50}
+              },
+              "required":["query"],
+              "additionalProperties":false
+            }
+            """,
+            ToolEffect.WorkspaceRead,
+            ToolReplaySafety.Safe,
+            TimeSpan.FromSeconds(30),
+            memory is null ? PlaceholderExecutor : memory.SearchAsync,
+            audience: ToolInvocationAudience.Model | ToolInvocationAudience.Host);
+        Add(
+            "memory.read",
+            new ToolName("memory", "read"),
+            "Read one immutable Workspace Memory version.",
+            """
+            {
+              "$schema":"https://json-schema.org/draft/2020-12/schema",
+              "type":"object",
+              "properties":{
+                "memoryId":{"type":"string","minLength":1},
+                "version":{"type":"integer","minimum":1}
+              },
+              "required":["memoryId"],
+              "additionalProperties":false
+            }
+            """,
+            ToolEffect.WorkspaceRead,
+            ToolReplaySafety.Safe,
+            TimeSpan.FromSeconds(30),
+            memory is null ? PlaceholderExecutor : memory.ReadAsync,
+            audience: ToolInvocationAudience.Model | ToolInvocationAudience.Host);
+        Add(
+            "memory.write",
+            new ToolName("memory", "write"),
+            "Write a new immutable Workspace Memory version.",
+            """
+            {
+              "$schema":"https://json-schema.org/draft/2020-12/schema",
+              "type":"object",
+              "properties":{
+                "memoryId":{"type":"string","minLength":1},
+                "expectedVersion":{"type":"integer","minimum":0},
+                "title":{"type":"string","minLength":1,"maxLength":256},
+                "summary":{"type":"string","maxLength":2048},
+                "tags":{
+                  "type":"array",
+                  "maxItems":32,
+                  "items":{"type":"string","minLength":1,"maxLength":64}
+                },
+                "body":{"type":"string","maxLength":65536}
+              },
+              "required":[
+                "memoryId","expectedVersion","title","summary","tags","body"
+              ],
+              "additionalProperties":false
+            }
+            """,
+            ToolEffect.WorkspaceRead | ToolEffect.WorkspaceWrite,
+            ToolReplaySafety.Unsafe,
+            TimeSpan.FromSeconds(30),
+            memory is null ? PlaceholderExecutor : memory.WriteAsync,
+            audience: ToolInvocationAudience.Model | ToolInvocationAudience.Host);
+        Add(
+            "memory.archive",
+            new ToolName("memory", "archive"),
+            "Archive Workspace Memory metadata without deleting content.",
+            """
+            {
+              "$schema":"https://json-schema.org/draft/2020-12/schema",
+              "type":"object",
+              "properties":{
+                "memoryId":{"type":"string","minLength":1},
+                "expectedVersion":{"type":"integer","minimum":1}
+              },
+              "required":["memoryId","expectedVersion"],
+              "additionalProperties":false
+            }
+            """,
+            ToolEffect.WorkspaceRead | ToolEffect.WorkspaceWrite,
+            ToolReplaySafety.Unsafe,
+            TimeSpan.FromSeconds(30),
+            memory is null ? PlaceholderExecutor : memory.ArchiveAsync,
+            audience: ToolInvocationAudience.Model | ToolInvocationAudience.Host);
         Add(
             "tool.search",
             new ToolName("tool", "search"),
@@ -1243,6 +1374,147 @@ internal sealed partial class ToolRuntime
                 ? PlaceholderExecutor
                 : sourceControl.ShowAsync,
             audience: ToolInvocationAudience.Model | ToolInvocationAudience.Host);
+        Add(
+            "terminal.start",
+            new ToolName("terminal", "start"),
+            "Start one bounded Thread-scoped background process.",
+            """
+            {
+              "$schema":"https://json-schema.org/draft/2020-12/schema",
+              "type":"object",
+              "properties":{
+                "sessionId":{"type":"string","minLength":1},
+                "command":{"type":"string","minLength":1,"maxLength":4096},
+                "arguments":{
+                  "type":"array",
+                  "maxItems":128,
+                  "items":{"type":"string","maxLength":4096}
+                },
+                "workingDirectory":{"type":"string","minLength":1},
+                "maxDurationSeconds":{
+                  "type":"integer","minimum":1,"maximum":3600
+                }
+              },
+              "required":[
+                "sessionId","command","arguments","maxDurationSeconds"
+              ],
+              "additionalProperties":false
+            }
+            """,
+            ToolEffect.WorkspaceRead |
+            ToolEffect.WorkspaceWrite |
+            ToolEffect.ProcessExecution |
+            ToolEffect.NetworkRead |
+            ToolEffect.ExternalMutation,
+            ToolReplaySafety.Unsafe,
+            TimeSpan.FromSeconds(30),
+            PlaceholderExecutor,
+            terminal is null ? null : terminal.StartAsync,
+            ToolInvocationAudience.Model | ToolInvocationAudience.Host);
+        Add(
+            "terminal.list",
+            new ToolName("terminal", "list"),
+            "List Background Terminal metadata for the current Thread.",
+            """
+            {
+              "$schema":"https://json-schema.org/draft/2020-12/schema",
+              "type":"object",
+              "additionalProperties":false
+            }
+            """,
+            ToolEffect.None,
+            ToolReplaySafety.Safe,
+            TimeSpan.FromSeconds(30),
+            PlaceholderExecutor,
+            terminal is null ? null : terminal.ListAsync,
+            ToolInvocationAudience.Model | ToolInvocationAudience.Host);
+        Add(
+            "terminal.read",
+            new ToolName("terminal", "read"),
+            "Read bounded Background Terminal output by monotonic offset.",
+            """
+            {
+              "$schema":"https://json-schema.org/draft/2020-12/schema",
+              "type":"object",
+              "properties":{
+                "sessionId":{"type":"string","minLength":1},
+                "offset":{"type":"integer","minimum":0},
+                "maxBytes":{"type":"integer","minimum":4096,"maximum":131072}
+              },
+              "required":["sessionId","offset"],
+              "additionalProperties":false
+            }
+            """,
+            ToolEffect.None,
+            ToolReplaySafety.Safe,
+            TimeSpan.FromSeconds(30),
+            PlaceholderExecutor,
+            terminal is null ? null : terminal.ReadAsync,
+            ToolInvocationAudience.Model | ToolInvocationAudience.Host);
+        Add(
+            "terminal.write",
+            new ToolName("terminal", "write"),
+            "Write bounded UTF-8 input to a running Background Terminal.",
+            """
+            {
+              "$schema":"https://json-schema.org/draft/2020-12/schema",
+              "type":"object",
+              "properties":{
+                "sessionId":{"type":"string","minLength":1},
+                "input":{"type":"string","maxLength":65536}
+              },
+              "required":["sessionId","input"],
+              "additionalProperties":false
+            }
+            """,
+            ToolEffect.WorkspaceRead |
+            ToolEffect.WorkspaceWrite |
+            ToolEffect.ProcessExecution |
+            ToolEffect.NetworkRead |
+            ToolEffect.ExternalMutation,
+            ToolReplaySafety.Unsafe,
+            TimeSpan.FromSeconds(30),
+            PlaceholderExecutor,
+            terminal is null ? null : terminal.WriteAsync,
+            ToolInvocationAudience.Model | ToolInvocationAudience.Host);
+        Add(
+            "terminal.stop",
+            new ToolName("terminal", "stop"),
+            "Stop a Background Terminal process tree.",
+            """
+            {
+              "$schema":"https://json-schema.org/draft/2020-12/schema",
+              "type":"object",
+              "properties":{"sessionId":{"type":"string","minLength":1}},
+              "required":["sessionId"],
+              "additionalProperties":false
+            }
+            """,
+            ToolEffect.ProcessExecution | ToolEffect.ExternalMutation,
+            ToolReplaySafety.Unsafe,
+            TimeSpan.FromSeconds(30),
+            PlaceholderExecutor,
+            terminal is null ? null : terminal.StopAsync,
+            ToolInvocationAudience.Model | ToolInvocationAudience.Host);
+        Add(
+            "terminal.release",
+            new ToolName("terminal", "release"),
+            "Release stopped Background Terminal metadata.",
+            """
+            {
+              "$schema":"https://json-schema.org/draft/2020-12/schema",
+              "type":"object",
+              "properties":{"sessionId":{"type":"string","minLength":1}},
+              "required":["sessionId"],
+              "additionalProperties":false
+            }
+            """,
+            ToolEffect.ExternalMutation,
+            ToolReplaySafety.Unsafe,
+            TimeSpan.FromSeconds(30),
+            PlaceholderExecutor,
+            terminal is null ? null : terminal.ReleaseAsync,
+            ToolInvocationAudience.Model | ToolInvocationAudience.Host);
         return new CoreTools(registrations, bindings);
 
         void Add(

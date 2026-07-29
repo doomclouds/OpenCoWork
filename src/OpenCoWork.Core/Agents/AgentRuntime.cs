@@ -39,7 +39,9 @@ public static class OpenCoWorkAgentExtensions
             new ToolRuntime(
                 serviceProvider.GetRequiredService<OpenCoWorkPaths>(),
                 serviceProvider.GetRequiredService<ModelsConfig>(),
-                serviceProvider.GetService<CoreSourceControlTool>()));
+                serviceProvider.GetService<CoreSourceControlTool>(),
+                serviceProvider.GetService<BackgroundTerminalRuntime>(),
+                serviceProvider.GetService<WorkspaceMemoryRuntime>()));
         services.TryAddSingleton(serviceProvider =>
         {
             var snapshot =

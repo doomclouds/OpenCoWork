@@ -23,12 +23,23 @@ public sealed class ToolSnapshotTests
                 "file.list",
                 "file.read",
                 "file.write",
+                "memory.archive",
+                "memory.list",
+                "memory.read",
+                "memory.search",
+                "memory.write",
                 "shell.run",
                 "skill.load",
                 "source_control.diff",
                 "source_control.log",
                 "source_control.show",
                 "source_control.status",
+                "terminal.list",
+                "terminal.read",
+                "terminal.release",
+                "terminal.start",
+                "terminal.stop",
+                "terminal.write",
                 "tool.search",
                 "web.fetch",
             ],
@@ -42,14 +53,30 @@ public sealed class ToolSnapshotTests
                 ToolReplaySafety.Safe,
                 ToolReplaySafety.Safe,
                 ToolReplaySafety.Safe,
+                ToolReplaySafety.Unsafe,
+                ToolReplaySafety.Unsafe,
                 ToolReplaySafety.Safe,
                 ToolReplaySafety.Safe,
+                ToolReplaySafety.Safe,
+                ToolReplaySafety.Safe,
+                ToolReplaySafety.Safe,
+                ToolReplaySafety.Safe,
+                ToolReplaySafety.Safe,
+                ToolReplaySafety.Unsafe,
+                ToolReplaySafety.Unsafe,
+                ToolReplaySafety.Unsafe,
+                ToolReplaySafety.Unsafe,
                 ToolReplaySafety.Safe,
                 ToolReplaySafety.Unsafe,
             ],
             first.Registrations.Select(item => item.Definition.ReplaySafety));
         Assert.Equal(
             [
+                ToolEffect.WorkspaceRead,
+                ToolEffect.WorkspaceRead,
+                ToolEffect.WorkspaceRead | ToolEffect.WorkspaceWrite,
+                ToolEffect.WorkspaceRead | ToolEffect.WorkspaceWrite,
+                ToolEffect.WorkspaceRead,
                 ToolEffect.WorkspaceRead,
                 ToolEffect.WorkspaceRead,
                 ToolEffect.WorkspaceRead | ToolEffect.WorkspaceWrite,
@@ -64,6 +91,20 @@ public sealed class ToolSnapshotTests
                 ToolEffect.WorkspaceRead | ToolEffect.ProcessExecution,
                 ToolEffect.WorkspaceRead | ToolEffect.ProcessExecution,
                 ToolEffect.None,
+                ToolEffect.None,
+                ToolEffect.ExternalMutation,
+                ToolEffect.WorkspaceRead |
+                ToolEffect.WorkspaceWrite |
+                ToolEffect.ProcessExecution |
+                ToolEffect.NetworkRead |
+                ToolEffect.ExternalMutation,
+                ToolEffect.ProcessExecution | ToolEffect.ExternalMutation,
+                ToolEffect.WorkspaceRead |
+                ToolEffect.WorkspaceWrite |
+                ToolEffect.ProcessExecution |
+                ToolEffect.NetworkRead |
+                ToolEffect.ExternalMutation,
+                ToolEffect.None,
                 ToolEffect.NetworkRead,
             ],
             first.Registrations.Select(item => item.Definition.Effects));
@@ -75,7 +116,8 @@ public sealed class ToolSnapshotTests
                 Assert.Equal("opencowork.core", item.Definition.Id.SourceId);
                 Assert.Equal(ToolExposure.Direct, item.Exposure);
                 Assert.Equal(
-                    item.Definition.Name.Namespace == "source_control"
+                    item.Definition.Name.Namespace is
+                        "source_control" or "terminal" or "memory"
                         ? ToolInvocationAudience.Model | ToolInvocationAudience.Host
                         : ToolInvocationAudience.Model,
                     item.Audience);
@@ -85,12 +127,23 @@ public sealed class ToolSnapshotTests
                 "file__list",
                 "file__read",
                 "file__write",
+                "memory__archive",
+                "memory__list",
+                "memory__read",
+                "memory__search",
+                "memory__write",
                 "shell__run",
                 "skill__load",
                 "source_control__diff",
                 "source_control__log",
                 "source_control__show",
                 "source_control__status",
+                "terminal__list",
+                "terminal__read",
+                "terminal__release",
+                "terminal__start",
+                "terminal__stop",
+                "terminal__write",
                 "tool__search",
                 "web__fetch",
             ],
@@ -139,7 +192,7 @@ public sealed class ToolSnapshotTests
                     new ToolsConfig()),
                 TestContext.Current.CancellationToken)));
 
-        Assert.All(snapshots, snapshot => Assert.Equal(11, snapshot.Registrations.Count));
+        Assert.All(snapshots, snapshot => Assert.Equal(22, snapshot.Registrations.Count));
         Assert.Single(snapshots.Select(snapshot => snapshot.SnapshotSha256).Distinct());
     }
 
@@ -169,18 +222,38 @@ public sealed class ToolSnapshotTests
             });
 
         Assert.Equal(
-            ["file.list", "file.read", "skill.load", "tool.search", "web.fetch"],
+            [
+                "file.list",
+                "file.read",
+                "memory.list",
+                "memory.read",
+                "memory.search",
+                "skill.load",
+                "terminal.list",
+                "terminal.read",
+                "tool.search",
+                "web.fetch",
+            ],
             plan.Registrations.Select(CanonicalName));
         Assert.Equal(
             [
                 "file.list",
                 "file.read",
                 "file.write",
+                "memory.archive",
+                "memory.list",
+                "memory.read",
+                "memory.search",
+                "memory.write",
                 "skill.load",
                 "source_control.diff",
                 "source_control.log",
                 "source_control.show",
                 "source_control.status",
+                "terminal.list",
+                "terminal.read",
+                "terminal.release",
+                "terminal.stop",
                 "tool.search",
             ],
             networkDenied.Registrations.Select(CanonicalName));

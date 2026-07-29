@@ -6,10 +6,12 @@ using System.Security.AccessControl;
 using System.Security.Principal;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using Microsoft.Data.Sqlite;
 using OpenCoWork.Abstractions;
 using OpenCoWork.Core.Configuration;
 using OpenCoWork.Core.Logging;
 using OpenCoWork.Core.State;
+using OpenCoWork.Core.Tools;
 using OpenCoWork.Core.Workspaces;
 
 namespace OpenCoWork.Core.Diagnostics;
@@ -98,7 +100,7 @@ public static class DiagnosticRunner
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(request);
-        var checks = new List<DiagnosticCheck>(7);
+        var checks = new List<DiagnosticCheck>(8);
         checks.Add(await CheckRuntimeAsync(request.StartupDirectory, cancellationToken));
         checks.Add(CheckPlatform());
 
@@ -126,14 +128,22 @@ public static class DiagnosticRunner
 
         if (config?.Snapshot is not null)
         {
-            checks.Add(await CheckSqliteAsync(
+            var sqlite = await CheckSqliteAsync(
                 paths!,
                 config.Snapshot,
-                cancellationToken));
+                cancellationToken);
+            checks.Add(sqlite);
+            checks.Add(sqlite.Status == DiagnosticStatus.Passed
+                ? await CheckMemoryAsync(
+                    paths!,
+                    config.Snapshot,
+                    cancellationToken)
+                : Skipped("memory", "SQLite state is unavailable."));
         }
         else
         {
             checks.Add(Skipped("sqlite", "Effective configuration is unavailable."));
+            checks.Add(Skipped("memory", "Effective configuration is unavailable."));
         }
 
         checks.Add(CheckTrust(request.UserProfileDirectory));
@@ -347,6 +357,32 @@ public static class DiagnosticRunner
             exception is not OperationCanceledException)
         {
             return Failed("sqlite", exception.Message);
+        }
+    }
+
+    private static async Task<DiagnosticCheck> CheckMemoryAsync(
+        OpenCoWorkPaths paths,
+        EffectiveConfigSnapshot config,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var runtime = config.GetRequiredSection<RuntimeConfig>();
+            var state = new StateRuntime(paths, runtime.State.BusyTimeout);
+            var orphans = await new WorkspaceMemoryRuntime(paths, state)
+                .FindOrphanBlobNamesAsync(cancellationToken);
+            return orphans.Count == 0
+                ? Passed("memory", "Workspace Memory has no orphan blobs.")
+                : Warning(
+                    "memory",
+                    $"Workspace Memory has {orphans.Count} orphan blob(s).");
+        }
+        catch (Exception exception) when (
+            exception is SqliteException or IOException or UnauthorizedAccessException)
+        {
+            return Failed(
+                "memory",
+                $"Unable to inspect Workspace Memory: {exception.Message}");
         }
     }
 

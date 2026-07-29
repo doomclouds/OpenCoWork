@@ -3,7 +3,9 @@ using Microsoft.Extensions.DependencyInjection.Extensions;
 using OpenCoWork.Abstractions;
 using OpenCoWork.Core.Agents;
 using OpenCoWork.Core.Configuration;
+using OpenCoWork.Core.Logging;
 using OpenCoWork.Core.State;
+using OpenCoWork.Core.Tools;
 using OpenCoWork.Core.Workspaces;
 
 namespace OpenCoWork.Core.Sessions;
@@ -23,6 +25,15 @@ public static class OpenCoWorkSessionExtensions
             new StateRuntime(
                 serviceProvider.GetRequiredService<OpenCoWorkPaths>(),
                 serviceProvider.GetRequiredService<RuntimeConfig>().State.BusyTimeout));
+        services.TryAddSingleton(serviceProvider =>
+            new BackgroundTerminalRuntime(
+                serviceProvider.GetRequiredService<OpenCoWorkPaths>(),
+                serviceProvider.GetRequiredService<StateRuntime>(),
+                serviceProvider.GetRequiredService<SecretRedactor>()));
+        services.TryAddSingleton(serviceProvider =>
+            new WorkspaceMemoryRuntime(
+                serviceProvider.GetRequiredService<OpenCoWorkPaths>(),
+                serviceProvider.GetRequiredService<StateRuntime>()));
         services.TryAddSingleton<ThreadJournal>();
         services.TryAddSingleton<SessionProjection>();
         services.TryAddSingleton(serviceProvider =>
@@ -56,7 +67,8 @@ public static class OpenCoWorkSessionExtensions
                 serviceProvider.GetRequiredService<TimeProvider>(),
                 executor,
                 executor?.GetType().FullName,
-                providerModelValidator: validateProviderModel);
+                providerModelValidator: validateProviderModel,
+                terminal: serviceProvider.GetService<BackgroundTerminalRuntime>());
         });
         services.TryAddSingleton<ISessionService>(serviceProvider =>
             serviceProvider.GetRequiredService<SessionService>());
@@ -64,7 +76,8 @@ public static class OpenCoWorkSessionExtensions
             new SessionRuntime(
                 serviceProvider.GetRequiredService<StateRuntime>(),
                 serviceProvider.GetRequiredService<SessionService>(),
-                serviceProvider.GetRequiredService<SessionProjection>()));
+                serviceProvider.GetRequiredService<SessionProjection>(),
+                serviceProvider.GetService<BackgroundTerminalRuntime>()));
         return services;
     }
 }
@@ -74,16 +87,19 @@ public sealed class SessionRuntime
     private readonly StateRuntime _stateRuntime;
     private readonly SessionService _service;
     private readonly SessionProjection _projection;
+    private readonly BackgroundTerminalRuntime? _terminal;
     private IReadOnlyList<Guid> _recoveryRequiredThreadIds = [];
 
     internal SessionRuntime(
         StateRuntime stateRuntime,
         SessionService service,
-        SessionProjection projection)
+        SessionProjection projection,
+        BackgroundTerminalRuntime? terminal = null)
     {
         _stateRuntime = stateRuntime;
         _service = service;
         _projection = projection;
+        _terminal = terminal;
     }
 
     public bool IsDegraded => _projection.State == SessionProjectionState.Degraded;
@@ -94,14 +110,52 @@ public sealed class SessionRuntime
     public async Task StartAsync(CancellationToken cancellationToken = default)
     {
         await _stateRuntime.InitializeAsync(cancellationToken);
+        if (_terminal is not null)
+        {
+            await _terminal.InitializeAsync(cancellationToken);
+        }
+
         _recoveryRequiredThreadIds =
             await _service.StartRuntimeAsync(cancellationToken);
     }
 
     public async Task StopAsync(CancellationToken cancellationToken = default)
     {
-        await _service.StopRuntimeAsync(cancellationToken);
-        await _stateRuntime.CheckpointAsync(cancellationToken);
+        var errors = new List<Exception>();
+        try
+        {
+            if (_terminal is not null)
+            {
+                await _terminal.StopAllAsync(CancellationToken.None);
+            }
+        }
+        catch (Exception exception)
+        {
+            errors.Add(exception);
+        }
+
+        try
+        {
+            await _service.StopRuntimeAsync(cancellationToken);
+        }
+        catch (Exception exception)
+        {
+            errors.Add(exception);
+        }
+
+        try
+        {
+            await _stateRuntime.CheckpointAsync(cancellationToken);
+        }
+        catch (Exception exception)
+        {
+            errors.Add(exception);
+        }
+
+        if (errors.Count != 0)
+        {
+            throw new AggregateException("Session runtime cleanup failed.", errors);
+        }
     }
 }
 
