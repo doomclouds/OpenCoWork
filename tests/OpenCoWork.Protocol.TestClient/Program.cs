@@ -59,6 +59,12 @@ internal static class ProtocolTestClient
                 secret,
                 dynamicProvider,
                 transcript);
+            stage = "Wire 1.2 CoWork";
+            var cowork = await RunCoWorkWireAsync(
+                server,
+                workspace,
+                secret,
+                transcript);
             stage = "ACP";
             var acp = await RunAcpAsync(
                 server,
@@ -85,6 +91,7 @@ internal static class ProtocolTestClient
                 {
                     wire,
                     capabilities,
+                    cowork,
                     acp,
                     websocket,
                     "secret-canary",
@@ -106,6 +113,69 @@ internal static class ProtocolTestClient
         {
             TryDelete(workspace);
         }
+    }
+
+    private static async Task<string> RunCoWorkWireAsync(
+        string server,
+        string workspace,
+        string secret,
+        ConcurrentQueue<string> transcript)
+    {
+        await using var client = StartLineClient(
+            server,
+            workspace,
+            secret,
+            transcript,
+            "app-server");
+        var initialized = await InitializeWire12Async(client, workspace);
+        Require(
+            initialized.GetProperty("result").GetProperty("wireVersion")
+                .GetString() == "1.2",
+            "Wire 1.2 negotiation failed.");
+
+        var listed = await client.RequestAsync(
+            2,
+            "agent/profile/list",
+            new { pageSize = 100 });
+        Require(
+            listed.GetProperty("result").GetProperty("coWorkRevision")
+                .GetInt64() >= 0,
+            "CoWork revision was not projected.");
+
+        var commandId = Guid.CreateVersion7();
+        var request = new
+        {
+            commandId,
+            expectedRevision = (long?)null,
+            profileId = (Guid?)null,
+            name = "M7 Wire Profile",
+            description = "Wire 1.2 black-box profile.",
+            instructions = "Return concise results.",
+            providerId = "m5-test",
+            modelId = "qwen3.8-max-preview",
+            skillAllowlist = Array.Empty<string>(),
+            toolAllowlist = Array.Empty<string>(),
+        };
+        var created = await client.RequestAsync(
+            3,
+            "agent/profile/upsert",
+            request);
+        var replayed = await client.RequestAsync(
+            4,
+            "agent/profile/upsert",
+            request);
+        Require(
+            created.GetProperty("result").GetProperty("coWorkRevision")
+                .GetInt64() ==
+            replayed.GetProperty("result").GetProperty("coWorkRevision")
+                .GetInt64(),
+            "CoWork command replay changed the revision.");
+        Require(
+            client.Messages.Count(message =>
+                message.TryGetProperty("method", out var method) &&
+                method.GetString() == "agent/changed") == 1,
+            "CoWork command replay duplicated its notification.");
+        return "wire-12-cowork-idempotency-notification";
     }
 
     private static async Task<string> RunCapabilityWireAsync(
@@ -782,6 +852,19 @@ internal static class ProtocolTestClient
                     "serverRequests",
                     "dynamicToolExecution",
                 },
+            });
+
+    private static Task<JsonElement> InitializeWire12Async(
+        LineClient client,
+        string workspace) =>
+        client.RequestAsync(
+            1,
+            "initialize",
+            new
+            {
+                client = new { name = "m7-test-client", version = "1" },
+                wireVersions = new[] { "1.2", "1.1", "1.0" },
+                workspace = new { path = workspace },
             });
 
     private static async Task InitializeWorkspaceAsync(

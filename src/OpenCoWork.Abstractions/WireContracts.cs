@@ -5,7 +5,8 @@ namespace OpenCoWork.Abstractions;
 public static class OpenCoWorkWire
 {
     public const string Version = "1.0";
-    public const string LatestVersion = "1.1";
+    public const string CapabilityVersion = "1.1";
+    public const string LatestVersion = "1.2";
     public const string ClientToServer = "clientToServer";
     public const string ServerToClient = "serverToClient";
     public const string SessionOwner = "session";

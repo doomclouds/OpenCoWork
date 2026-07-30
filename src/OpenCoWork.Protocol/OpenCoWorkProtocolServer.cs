@@ -35,6 +35,7 @@ public static class OpenCoWorkProtocolServer
         RunStdioAsync(
             sessions,
             capabilities: null,
+            coWork: null,
             workspacePath,
             input,
             output,
@@ -43,6 +44,23 @@ public static class OpenCoWorkProtocolServer
     public static Task RunStdioAsync(
         ISessionService sessions,
         ICapabilityService? capabilities,
+        string workspacePath,
+        Stream input,
+        Stream output,
+        CancellationToken cancellationToken = default) =>
+        RunStdioAsync(
+            sessions,
+            capabilities,
+            coWork: null,
+            workspacePath,
+            input,
+            output,
+            cancellationToken);
+
+    public static Task RunStdioAsync(
+        ISessionService sessions,
+        ICapabilityService? capabilities,
+        ICoWorkService? coWork,
         string workspacePath,
         Stream input,
         Stream output,
@@ -61,6 +79,7 @@ public static class OpenCoWorkProtocolServer
             send => new OpenCoWorkJsonRpcConnection(
                 sessions,
                 capabilities,
+                coWork,
                 workspacePath,
                 "stdio",
                 send),
@@ -78,6 +97,7 @@ public static class OpenCoWorkProtocolServer
         RunJsonLinesAsync(
             sessions,
             capabilities: null,
+            coWork: null,
             workspacePath,
             input,
             output,
@@ -86,6 +106,23 @@ public static class OpenCoWorkProtocolServer
     public static Task RunJsonLinesAsync(
         ISessionService sessions,
         ICapabilityService? capabilities,
+        string workspacePath,
+        TextReader input,
+        TextWriter output,
+        CancellationToken cancellationToken = default) =>
+        RunJsonLinesAsync(
+            sessions,
+            capabilities,
+            coWork: null,
+            workspacePath,
+            input,
+            output,
+            cancellationToken);
+
+    public static Task RunJsonLinesAsync(
+        ISessionService sessions,
+        ICapabilityService? capabilities,
+        ICoWorkService? coWork,
         string workspacePath,
         TextReader input,
         TextWriter output,
@@ -104,6 +141,7 @@ public static class OpenCoWorkProtocolServer
             send => new OpenCoWorkJsonRpcConnection(
                 sessions,
                 capabilities,
+                coWork,
                 workspacePath,
                 "stdio",
                 send),
@@ -181,6 +219,7 @@ public static class OpenCoWorkProtocolServer
         await RunWebSocketAsync(
             sessions,
             capabilities: null,
+            coWork: null,
             workspacePath,
             port,
             bearerToken,
@@ -189,6 +228,23 @@ public static class OpenCoWorkProtocolServer
     public static async Task RunWebSocketAsync(
         ISessionService sessions,
         ICapabilityService? capabilities,
+        string workspacePath,
+        int port,
+        string bearerToken,
+        CancellationToken cancellationToken = default) =>
+        await RunWebSocketAsync(
+            sessions,
+            capabilities,
+            coWork: null,
+            workspacePath,
+            port,
+            bearerToken,
+            cancellationToken);
+
+    public static async Task RunWebSocketAsync(
+        ISessionService sessions,
+        ICapabilityService? capabilities,
+        ICoWorkService? coWork,
         string workspacePath,
         int port,
         string bearerToken,
@@ -245,6 +301,7 @@ public static class OpenCoWorkProtocolServer
                         send => new OpenCoWorkJsonRpcConnection(
                             sessions,
                             capabilities,
+                            coWork,
                             workspacePath,
                             "websocket",
                             send),

@@ -27,10 +27,14 @@ public sealed class TeamsModule : IOpenCoWorkModule
         services.TryAddSingleton<ICoWorkService>(serviceProvider =>
             serviceProvider.GetRequiredService<CoWorkService>());
         services.AddSingleton(serviceProvider =>
-            new CoWorkModuleRuntime(
-                serviceProvider.GetService<IWorkspaceStateStore>() is null
+            CoWorkModuleRuntime.Create(
+                () => serviceProvider.GetService<IWorkspaceStateStore>() is null
                     ? null
                     : serviceProvider.GetRequiredService<CoWorkService>()));
+        services.AddSingleton(serviceProvider =>
+            CoWorkToolCatalog.Create(
+                () => serviceProvider.GetRequiredService<ICoWorkService>(),
+                serviceProvider.GetRequiredService<CoWorkModuleRuntime>()));
     }
 
     public ValueTask StartAsync(
@@ -46,10 +50,24 @@ public sealed class TeamsModule : IOpenCoWorkModule
             .StopAsync(cancellationToken);
 }
 
-public sealed class CoWorkModuleRuntime(CoWorkService? service)
+public sealed class CoWorkModuleRuntime
 {
-    private readonly CoWorkService? _service = service;
+    private readonly Func<CoWorkService?> _service;
+    private CoWorkService? _runningService;
     private int _bindingAvailability = (int)ToolBindingAvailability.Unavailable;
+
+    public CoWorkModuleRuntime(CoWorkService? service)
+        : this(() => service)
+    {
+    }
+
+    private CoWorkModuleRuntime(Func<CoWorkService?> service)
+    {
+        _service = service ?? throw new ArgumentNullException(nameof(service));
+    }
+
+    internal static CoWorkModuleRuntime Create(Func<CoWorkService?> service) =>
+        new(service);
 
     public ToolBindingAvailability BindingAvailability =>
         (ToolBindingAvailability)Volatile.Read(ref _bindingAvailability);
@@ -57,10 +75,12 @@ public sealed class CoWorkModuleRuntime(CoWorkService? service)
     internal async ValueTask StartAsync(CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        if (_service is not null)
+        var service = _service();
+        if (service is not null)
         {
-            await _service.StartReconcilerAsync(cancellationToken);
+            await service.StartReconcilerAsync(cancellationToken);
         }
+        _runningService = service;
         Volatile.Write(
             ref _bindingAvailability,
             (int)ToolBindingAvailability.Available);
@@ -71,9 +91,11 @@ public sealed class CoWorkModuleRuntime(CoWorkService? service)
         Volatile.Write(
             ref _bindingAvailability,
             (int)ToolBindingAvailability.Unavailable);
-        if (_service is not null)
+        var service = _runningService;
+        _runningService = null;
+        if (service is not null)
         {
-            await _service.StopReconcilerAsync(cancellationToken);
+            await service.StopReconcilerAsync(cancellationToken);
         }
     }
 }

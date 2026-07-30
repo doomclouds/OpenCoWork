@@ -33,7 +33,7 @@ public sealed class ProtocolProcessIntegrationTests
         """;
 
     [Fact]
-    public async Task App_server_stdio_is_a_protocol_only_child_process()
+    public async Task App_server_stdio_exposes_wire_12_cowork()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var root = Path.Combine(
@@ -77,7 +77,7 @@ public sealed class ProtocolProcessIntegrationTests
                     @params = new
                     {
                         client = new { name = "test", version = "1" },
-                        wireVersions = new[] { "1.0" },
+                        wireVersions = new[] { "1.2", "1.1", "1.0" },
                         workspace = new { path = root },
                     },
                 }));
@@ -92,7 +92,7 @@ public sealed class ProtocolProcessIntegrationTests
 
             using var initialized = JsonDocument.Parse(initializeLine);
             Assert.Equal(
-                "1.0",
+                "1.2",
                 initialized.RootElement
                     .GetProperty("result")
                     .GetProperty("wireVersion")
@@ -116,6 +116,56 @@ public sealed class ProtocolProcessIntegrationTests
                     .GetProperty("result")
                     .GetProperty("threads")
                     .EnumerateArray());
+
+            var commandId = Guid.CreateVersion7();
+            var upsert = new
+            {
+                commandId,
+                expectedRevision = (long?)null,
+                profileId = (Guid?)null,
+                name = "M7 Process Profile",
+                description = "Wire 1.2 process test.",
+                instructions = "Return concise results.",
+                providerId = "test",
+                modelId = "qwen3.8-max-preview",
+                skillAllowlist = Array.Empty<string>(),
+                toolAllowlist = Array.Empty<string>(),
+            };
+            var outOfBand = new List<JsonElement>();
+            await process.StandardInput.WriteLineAsync(JsonSerializer.Serialize(new
+            {
+                jsonrpc = "2.0",
+                id = 3,
+                method = "agent/profile/upsert",
+                @params = upsert,
+            }));
+            await process.StandardInput.FlushAsync(cancellationToken);
+            var created = await ReadResponseAsync(
+                process,
+                id: 3,
+                cancellationToken,
+                outOfBand);
+            await process.StandardInput.WriteLineAsync(JsonSerializer.Serialize(new
+            {
+                jsonrpc = "2.0",
+                id = 4,
+                method = "agent/profile/upsert",
+                @params = upsert,
+            }));
+            await process.StandardInput.FlushAsync(cancellationToken);
+            var replayed = await ReadResponseAsync(
+                process,
+                id: 4,
+                cancellationToken,
+                outOfBand);
+            Assert.Equal(
+                created.GetProperty("result").GetProperty("coWorkRevision")
+                    .GetInt64(),
+                replayed.GetProperty("result").GetProperty("coWorkRevision")
+                    .GetInt64());
+            Assert.Single(outOfBand, message =>
+                message.TryGetProperty("method", out var method) &&
+                method.GetString() == "agent/changed");
 
             process.StandardInput.Close();
             await process.WaitForExitAsync(cancellationToken);
@@ -256,7 +306,8 @@ public sealed class ProtocolProcessIntegrationTests
     private static async Task<JsonElement> ReadResponseAsync(
         Process process,
         int id,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        ICollection<JsonElement>? outOfBand = null)
     {
         while (true)
         {
@@ -275,6 +326,8 @@ public sealed class ProtocolProcessIntegrationTests
             {
                 return message;
             }
+
+            outOfBand?.Add(message);
         }
     }
 }

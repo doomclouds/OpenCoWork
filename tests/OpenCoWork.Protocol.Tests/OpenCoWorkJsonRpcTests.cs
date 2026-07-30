@@ -166,7 +166,7 @@ public sealed class OpenCoWorkJsonRpcTests
                 BindingFlags.NonPublic))
             .Select(method => method
                 .GetCustomAttribute<OpenCoWorkWireMethodAttribute>())
-            .Where(attribute => attribute?.Since == OpenCoWorkWire.LatestVersion)
+            .Where(attribute => attribute?.Since == OpenCoWorkWire.CapabilityVersion)
             .Cast<OpenCoWorkWireMethodAttribute>()
             .ToArray();
         var methods = declarations.Select(attribute => attribute.Method).ToArray();

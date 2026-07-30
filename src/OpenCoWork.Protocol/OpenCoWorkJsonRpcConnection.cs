@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Globalization;
+using System.Reflection;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -7,7 +8,7 @@ using OpenCoWork.Abstractions;
 
 namespace OpenCoWork.Protocol;
 
-public sealed class OpenCoWorkJsonRpcConnection : IAsyncDisposable
+public sealed partial class OpenCoWorkJsonRpcConnection : IAsyncDisposable
 {
     private const int ParseError = -32700;
     private const int InvalidRequest = -32600;
@@ -28,10 +29,34 @@ public sealed class OpenCoWorkJsonRpcConnection : IAsyncDisposable
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
         UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow,
         MaxDepth = 64,
+        Converters =
+        {
+            new JsonStringEnumConverter(
+                JsonNamingPolicy.CamelCase,
+                allowIntegerValues: false),
+        },
     };
+    private static readonly IReadOnlyDictionary<string, string> ClientMethodVersions =
+        typeof(OpenCoWorkJsonRpcConnection).Assembly
+            .GetTypes()
+            .SelectMany(type => type.GetMethods(
+                BindingFlags.Instance |
+                BindingFlags.Static |
+                BindingFlags.Public |
+                BindingFlags.NonPublic))
+            .Select(method => method
+                .GetCustomAttribute<OpenCoWorkWireMethodAttribute>())
+            .Where(attribute =>
+                attribute?.Direction == OpenCoWorkWire.ClientToServer)
+            .Cast<OpenCoWorkWireMethodAttribute>()
+            .ToDictionary(
+                attribute => attribute.Method,
+                attribute => attribute.Since,
+                StringComparer.Ordinal);
 
     private readonly ISessionService _sessions;
     private readonly ICapabilityService? _capabilities;
+    private readonly ICoWorkService? _coWork;
     private readonly string _workspacePath;
     private readonly string _transport;
     private readonly Func<ReadOnlyMemory<byte>, CancellationToken, ValueTask> _send;
@@ -52,13 +77,30 @@ public sealed class OpenCoWorkJsonRpcConnection : IAsyncDisposable
         string workspacePath,
         string transport,
         Func<ReadOnlyMemory<byte>, CancellationToken, ValueTask> send)
-        : this(sessions, capabilities: null, workspacePath, transport, send)
+        : this(
+            sessions,
+            capabilities: null,
+            coWork: null,
+            workspacePath,
+            transport,
+            send)
     {
     }
 
     public OpenCoWorkJsonRpcConnection(
         ISessionService sessions,
         ICapabilityService? capabilities,
+        string workspacePath,
+        string transport,
+        Func<ReadOnlyMemory<byte>, CancellationToken, ValueTask> send)
+        : this(sessions, capabilities, coWork: null, workspacePath, transport, send)
+    {
+    }
+
+    public OpenCoWorkJsonRpcConnection(
+        ISessionService sessions,
+        ICapabilityService? capabilities,
+        ICoWorkService? coWork,
         string workspacePath,
         string transport,
         Func<ReadOnlyMemory<byte>, CancellationToken, ValueTask> send)
@@ -69,6 +111,7 @@ public sealed class OpenCoWorkJsonRpcConnection : IAsyncDisposable
         ArgumentNullException.ThrowIfNull(send);
         _sessions = sessions;
         _capabilities = capabilities;
+        _coWork = coWork;
         _workspacePath = Path.GetFullPath(workspacePath);
         _transport = transport;
         _send = send;
@@ -204,6 +247,7 @@ public sealed class OpenCoWorkJsonRpcConnection : IAsyncDisposable
                             IsRetryable: false));
                 }
 
+                EnsureMethodAvailable(method);
                 result = await DispatchAsync(method, parameters, effectiveToken);
             }
 
@@ -232,6 +276,7 @@ public sealed class OpenCoWorkJsonRpcConnection : IAsyncDisposable
                     id,
                     exception.Error,
                     exception.CurrentSequence,
+                    exception.CurrentRevision,
                     correlationId,
                     cancellationToken);
             }
@@ -356,11 +401,16 @@ public sealed class OpenCoWorkJsonRpcConnection : IAsyncDisposable
         ArgumentNullException.ThrowIfNull(request.WireVersions);
         ArgumentException.ThrowIfNullOrWhiteSpace(request.Workspace.Path);
         var wireVersion =
-            _capabilities is not null &&
+            _coWork is not null &&
             request.WireVersions.Contains(
                 OpenCoWorkWire.LatestVersion,
                 StringComparer.Ordinal)
                 ? OpenCoWorkWire.LatestVersion
+                : _capabilities is not null &&
+            request.WireVersions.Contains(
+                OpenCoWorkWire.CapabilityVersion,
+                StringComparer.Ordinal)
+                ? OpenCoWorkWire.CapabilityVersion
                 : request.WireVersions.Contains(
                     OpenCoWorkWire.Version,
                     StringComparer.Ordinal)
@@ -404,29 +454,41 @@ public sealed class OpenCoWorkJsonRpcConnection : IAsyncDisposable
         var dynamicToolExecution =
             _clientCapabilities.Contains("serverRequests") &&
             _clientCapabilities.Contains("dynamicToolExecution");
-        if (wireVersion == OpenCoWorkWire.LatestVersion &&
+        if (SupportsCapabilityWire(wireVersion) &&
+            _capabilities is not null &&
             Interlocked.CompareExchange(ref _capabilitySubscribed, 1, 0) == 0)
         {
             _capabilities!.CatalogChanged += OnCapabilityCatalogChanged;
+        }
+
+        var serverCapabilities = new List<string>
+        {
+            "requestCancellation",
+            "semanticEvents",
+            "threadSubscriptions",
+        };
+        if (SupportsCapabilityWire(wireVersion) && _capabilities is not null)
+        {
+            serverCapabilities.Add("capabilityCatalog");
+            serverCapabilities.Add("capabilityNotifications");
+            if (dynamicToolExecution)
+            {
+                serverCapabilities.Add("serverRequests");
+                serverCapabilities.Add("dynamicToolExecution");
+            }
+        }
+
+        if (wireVersion == OpenCoWorkWire.LatestVersion)
+        {
+            serverCapabilities.Add("coWorkManagement");
+            serverCapabilities.Add("coWorkNotifications");
         }
 
         return new WireInitializeResponse(
             new WireServerInfo("OpenCoWork", wireVersion),
             wireVersion,
             new WireWorkspaceInfo(_workspacePath),
-            wireVersion == OpenCoWorkWire.LatestVersion
-                ?
-                [
-                    "requestCancellation",
-                    "semanticEvents",
-                    "threadSubscriptions",
-                    "capabilityCatalog",
-                    "capabilityNotifications",
-                    .. dynamicToolExecution
-                        ? new[] { "serverRequests", "dynamicToolExecution" }
-                        : [],
-                ]
-                : ["requestCancellation", "semanticEvents", "threadSubscriptions"],
+            [.. serverCapabilities],
             new WireProtocolLimits(
                 OpenCoWorkWire.MaximumMessageBytes,
                 OpenCoWorkWire.MaximumInputBytes,
@@ -434,6 +496,26 @@ public sealed class OpenCoWorkJsonRpcConnection : IAsyncDisposable
             _transport,
             correlationId);
     }
+
+    private void EnsureMethodAvailable(string method)
+    {
+        if (ClientMethodVersions.TryGetValue(method, out var since) &&
+            VersionRank(_wireVersion) < VersionRank(since))
+        {
+            throw new WireMethodNotFoundException();
+        }
+    }
+
+    private static bool SupportsCapabilityWire(string version) =>
+        VersionRank(version) >= VersionRank(OpenCoWorkWire.CapabilityVersion);
+
+    private static int VersionRank(string version) => version switch
+    {
+        OpenCoWorkWire.Version => 0,
+        OpenCoWorkWire.CapabilityVersion => 1,
+        OpenCoWorkWire.LatestVersion => 2,
+        _ => -1,
+    };
 
     private async Task<object> DispatchAsync(
         string method,
@@ -656,6 +738,126 @@ public sealed class OpenCoWorkJsonRpcConnection : IAsyncDisposable
             "tool/dynamic/unregister" => await UnregisterDynamicToolAsync(
                 Deserialize<WireDynamicToolUnregisterRequest>(parameters),
                 cancellationToken),
+            "agent/profile/list" => await ListAgentProfilesAsync(
+                Deserialize<WireListAgentProfilesRequest>(parameters),
+                cancellationToken),
+            "agent/profile/get" => await GetAgentProfileAsync(
+                Deserialize<WireGetAgentProfileRequest>(parameters),
+                cancellationToken),
+            "agent/profile/upsert" => await UpsertAgentProfileAsync(
+                Deserialize<WireUpsertAgentProfileRequest>(parameters),
+                cancellationToken),
+            "agent/profile/setEnabled" => await SetAgentProfileEnabledAsync(
+                Deserialize<WireSetAgentProfileEnabledRequest>(parameters),
+                cancellationToken),
+            "team/list" => await ListTeamsAsync(
+                Deserialize<WireListTeamsRequest>(parameters),
+                cancellationToken),
+            "team/get" => await GetTeamAsync(
+                Deserialize<WireGetTeamRequest>(parameters),
+                cancellationToken),
+            "team/upsert" => await UpsertTeamAsync(
+                Deserialize<WireUpsertTeamRequest>(parameters),
+                cancellationToken),
+            "team/setEnabled" => await SetTeamEnabledAsync(
+                Deserialize<WireSetTeamEnabledRequest>(parameters),
+                cancellationToken),
+            "subagent/spawn" => await SpawnSubAgentAsync(
+                Deserialize<WireSpawnSubAgentRequest>(parameters),
+                cancellationToken),
+            "subagent/children" => await ListSubAgentChildrenAsync(
+                Deserialize<WireSubAgentQueryRequest>(parameters),
+                cancellationToken),
+            "subagent/list" => await ListSubAgentsAsync(
+                Deserialize<WireSubAgentQueryRequest>(parameters),
+                cancellationToken),
+            "subagent/send" => await SendSubAgentMessageAsync(
+                Deserialize<WireSendSubAgentMessageRequest>(parameters),
+                cancellationToken),
+            "subagent/followup" => await FollowUpSubAgentAsync(
+                Deserialize<WireFollowUpSubAgentRequest>(parameters),
+                cancellationToken),
+            "subagent/cancel" => await CancelSubAgentAsync(
+                Deserialize<WireCancelSubAgentRequest>(parameters),
+                cancellationToken),
+            "mission/create" => await CreateMissionAsync(
+                Deserialize<WireCreateMissionRequest>(parameters),
+                cancellationToken),
+            "mission/list" => await ListMissionsAsync(
+                Deserialize<WireListMissionsRequest>(parameters),
+                cancellationToken),
+            "mission/get" => await GetMissionAsync(
+                Deserialize<WireGetMissionRequest>(parameters),
+                cancellationToken),
+            "mission/activate" => await ActivateMissionAsync(
+                Deserialize<WireMissionCommandRequest>(parameters),
+                cancellationToken),
+            "mission/cancel" => await CancelMissionAsync(
+                Deserialize<WireMissionCommandRequest>(parameters),
+                cancellationToken),
+            "mission/task/add" => await AddMissionTaskAsync(
+                Deserialize<WireAddMissionTaskRequest>(parameters),
+                cancellationToken),
+            "mission/task/update" => await UpdateMissionTaskAsync(
+                Deserialize<WireUpdateMissionTaskRequest>(parameters),
+                cancellationToken),
+            "mission/task/remove" => await RemoveMissionTaskAsync(
+                Deserialize<WireMissionTaskCommandRequest>(parameters),
+                cancellationToken),
+            "mission/task/block" => await BlockMissionTaskAsync(
+                Deserialize<WireBlockMissionTaskRequest>(parameters),
+                cancellationToken),
+            "mission/task/unblock" => await UnblockMissionTaskAsync(
+                Deserialize<WireMissionTaskCommandRequest>(parameters),
+                cancellationToken),
+            "mission/task/retry" => await RetryMissionTaskAsync(
+                Deserialize<WireMissionTaskCommandRequest>(parameters),
+                cancellationToken),
+            "mission/task/reassign" => await ReassignMissionTaskAsync(
+                Deserialize<WireReassignMissionTaskRequest>(parameters),
+                cancellationToken),
+            "mission/task/waive" => await WaiveMissionTaskAsync(
+                Deserialize<WireMissionTaskCommandRequest>(parameters),
+                cancellationToken),
+            "mission/task/review" => await ReviewMissionTaskAsync(
+                Deserialize<WireReviewMissionTaskRequest>(parameters),
+                cancellationToken),
+            "mailbox/list" => await ListMailboxMessagesAsync(
+                Deserialize<WireListMailboxMessagesRequest>(parameters),
+                cancellationToken),
+            "mailbox/send" => await SendMailboxMessageAsync(
+                Deserialize<WireSendMailboxMessageRequest>(parameters),
+                cancellationToken),
+            "mailbox/acknowledge" => await AcknowledgeMailboxMessageAsync(
+                Deserialize<WireMailboxMessageCommandRequest>(parameters),
+                cancellationToken),
+            "mailbox/retry" => await RetryMailboxMessageAsync(
+                Deserialize<WireMailboxMessageCommandRequest>(parameters),
+                cancellationToken),
+            "artifact/list" => await ListArtifactsAsync(
+                Deserialize<WireListArtifactsRequest>(parameters),
+                cancellationToken),
+            "artifact/get" => await GetArtifactAsync(
+                Deserialize<WireGetArtifactRequest>(parameters),
+                cancellationToken),
+            "artifact/publish" => await PublishArtifactAsync(
+                Deserialize<WirePublishArtifactRequest>(parameters),
+                cancellationToken),
+            "artifact/promote" => await PromoteArtifactAsync(
+                Deserialize<WirePromoteArtifactRequest>(parameters),
+                cancellationToken),
+            "worktree/list" => await ListWorktreesAsync(
+                Deserialize<WireListWorktreesRequest>(parameters),
+                cancellationToken),
+            "worktree/get" => await GetWorktreeAsync(
+                Deserialize<WireGetWorktreeRequest>(parameters),
+                cancellationToken),
+            "worktree/handoff" => await HandoffWorktreeAsync(
+                Deserialize<WireWorktreeCommandRequest>(parameters),
+                cancellationToken),
+            "worktree/remove" => await RemoveWorktreeAsync(
+                Deserialize<WireWorktreeCommandRequest>(parameters),
+                cancellationToken),
             _ => throw new WireMethodNotFoundException(),
         };
 
@@ -663,7 +865,7 @@ public sealed class OpenCoWorkJsonRpcConnection : IAsyncDisposable
         "capability/catalog",
         OpenCoWorkWire.ClientToServer,
         OpenCoWorkWire.CapabilityOwner,
-        OpenCoWorkWire.LatestVersion,
+        OpenCoWorkWire.CapabilityVersion,
         typeof(WireCapabilityCatalogRequest),
         typeof(WireCapabilityCatalogResponse),
         OpenCoWorkWire.WorkspaceAuthority,
@@ -690,7 +892,7 @@ public sealed class OpenCoWorkJsonRpcConnection : IAsyncDisposable
         "capability/read",
         OpenCoWorkWire.ClientToServer,
         OpenCoWorkWire.CapabilityOwner,
-        OpenCoWorkWire.LatestVersion,
+        OpenCoWorkWire.CapabilityVersion,
         typeof(WireCapabilityReadRequest),
         typeof(WireCapabilityReadResponse),
         OpenCoWorkWire.WorkspaceAuthority,
@@ -715,7 +917,7 @@ public sealed class OpenCoWorkJsonRpcConnection : IAsyncDisposable
         "capability/refresh",
         OpenCoWorkWire.ClientToServer,
         OpenCoWorkWire.CapabilityOwner,
-        OpenCoWorkWire.LatestVersion,
+        OpenCoWorkWire.CapabilityVersion,
         typeof(WireCapabilityRefreshRequest),
         typeof(WireCapabilityMutationResponse),
         OpenCoWorkWire.WorkspaceAuthority,
@@ -735,7 +937,7 @@ public sealed class OpenCoWorkJsonRpcConnection : IAsyncDisposable
         "capability/setEnabled",
         OpenCoWorkWire.ClientToServer,
         OpenCoWorkWire.CapabilityOwner,
-        OpenCoWorkWire.LatestVersion,
+        OpenCoWorkWire.CapabilityVersion,
         typeof(WireCapabilitySetEnabledRequest),
         typeof(WireCapabilityMutationResponse),
         OpenCoWorkWire.WorkspaceAuthority,
@@ -1740,6 +1942,7 @@ public sealed class OpenCoWorkJsonRpcConnection : IAsyncDisposable
         JsonElement? id,
         SessionError error,
         long? currentSequence,
+        long? currentRevision,
         string correlationId,
         CancellationToken cancellationToken) =>
         SendErrorAsync(
@@ -1750,7 +1953,8 @@ public sealed class OpenCoWorkJsonRpcConnection : IAsyncDisposable
                 error.Code,
                 error.IsRetryable,
                 correlationId,
-            currentSequence),
+                currentSequence,
+                currentRevision),
             cancellationToken);
 
     private ValueTask SendCapabilityErrorAsync(
@@ -1836,7 +2040,7 @@ public sealed class OpenCoWorkJsonRpcConnection : IAsyncDisposable
 
     private void RequireWire11()
     {
-        if (_wireVersion != OpenCoWorkWire.LatestVersion || _capabilities is null)
+        if (!SupportsCapabilityWire(_wireVersion) || _capabilities is null)
         {
             throw new WireMethodNotFoundException();
         }
@@ -2442,11 +2646,14 @@ public sealed class OpenCoWorkJsonRpcConnection : IAsyncDisposable
 
     private sealed class WireRpcException(
         SessionError error,
-        long? currentSequence = null) : Exception
+        long? currentSequence = null,
+        long? currentRevision = null) : Exception
     {
         public SessionError Error { get; } = error;
 
         public long? CurrentSequence { get; } = currentSequence;
+
+        public long? CurrentRevision { get; } = currentRevision;
     }
 
     private sealed class WireMethodNotFoundException : Exception;

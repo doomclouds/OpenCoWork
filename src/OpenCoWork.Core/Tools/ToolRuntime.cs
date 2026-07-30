@@ -26,7 +26,10 @@ internal sealed partial class ToolRuntime
     private const ToolInvocationAudience KnownAudiences =
         ToolInvocationAudience.Model |
         ToolInvocationAudience.Host |
-        ToolInvocationAudience.App;
+        ToolInvocationAudience.App |
+        ToolInvocationAudience.CoWorkLeader |
+        ToolInvocationAudience.CoWorkMember |
+        ToolInvocationAudience.CoWorkDirectParent;
     private static readonly Uri Draft202012Uri =
         new("https://json-schema.org/draft/2020-12/schema", UriKind.Absolute);
     private static readonly HashSet<string> AllowedVocabularies =
@@ -94,18 +97,21 @@ internal sealed partial class ToolRuntime
         ModelsConfig? models,
         CoreSourceControlTool? sourceControl,
         BackgroundTerminalRuntime? terminal,
-        WorkspaceMemoryRuntime? memory)
-        : this(CreateCoreTools(
-            new CoreFileTools(paths),
-            new CoreShellTool(
-                paths,
-                models?.Providers.Values
-                    .Select(provider => provider.ApiKey.Environment) ??
-                []),
-            new CoreWebTool(),
-            sourceControl,
-            terminal,
-            memory))
+        WorkspaceMemoryRuntime? memory,
+        IEnumerable<ToolRegistrationContribution>? contributions = null)
+        : this(Merge(
+            CreateCoreTools(
+                new CoreFileTools(paths),
+                new CoreShellTool(
+                    paths,
+                    models?.Providers.Values
+                        .Select(provider => provider.ApiKey.Environment) ??
+                    []),
+                new CoreWebTool(),
+                sourceControl,
+                terminal,
+                memory),
+            contributions))
     {
     }
 
@@ -157,6 +163,22 @@ internal sealed partial class ToolRuntime
     {
     }
 
+    private static CoreTools Merge(
+        CoreTools core,
+        IEnumerable<ToolRegistrationContribution>? contributions)
+    {
+        var additions = contributions?.ToArray() ?? [];
+        return new CoreTools(
+            [
+                .. core.Registrations,
+                .. additions.SelectMany(item => item.Registrations),
+            ],
+            [
+                .. core.Bindings,
+                .. additions.SelectMany(item => item.Bindings),
+            ]);
+    }
+
     public EffectiveToolSnapshot BuildSnapshot(
         AgentMode effectiveAgentMode,
         ToolsConfig config) =>
@@ -165,7 +187,27 @@ internal sealed partial class ToolRuntime
     internal EffectiveToolSnapshot BuildSnapshot(
         AgentMode effectiveAgentMode,
         ToolsConfig config,
-        Guid? threadId)
+        Guid? threadId) =>
+        BuildSnapshot(effectiveAgentMode, config, threadId, provenance: null);
+
+    internal EffectiveToolSnapshot BuildSnapshot(
+        AgentMode effectiveAgentMode,
+        ToolsConfig config,
+        ThreadSnapshot thread)
+    {
+        ArgumentNullException.ThrowIfNull(thread);
+        return BuildSnapshot(
+            effectiveAgentMode,
+            config,
+            thread.ThreadId,
+            thread.CoWorkProvenance);
+    }
+
+    private EffectiveToolSnapshot BuildSnapshot(
+        AgentMode effectiveAgentMode,
+        ToolsConfig config,
+        Guid? threadId,
+        CoWorkThreadProvenance? provenance)
     {
         ArgumentNullException.ThrowIfNull(config);
         var authority = BuildAuthority(config);
@@ -244,7 +286,16 @@ internal sealed partial class ToolRuntime
         {
             var definition = candidate.Registration.Definition;
             var canonicalName = CanonicalName(definition.Name);
-            if (effectiveAgentMode == AgentMode.Plan &&
+            if (!MatchesCoWorkAudience(
+                    candidate.Registration.Audience,
+                    provenance))
+            {
+                diagnostics.Add(Diagnostic(
+                    ToolErrorCodes.AudienceDenied,
+                    definition.Id,
+                    canonicalName));
+            }
+            else if (effectiveAgentMode == AgentMode.Plan &&
                 (definition.Effects & ~PlanEffects) != 0)
             {
                 diagnostics.Add(Diagnostic(
@@ -317,6 +368,34 @@ internal sealed partial class ToolRuntime
             providerToCanonical,
             orderedDiagnostics,
             snapshotSha256);
+    }
+
+    private static bool MatchesCoWorkAudience(
+        ToolInvocationAudience audience,
+        CoWorkThreadProvenance? provenance)
+    {
+        const ToolInvocationAudience roles =
+            ToolInvocationAudience.CoWorkLeader |
+            ToolInvocationAudience.CoWorkMember |
+            ToolInvocationAudience.CoWorkDirectParent;
+        if ((audience & roles) == 0)
+        {
+            return true;
+        }
+
+        var role = provenance?.RunKind switch
+        {
+            CoWorkAgentRunKind.LeaderPlanning or
+            CoWorkAgentRunKind.LeaderReview or
+            CoWorkAgentRunKind.LeaderSynthesis =>
+                ToolInvocationAudience.CoWorkLeader,
+            CoWorkAgentRunKind.MissionTask =>
+                ToolInvocationAudience.CoWorkMember,
+            CoWorkAgentRunKind.Direct or null =>
+                ToolInvocationAudience.CoWorkDirectParent,
+            _ => (ToolInvocationAudience)0,
+        };
+        return (audience & role) != 0;
     }
 
     public IReadOnlyList<ChatCompletionToolDefinition> CreateProviderDefinitions(

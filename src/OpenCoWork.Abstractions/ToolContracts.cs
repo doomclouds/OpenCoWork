@@ -52,6 +52,9 @@ public enum ToolInvocationAudience
     Model = 1 << 0,
     Host = 1 << 1,
     App = 1 << 2,
+    CoWorkLeader = 1 << 3,
+    CoWorkMember = 1 << 4,
+    CoWorkDirectParent = 1 << 5,
 }
 
 public enum ToolBindingAvailability
@@ -214,6 +217,10 @@ public sealed record ToolRegistration(
     ToolExposure Exposure,
     ToolInvocationAudience Audience,
     long BindingGeneration = 1);
+
+public sealed record ToolRegistrationContribution(
+    IReadOnlyList<ToolRegistration> Registrations,
+    IReadOnlyList<ToolRuntimeBinding> Bindings);
 
 public sealed record ToolSnapshotDiagnostic(
     string Code,

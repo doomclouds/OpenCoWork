@@ -41,7 +41,8 @@ public static class OpenCoWorkAgentExtensions
                 serviceProvider.GetRequiredService<ModelsConfig>(),
                 serviceProvider.GetService<CoreSourceControlTool>(),
                 serviceProvider.GetService<BackgroundTerminalRuntime>(),
-                serviceProvider.GetService<WorkspaceMemoryRuntime>()));
+                serviceProvider.GetService<WorkspaceMemoryRuntime>(),
+                serviceProvider.GetServices<ToolRegistrationContribution>()));
         services.TryAddSingleton(serviceProvider =>
         {
             var snapshot =
@@ -655,7 +656,7 @@ internal sealed class AgentFactory(
                 toolSnapshot = _tools.BuildSnapshot(
                     session.Turn.EffectiveAgentMode,
                     _toolsConfig,
-                    session.Thread.ThreadId);
+                    session.Thread);
             }
             catch (ToolRuntimeException exception)
             {

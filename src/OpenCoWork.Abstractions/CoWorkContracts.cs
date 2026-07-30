@@ -203,7 +203,8 @@ public sealed record CoWorkError(
 public sealed record CoWorkResult<T>(
     T? Value,
     long CoWorkRevision,
-    CoWorkError? Error)
+    CoWorkError? Error,
+    bool IsReplay = false)
 {
     public bool IsSuccess => Error is null;
 }

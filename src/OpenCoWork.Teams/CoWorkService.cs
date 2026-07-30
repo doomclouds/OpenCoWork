@@ -517,7 +517,8 @@ public sealed partial class CoWorkService : ICoWorkService
                                     JsonOptions)
                                 ?? throw InvalidState(
                                     "Stored command result is invalid."),
-                                reader.GetInt64(2));
+                                reader.GetInt64(2),
+                                isReplay: true);
                         }
                     }
 
@@ -893,8 +894,11 @@ public sealed partial class CoWorkService : ICoWorkService
     private long UtcNowMilliseconds() =>
         _timeProvider.GetUtcNow().ToUnixTimeMilliseconds();
 
-    private static CoWorkResult<T> Success<T>(T value, long revision) =>
-        new(value, revision, null);
+    private static CoWorkResult<T> Success<T>(
+        T value,
+        long revision,
+        bool isReplay = false) =>
+        new(value, revision, null, isReplay);
 
     private static bool IsHost(CoWorkActorContext actor) =>
         actor.Kind == CoWorkActorKind.Host &&
