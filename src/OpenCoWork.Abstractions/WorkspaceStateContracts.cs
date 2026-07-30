@@ -67,6 +67,10 @@ public sealed record ManagedWorktreeDescriptor(
 public interface IManagedWorktreeService
 {
     ValueTask<ManagedWorktreeDescriptor> CreateAsync(
+        Guid agentRunId,
+        CancellationToken cancellationToken = default);
+
+    ValueTask<ManagedWorktreeDescriptor> CreateAsync(
         ManagedWorktreeCreateRequest request,
         CancellationToken cancellationToken = default);
 

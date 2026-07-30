@@ -35,6 +35,29 @@ internal sealed partial class ManagedWorktreeService : IManagedWorktreeService
     }
 
     public async ValueTask<ManagedWorktreeDescriptor> CreateAsync(
+        Guid agentRunId,
+        CancellationToken cancellationToken = default)
+    {
+        if (agentRunId == Guid.Empty)
+        {
+            throw new ArgumentException("Agent Run ID is required.", nameof(agentRunId));
+        }
+
+        var executable = await GitExecutableAsync(cancellationToken);
+        var resolvedBase = await RunGitAsync(
+            executable,
+            _paths.WorkspaceRoot,
+            ["rev-parse", "--verify", "HEAD^{commit}"],
+            cancellationToken);
+        EnsureSuccess(resolvedBase, "Origin HEAD is unavailable.");
+        return await CreateAsync(
+            new ManagedWorktreeCreateRequest(
+                agentRunId,
+                resolvedBase.Stdout.Trim()),
+            cancellationToken);
+    }
+
+    public async ValueTask<ManagedWorktreeDescriptor> CreateAsync(
         ManagedWorktreeCreateRequest request,
         CancellationToken cancellationToken = default)
     {

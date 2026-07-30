@@ -1,5 +1,7 @@
 using System.Data.Common;
 using OpenCoWork.Abstractions;
+using OpenCoWork.Core.Configuration;
+using OpenCoWork.Core.Sessions;
 using OpenCoWork.Core.State;
 using OpenCoWork.Core.Workspaces;
 using OpenCoWork.Teams;
@@ -509,14 +511,32 @@ internal sealed class CoWorkTestWorkspace : IAsyncDisposable
     private CoWorkTestWorkspace(
         string root,
         StateRuntime store,
+        SessionService sessions,
         CoWorkService service,
-        Guid originThreadId)
+        Guid originThreadId,
+        ISensitiveDataService sensitiveData,
+        CoWorkConfig config,
+        TimeProvider timeProvider,
+        IManagedWorktreeService worktrees,
+        WorkspaceRuntimeDescriptor workspace)
     {
         Root = root;
         Store = store;
+        Sessions = sessions;
         Service = service;
         OriginThreadId = originThreadId;
+        _sensitiveData = sensitiveData;
+        _config = config;
+        _timeProvider = timeProvider;
+        _worktrees = worktrees;
+        _workspace = workspace;
     }
+
+    private readonly ISensitiveDataService _sensitiveData;
+    private readonly CoWorkConfig _config;
+    private readonly TimeProvider _timeProvider;
+    private readonly IManagedWorktreeService _worktrees;
+    private readonly WorkspaceRuntimeDescriptor _workspace;
 
     public static CoWorkActorContext Host { get; } =
         new(CoWorkActorKind.Host, "integration-test");
@@ -525,62 +545,108 @@ internal sealed class CoWorkTestWorkspace : IAsyncDisposable
 
     public StateRuntime Store { get; }
 
-    public CoWorkService Service { get; }
+    public SessionService Sessions { get; }
+
+    public CoWorkService Service { get; private set; }
 
     public Guid OriginThreadId { get; }
 
     public static async Task<CoWorkTestWorkspace> CreateAsync(
         CoWorkConfig? config = null,
-        string? secret = null)
+        string? secret = null,
+        bool completeAgentRuns = true,
+        TimeProvider? timeProvider = null,
+        Action<CoWorkDispatchFaultPoint>? dispatchFaultInjector = null)
     {
         var root = Path.Combine(
             Path.GetTempPath(),
             $"opencowork-cowork-service-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
+        timeProvider ??= TimeProvider.System;
+        config ??= new CoWorkConfig();
+        var paths = new OpenCoWorkPaths(root);
         var store = new StateRuntime(
-            new OpenCoWorkPaths(root),
+            paths,
             TimeSpan.FromSeconds(2),
             TeamsStateMigrationContributors.Create());
         await store.InitializeAsync(TestContext.Current.CancellationToken);
-        var originThreadId = Guid.CreateVersion7();
-        await store.WriteAsync(
-            async (connection, transaction, token) =>
-            {
-                await using var command = connection.CreateCommand();
-                command.Transaction = transaction;
-                command.CommandText =
-                    """
-                    INSERT INTO threads (
-                        thread_id, display_name, display_name_search,
-                        status, availability, history_mode,
-                        current_sequence, last_applied_sequence,
-                        created_utc, updated_utc, agent_mode)
-                    VALUES (
-                        $threadId, 'origin', 'ORIGIN',
-                        'active', 'available', 'server',
-                        0, 0, 1, 1, 'agent');
-                    """;
-                var parameter = command.CreateParameter();
-                parameter.ParameterName = "$threadId";
-                parameter.Value = originThreadId.ToString();
-                command.Parameters.Add(parameter);
-                await command.ExecuteNonQueryAsync(token);
-                return 0;
-            },
+        var sessions = new SessionService(
+            store,
+            new ThreadJournal(paths),
+            new SessionProjection(store),
+            new SessionConfig(),
+            timeProvider,
+            completeAgentRuns ? new CompletionExecutor() : null,
+            executorKind: completeAgentRuns ? "completion" : null,
+            paths: paths);
+        var origin = await sessions.CreateThreadAsync(
+            new CreateThreadRequest(
+                Guid.CreateVersion7(),
+                ExpectedSequence: 0,
+                DisplayName: "origin"),
             TestContext.Current.CancellationToken);
+        var originThreadId = origin.Value!.ThreadId;
+        var workspace = new WorkspaceRuntimeDescriptor(
+            paths.WorkspaceRoot,
+            paths.OpenCoWorkDirectory,
+            paths.RuntimeDirectory,
+            paths.TeamsRuntimeDirectory,
+            paths.MissionsDirectory,
+            paths.SubAgentsDirectory,
+            paths.WorktreesDirectory);
+        var sensitiveData = new TestSensitiveDataService(secret);
+        var worktrees = new ManagedWorktreeService(paths);
         var service = new CoWorkService(
             store,
-            new TestSensitiveDataService(secret),
-            config ?? new CoWorkConfig(),
-            TimeProvider.System);
-        return new CoWorkTestWorkspace(root, store, service, originThreadId);
+            sensitiveData,
+            config,
+            timeProvider,
+            sessions,
+            worktrees,
+            workspace,
+            dispatchFaultInjector);
+        return new CoWorkTestWorkspace(
+            root,
+            store,
+            sessions,
+            service,
+            originThreadId,
+            sensitiveData,
+            config,
+            timeProvider,
+            worktrees,
+            workspace);
     }
 
-    public ValueTask DisposeAsync()
+    public CoWorkService ReplaceService(
+        Action<CoWorkDispatchFaultPoint>? dispatchFaultInjector = null)
     {
+        Service = new CoWorkService(
+            Store,
+            _sensitiveData,
+            _config,
+            _timeProvider,
+            Sessions,
+            _worktrees,
+            _workspace,
+            dispatchFaultInjector);
+        return Service;
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        await Service.StopReconcilerAsync(CancellationToken.None);
         Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
         Directory.Delete(Root, recursive: true);
-        return ValueTask.CompletedTask;
+    }
+
+    private sealed class CompletionExecutor : ISessionExecutor
+    {
+        public ValueTask ExecuteAsync(
+            AgentSession context,
+            ISessionExecutionSink sink,
+            CancellationToken cancellationToken) =>
+            sink.EmitAsync(new CompleteTurnIntent(), cancellationToken);
     }
 
     private sealed class TestSensitiveDataService(string? secret)

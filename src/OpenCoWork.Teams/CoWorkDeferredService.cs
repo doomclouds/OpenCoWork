@@ -4,36 +4,6 @@ namespace OpenCoWork.Teams;
 
 public sealed partial class CoWorkService
 {
-    public Task<CoWorkResult<AgentRunSnapshot>> SpawnSubAgentAsync(
-        SpawnSubAgentRequest request,
-        CancellationToken cancellationToken = default) =>
-        DeferredAsync<AgentRunSnapshot>(cancellationToken);
-
-    public Task<CoWorkResult<CoWorkPage<DirectSubAgentSnapshot>>> ListSubAgentChildrenAsync(
-        SubAgentQueryRequest request,
-        CancellationToken cancellationToken = default) =>
-        DeferredAsync<CoWorkPage<DirectSubAgentSnapshot>>(cancellationToken);
-
-    public Task<CoWorkResult<CoWorkPage<DirectSubAgentSnapshot>>> ListSubAgentsAsync(
-        SubAgentQueryRequest request,
-        CancellationToken cancellationToken = default) =>
-        DeferredAsync<CoWorkPage<DirectSubAgentSnapshot>>(cancellationToken);
-
-    public Task<CoWorkResult<MailboxMessageSnapshot>> SendSubAgentMessageAsync(
-        SendSubAgentMessageRequest request,
-        CancellationToken cancellationToken = default) =>
-        DeferredAsync<MailboxMessageSnapshot>(cancellationToken);
-
-    public Task<CoWorkResult<AgentRunSnapshot>> FollowUpSubAgentAsync(
-        FollowUpSubAgentRequest request,
-        CancellationToken cancellationToken = default) =>
-        DeferredAsync<AgentRunSnapshot>(cancellationToken);
-
-    public Task<CoWorkResult<DirectSubAgentSnapshot>> CancelSubAgentAsync(
-        CancelSubAgentRequest request,
-        CancellationToken cancellationToken = default) =>
-        DeferredAsync<DirectSubAgentSnapshot>(cancellationToken);
-
     public Task<CoWorkResult<CoWorkPage<MailboxMessageSnapshot>>> ListMailboxMessagesAsync(
         ListMailboxMessagesRequest request,
         CancellationToken cancellationToken = default) =>

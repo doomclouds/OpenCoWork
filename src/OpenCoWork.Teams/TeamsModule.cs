@@ -15,10 +15,22 @@ public sealed class TeamsModule : IOpenCoWorkModule
             services.AddSingleton(contributor);
         }
 
-        services.TryAddSingleton<CoWorkService>();
+        services.TryAddSingleton(serviceProvider =>
+            new CoWorkService(
+                serviceProvider.GetRequiredService<IWorkspaceStateStore>(),
+                serviceProvider.GetRequiredService<ISensitiveDataService>(),
+                serviceProvider.GetRequiredService<CoWorkConfig>(),
+                serviceProvider.GetRequiredService<TimeProvider>(),
+                serviceProvider.GetRequiredService<ISessionService>(),
+                serviceProvider.GetRequiredService<IManagedWorktreeService>(),
+                serviceProvider.GetRequiredService<WorkspaceRuntimeDescriptor>()));
         services.TryAddSingleton<ICoWorkService>(serviceProvider =>
             serviceProvider.GetRequiredService<CoWorkService>());
-        services.AddSingleton<CoWorkModuleRuntime>();
+        services.AddSingleton(serviceProvider =>
+            new CoWorkModuleRuntime(
+                serviceProvider.GetService<IWorkspaceStateStore>() is null
+                    ? null
+                    : serviceProvider.GetRequiredService<CoWorkService>()));
     }
 
     public ValueTask StartAsync(
@@ -34,28 +46,34 @@ public sealed class TeamsModule : IOpenCoWorkModule
             .StopAsync(cancellationToken);
 }
 
-public sealed class CoWorkModuleRuntime
+public sealed class CoWorkModuleRuntime(CoWorkService? service)
 {
+    private readonly CoWorkService? _service = service;
     private int _bindingAvailability = (int)ToolBindingAvailability.Unavailable;
 
     public ToolBindingAvailability BindingAvailability =>
         (ToolBindingAvailability)Volatile.Read(ref _bindingAvailability);
 
-    internal ValueTask StartAsync(CancellationToken cancellationToken)
+    internal async ValueTask StartAsync(CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        if (_service is not null)
+        {
+            await _service.StartReconcilerAsync(cancellationToken);
+        }
         Volatile.Write(
             ref _bindingAvailability,
             (int)ToolBindingAvailability.Available);
-        return ValueTask.CompletedTask;
     }
 
-    internal ValueTask StopAsync(CancellationToken cancellationToken)
+    internal async ValueTask StopAsync(CancellationToken cancellationToken)
     {
         Volatile.Write(
             ref _bindingAvailability,
             (int)ToolBindingAvailability.Unavailable);
-        cancellationToken.ThrowIfCancellationRequested();
-        return ValueTask.CompletedTask;
+        if (_service is not null)
+        {
+            await _service.StopReconcilerAsync(cancellationToken);
+        }
     }
 }

@@ -382,7 +382,8 @@ public sealed record DispatchIntentSnapshot(
     DateTimeOffset? LeaseExpiresAt,
     string? ErrorCode,
     DateTimeOffset CreatedAt,
-    DateTimeOffset UpdatedAt);
+    DateTimeOffset UpdatedAt,
+    string? Diagnostic = null);
 
 public sealed record WorktreeHandoffSnapshot(
     Guid WorktreeId,

@@ -89,6 +89,15 @@ internal sealed partial class SessionService
                     "Only an idle archived thread with an empty queue can be deleted.");
             }
 
+            if (await IsThreadReferencedByActiveAgentRunAsync(
+                    request.ThreadId,
+                    cancellationToken))
+            {
+                return QueryError<DeletePreparation>(
+                    SessionErrorCodes.InvalidState,
+                    "An active CoWork AgentRun still references this Thread.");
+            }
+
             var tokenBytes = RandomNumberGenerator.GetBytes(32);
             var token = Convert.ToBase64String(tokenBytes)
                 .TrimEnd('=')
@@ -199,6 +208,16 @@ internal sealed partial class SessionService
                     return Rejected<bool>(
                         SessionErrorCodes.InvalidState,
                         "Only an idle archived thread with an empty queue can be deleted.",
+                        thread.CurrentSequence);
+                }
+
+                if (await IsThreadReferencedByActiveAgentRunAsync(
+                        request.ThreadId,
+                        cancellationToken))
+                {
+                    return Rejected<bool>(
+                        SessionErrorCodes.InvalidState,
+                        "An active CoWork AgentRun still references this Thread.",
                         thread.CurrentSequence);
                 }
 
@@ -1545,6 +1564,47 @@ internal sealed partial class SessionService
         Convert.ToHexString(
                 SHA256.HashData(Encoding.UTF8.GetBytes(Wire(value))))
             .ToLowerInvariant();
+
+    private async Task<bool> IsThreadReferencedByActiveAgentRunAsync(
+        Guid threadId,
+        CancellationToken cancellationToken) =>
+        await _stateRuntime.ReadAsync(
+            async (connection, token) =>
+            {
+                await using (var schema = connection.CreateCommand())
+                {
+                    schema.CommandText =
+                        """
+                        SELECT count(*)
+                        FROM sqlite_schema
+                        WHERE type = 'table'
+                          AND name = 'agent_runs';
+                        """;
+                    if (Convert.ToInt64(
+                            await schema.ExecuteScalarAsync(token),
+                            System.Globalization.CultureInfo.InvariantCulture) == 0)
+                    {
+                        return false;
+                    }
+                }
+
+                await using var command = connection.CreateCommand();
+                command.CommandText =
+                    """
+                    SELECT count(*)
+                    FROM agent_runs
+                    WHERE thread_id = $threadId
+                      AND status IN ('pending', 'starting', 'running');
+                    """;
+                var parameter = command.CreateParameter();
+                parameter.ParameterName = "$threadId";
+                parameter.Value = threadId.ToString();
+                command.Parameters.Add(parameter);
+                return Convert.ToInt64(
+                    await command.ExecuteScalarAsync(token),
+                    System.Globalization.CultureInfo.InvariantCulture) != 0;
+            },
+            cancellationToken);
 
     private static SessionCommandResult<RollbackResult> ConvertRollback(
         SessionCommandResult<ThreadSnapshot> result) =>

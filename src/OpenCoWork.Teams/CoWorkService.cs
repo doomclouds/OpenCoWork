@@ -18,17 +18,46 @@ public sealed partial class CoWorkService : ICoWorkService
     private readonly ISensitiveDataService _sensitiveData;
     private readonly CoWorkConfig _config;
     private readonly TimeProvider _timeProvider;
+    private readonly ISessionService? _sessions;
+    private readonly IManagedWorktreeService? _worktrees;
+    private readonly WorkspaceRuntimeDescriptor? _workspace;
+    private readonly Action<CoWorkDispatchFaultPoint>? _dispatchFaultInjector;
 
     public CoWorkService(
         IWorkspaceStateStore store,
         ISensitiveDataService sensitiveData,
         CoWorkConfig config,
         TimeProvider timeProvider)
+        : this(
+            store,
+            sensitiveData,
+            config,
+            timeProvider,
+            sessions: null,
+            worktrees: null,
+            workspace: null,
+            dispatchFaultInjector: null)
+    {
+    }
+
+    internal CoWorkService(
+        IWorkspaceStateStore store,
+        ISensitiveDataService sensitiveData,
+        CoWorkConfig config,
+        TimeProvider timeProvider,
+        ISessionService? sessions,
+        IManagedWorktreeService? worktrees,
+        WorkspaceRuntimeDescriptor? workspace,
+        Action<CoWorkDispatchFaultPoint>? dispatchFaultInjector = null)
     {
         _store = store ?? throw new ArgumentNullException(nameof(store));
         _sensitiveData = sensitiveData ?? throw new ArgumentNullException(nameof(sensitiveData));
         _config = config ?? throw new ArgumentNullException(nameof(config));
         _timeProvider = timeProvider ?? throw new ArgumentNullException(nameof(timeProvider));
+        _sessions = sessions;
+        _worktrees = worktrees;
+        _workspace = workspace;
+        _dispatchFaultInjector = dispatchFaultInjector;
     }
 
     public Task<CoWorkResult<CoWorkPage<AgentProfileSnapshot>>> ListAgentProfilesAsync(
