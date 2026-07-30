@@ -1,5 +1,6 @@
 using System.Data.Common;
 using OpenCoWork.Abstractions;
+using OpenCoWork.Automations;
 using OpenCoWork.Core.Configuration;
 using OpenCoWork.Core.Sessions;
 using OpenCoWork.Core.State;
@@ -530,6 +531,7 @@ internal sealed class CoWorkTestWorkspace : IAsyncDisposable
         _timeProvider = timeProvider;
         _worktrees = worktrees;
         _workspace = workspace;
+        WriterLeases = new ProjectWriterLeaseService(store, timeProvider);
     }
 
     private readonly ISensitiveDataService _sensitiveData;
@@ -548,6 +550,8 @@ internal sealed class CoWorkTestWorkspace : IAsyncDisposable
     public SessionService Sessions { get; }
 
     public CoWorkService Service { get; private set; }
+
+    public IProjectWriterLeaseService WriterLeases { get; }
 
     public Guid OriginThreadId { get; }
 
@@ -570,7 +574,10 @@ internal sealed class CoWorkTestWorkspace : IAsyncDisposable
         var store = new StateRuntime(
             paths,
             TimeSpan.FromSeconds(2),
-            TeamsStateMigrationContributors.Create());
+            [
+                .. TeamsStateMigrationContributors.Create(),
+                .. AutomationsStateMigrationContributors.Create(),
+            ]);
         await store.InitializeAsync(TestContext.Current.CancellationToken);
         executor ??= completeAgentRuns ? new CompletionExecutor() : null;
         var sessions = new SessionService(
@@ -600,6 +607,7 @@ internal sealed class CoWorkTestWorkspace : IAsyncDisposable
         var sensitiveData = new TestSensitiveDataService(secret);
         var worktrees = worktreeFactory?.Invoke(paths) ??
                         new ManagedWorktreeService(paths);
+        var writerLeases = new ProjectWriterLeaseService(store, timeProvider);
         var service = new CoWorkService(
             store,
             sensitiveData,
@@ -608,7 +616,8 @@ internal sealed class CoWorkTestWorkspace : IAsyncDisposable
             sessions,
             worktrees,
             workspace,
-            dispatchFaultInjector);
+            dispatchFaultInjector,
+            writerLeases);
         return new CoWorkTestWorkspace(
             root,
             store,
@@ -633,7 +642,8 @@ internal sealed class CoWorkTestWorkspace : IAsyncDisposable
             Sessions,
             _worktrees,
             _workspace,
-            dispatchFaultInjector);
+            dispatchFaultInjector,
+            WriterLeases);
         return Service;
     }
 

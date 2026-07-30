@@ -22,6 +22,7 @@ public sealed partial class CoWorkService : ICoWorkService
     private readonly IManagedWorktreeService? _worktrees;
     private readonly WorkspaceRuntimeDescriptor? _workspace;
     private readonly Action<CoWorkDispatchFaultPoint>? _dispatchFaultInjector;
+    private readonly IProjectWriterLeaseService? _projectWriterLeases;
 
     public CoWorkService(
         IWorkspaceStateStore store,
@@ -36,7 +37,8 @@ public sealed partial class CoWorkService : ICoWorkService
             sessions: null,
             worktrees: null,
             workspace: null,
-            dispatchFaultInjector: null)
+            dispatchFaultInjector: null,
+            projectWriterLeases: null)
     {
     }
 
@@ -48,7 +50,8 @@ public sealed partial class CoWorkService : ICoWorkService
         ISessionService? sessions,
         IManagedWorktreeService? worktrees,
         WorkspaceRuntimeDescriptor? workspace,
-        Action<CoWorkDispatchFaultPoint>? dispatchFaultInjector = null)
+        Action<CoWorkDispatchFaultPoint>? dispatchFaultInjector = null,
+        IProjectWriterLeaseService? projectWriterLeases = null)
     {
         _store = store ?? throw new ArgumentNullException(nameof(store));
         _sensitiveData = sensitiveData ?? throw new ArgumentNullException(nameof(sensitiveData));
@@ -58,6 +61,7 @@ public sealed partial class CoWorkService : ICoWorkService
         _worktrees = worktrees;
         _workspace = workspace;
         _dispatchFaultInjector = dispatchFaultInjector;
+        _projectWriterLeases = projectWriterLeases;
     }
 
     public Task<CoWorkResult<CoWorkPage<AgentProfileSnapshot>>> ListAgentProfilesAsync(

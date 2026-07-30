@@ -1,9 +1,11 @@
 using Microsoft.Extensions.Logging;
 using OpenCoWork.Abstractions;
+using OpenCoWork.Automations;
 using OpenCoWork.Core.Configuration;
 using OpenCoWork.Core.Logging;
 using OpenCoWork.Core.State;
 using OpenCoWork.Core.Workspaces;
+using OpenCoWork.Teams;
 using Xunit;
 
 namespace OpenCoWork.IntegrationTests;
@@ -26,6 +28,10 @@ public sealed class DataFoundationIntegrationTests
             await WorkspaceInitializer.InitializeAsync(
                 paths,
                 TimeSpan.FromSeconds(2),
+                [
+                    .. TeamsStateMigrationContributors.Create(),
+                    .. AutomationsStateMigrationContributors.Create(),
+                ],
                 cancellationToken);
             await File.WriteAllTextAsync(
                 paths.ConfigPath,
@@ -73,14 +79,20 @@ public sealed class DataFoundationIntegrationTests
                     Path.Combine(paths.WorkspaceRoot, ".opencowork", "runtime"))
                     .WorkspaceRoot);
 
-            var stateRuntime = new StateRuntime(paths, TimeSpan.FromSeconds(2));
+            var stateRuntime = new StateRuntime(
+                paths,
+                TimeSpan.FromSeconds(2),
+                [
+                    .. TeamsStateMigrationContributors.Create(),
+                    .. AutomationsStateMigrationContributors.Create(),
+                ]);
             await using (var state = await stateRuntime.OpenReadOnlyConnectionAsync(
                              cancellationToken))
             {
                 await using var command = state.CreateCommand();
                 command.CommandText =
                     "SELECT schema_version FROM state_info WHERE id = 1;";
-                Assert.Equal(5L, await command.ExecuteScalarAsync(cancellationToken));
+                Assert.Equal(7L, await command.ExecuteScalarAsync(cancellationToken));
             }
 
             var fileProvider = new JsonLinesFileLoggerProvider(

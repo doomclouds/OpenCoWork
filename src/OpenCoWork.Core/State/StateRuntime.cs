@@ -17,7 +17,7 @@ internal enum StateMigrationFaultPoint
 
 internal static class StateMigrations
 {
-    internal const int CurrentVersion = 6;
+    internal const int CurrentVersion = 7;
     internal const string VersionTwoTables =
         "items,pending_interactions,session_idempotency," +
         "session_operation_receipts,state_info,threads,turn_queue,turns";
@@ -522,6 +522,43 @@ internal static class StateMigrations
             ON terminal_sessions (thread_id, status, updated_utc DESC);
         """;
 
+    private const string VersionSevenSql =
+        """
+        CREATE TABLE project_writer_lease (
+            id INTEGER NOT NULL PRIMARY KEY CHECK (id = 1),
+            owner_kind TEXT NULL CHECK (
+                owner_kind IS NULL OR owner_kind IN ('coWorkAgentRun', 'automationRun')),
+            owner_id TEXT NULL CHECK (
+                owner_id IS NULL OR (
+                    length(owner_id) = 36 AND owner_id = lower(owner_id) AND
+                    substr(owner_id, 9, 1) = '-' AND
+                    substr(owner_id, 14, 1) = '-' AND
+                    substr(owner_id, 15, 1) = '7' AND
+                    substr(owner_id, 19, 1) = '-' AND
+                    substr(owner_id, 20, 1) IN ('8', '9', 'a', 'b') AND
+                    substr(owner_id, 24, 1) = '-')),
+            lease_id TEXT NULL CHECK (
+                lease_id IS NULL OR (
+                    length(lease_id) = 36 AND lease_id = lower(lease_id) AND
+                    substr(lease_id, 9, 1) = '-' AND
+                    substr(lease_id, 14, 1) = '-' AND
+                    substr(lease_id, 15, 1) = '7' AND
+                    substr(lease_id, 19, 1) = '-' AND
+                    substr(lease_id, 20, 1) IN ('8', '9', 'a', 'b') AND
+                    substr(lease_id, 24, 1) = '-')),
+            expires_utc INTEGER NULL,
+            updated_utc INTEGER NOT NULL,
+            CHECK (
+                (owner_kind IS NULL AND owner_id IS NULL AND
+                 lease_id IS NULL AND expires_utc IS NULL) OR
+                (owner_kind IS NOT NULL AND owner_id IS NOT NULL AND
+                 lease_id IS NOT NULL AND expires_utc IS NOT NULL))
+        );
+        INSERT INTO project_writer_lease (
+            id, owner_kind, owner_id, lease_id, expires_utc, updated_utc)
+        VALUES (1, NULL, NULL, NULL, NULL, 0);
+        """;
+
     internal static readonly IReadOnlyList<StateMigration> VersionOneOnly =
     [
         new(1, VersionOneSql),
@@ -557,6 +594,16 @@ internal static class StateMigrations
         new(5, VersionFiveSql),
     ];
 
+    internal static readonly IReadOnlyList<StateMigration> VersionSixOnly =
+    [
+        new(1, VersionOneSql),
+        new(2, VersionTwoSql),
+        new(3, VersionThreeSql),
+        new(4, VersionFourSql),
+        new(5, VersionFiveSql),
+        new(6, "SELECT 1;"),
+    ];
+
     internal static readonly IReadOnlyList<StateMigration> Current =
     [
         new(1, VersionOneSql),
@@ -565,6 +612,7 @@ internal static class StateMigrations
         new(4, VersionFourSql),
         new(5, VersionFiveSql),
         new(6, "SELECT 1;"),
+        new(7, VersionSevenSql),
     ];
 }
 
@@ -1370,6 +1418,7 @@ public sealed class StateRuntime : IWorkspaceStateStore
                 3 => StateMigrations.VersionThreeTables,
                 4 => StateMigrations.VersionFourTables,
                 5 => StateMigrations.VersionFiveTables,
+                6 => null,
                 StateMigrations.CurrentVersion => null,
                 _ => throw new StateMigrationException(
                     $"State schema version {expectedVersion} has no validation contract."),
@@ -1477,14 +1526,28 @@ public sealed class StateRuntime : IWorkspaceStateStore
             }
         }
 
+        foreach (var contributor in _contributors.Where(
+                     item => item.TargetVersion <= expectedVersion))
+        {
+            await contributor.ValidateAsync(connection, cancellationToken);
+        }
+
         if (expectedVersion != StateMigrations.CurrentVersion)
         {
             return;
         }
 
-        foreach (var contributor in _contributors)
+        await using (var writerLease = connection.CreateCommand())
         {
-            await contributor.ValidateAsync(connection, cancellationToken);
+            writerLease.CommandText =
+                "SELECT count(*) FROM project_writer_lease WHERE id = 1;";
+            if (Convert.ToInt64(
+                    await writerLease.ExecuteScalarAsync(cancellationToken),
+                    System.Globalization.CultureInfo.InvariantCulture) != 1)
+            {
+                throw new StateMigrationException(
+                    "Project writer lease singleton is missing.");
+            }
         }
 
         await using (var foreignKeyCheck = connection.CreateCommand())

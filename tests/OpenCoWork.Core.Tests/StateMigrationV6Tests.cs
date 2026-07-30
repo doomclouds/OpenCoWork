@@ -121,8 +121,8 @@ public sealed class StateMigrationV6Tests
         var faulted = new StateRuntime(
             files.Paths,
             TimeSpan.FromSeconds(2),
-            StateMigrations.Current,
-            TeamsStateMigrationContributors.Create(),
+            StateMigrations.VersionSixOnly,
+            TeamsStateMigrationContributors.CreateVersionSix(),
             point =>
             {
                 if (point == faultPoint)
@@ -174,7 +174,9 @@ public sealed class StateMigrationV6Tests
         new(
             paths,
             TimeSpan.FromSeconds(2),
-            TeamsStateMigrationContributors.Create());
+            StateMigrations.VersionSixOnly,
+            TeamsStateMigrationContributors.CreateVersionSix(),
+            faultInjector: null);
 
     private static async Task ExecuteAsync(
         SqliteConnection connection,

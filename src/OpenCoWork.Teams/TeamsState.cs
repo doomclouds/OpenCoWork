@@ -77,6 +77,9 @@ public sealed record CoWorkConfig : IValidatableObject
 public static class TeamsStateMigrationContributors
 {
     public static IReadOnlyList<IWorkspaceStateMigrationContributor> Create() =>
+        [new TeamsStateMigrationContributor(), new TeamsProjectWriterMigrationContributor()];
+
+    internal static IReadOnlyList<IWorkspaceStateMigrationContributor> CreateVersionSix() =>
         [new TeamsStateMigrationContributor()];
 }
 
@@ -579,5 +582,58 @@ internal sealed class TeamsStateMigrationContributor
         }
 
         return result;
+    }
+}
+
+internal sealed class TeamsProjectWriterMigrationContributor
+    : IWorkspaceStateMigrationContributor
+{
+    private const string Sql =
+        """
+        ALTER TABLE agent_runs
+            ADD COLUMN project_writer_lease_id TEXT NULL;
+        ALTER TABLE agent_runs
+            ADD COLUMN project_writer_lease_expires_utc INTEGER NULL;
+        """;
+
+    public int TargetVersion => 7;
+
+    public ValueTask ApplyAsync(
+        DbConnection connection,
+        DbTransaction transaction,
+        CancellationToken cancellationToken) =>
+        ExecuteAsync(connection, transaction, Sql, cancellationToken);
+
+    public async ValueTask ValidateAsync(
+        DbConnection connection,
+        CancellationToken cancellationToken)
+    {
+        await using var command = connection.CreateCommand();
+        command.CommandText = "PRAGMA table_info('agent_runs');";
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        var columns = new HashSet<string>(StringComparer.Ordinal);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            columns.Add(reader.GetString(1));
+        }
+
+        if (!columns.Contains("project_writer_lease_id") ||
+            !columns.Contains("project_writer_lease_expires_utc"))
+        {
+            throw new InvalidOperationException(
+                "CoWork Project Writer lease columns are missing.");
+        }
+    }
+
+    private static async ValueTask ExecuteAsync(
+        DbConnection connection,
+        DbTransaction transaction,
+        string sql,
+        CancellationToken cancellationToken)
+    {
+        await using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = sql;
+        await command.ExecuteNonQueryAsync(cancellationToken);
     }
 }

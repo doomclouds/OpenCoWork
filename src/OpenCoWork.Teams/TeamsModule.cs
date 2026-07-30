@@ -23,7 +23,9 @@ public sealed class TeamsModule : IOpenCoWorkModule
                 serviceProvider.GetRequiredService<TimeProvider>(),
                 serviceProvider.GetRequiredService<ISessionService>(),
                 serviceProvider.GetRequiredService<IManagedWorktreeService>(),
-                serviceProvider.GetRequiredService<WorkspaceRuntimeDescriptor>()));
+                serviceProvider.GetRequiredService<WorkspaceRuntimeDescriptor>(),
+                projectWriterLeases:
+                    serviceProvider.GetRequiredService<IProjectWriterLeaseService>()));
         services.TryAddSingleton<ICoWorkService>(serviceProvider =>
             serviceProvider.GetRequiredService<CoWorkService>());
         services.AddSingleton(serviceProvider =>

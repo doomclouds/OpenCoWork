@@ -513,6 +513,7 @@ public sealed partial class CoWorkService
             for (var cycle = 0; cycle < 1_024; cycle++)
             {
                 await ObserveTerminalRunsAsync(cancellationToken);
+                await MaintainProjectWriterLeasesAsync(cancellationToken);
                 var prepared = await PrepareMissionRunsAsync(cancellationToken);
                 var dispatched = 0;
                 for (var count = 0; count < 1_024; count++)
@@ -987,7 +988,13 @@ public sealed partial class CoWorkService
                         break;
                     case CoWorkDispatchKind.SubmitTurn:
                     case CoWorkDispatchKind.SynthesizeMission:
-                        await ExecuteSubmitTurnIntentAsync(intent, cancellationToken);
+                        if (!await ExecuteSubmitTurnIntentAsync(
+                                intent,
+                                cancellationToken))
+                        {
+                            return false;
+                        }
+
                         break;
                     case CoWorkDispatchKind.DeliverMessage:
                         if (!await ExecuteDeliverMessageIntentAsync(
@@ -1244,7 +1251,7 @@ public sealed partial class CoWorkService
             cancellationToken);
     }
 
-    private async Task ExecuteSubmitTurnIntentAsync(
+    private async Task<bool> ExecuteSubmitTurnIntentAsync(
         DispatchIntentSnapshot intent,
         CancellationToken cancellationToken)
     {
@@ -1265,7 +1272,7 @@ public sealed partial class CoWorkService
                 CoWorkErrorCodes.InvalidState,
                 "AgentRun input is missing.",
                 cancellationToken);
-            return;
+            return true;
         }
 
         var thread = await _sessions!.GetThreadAsync(run.ThreadId, cancellationToken);
@@ -1276,7 +1283,7 @@ public sealed partial class CoWorkService
                 thread.Error?.Code ?? CoWorkErrorCodes.SessionUnavailable,
                 thread.Error?.Message ?? "AgentRun Thread is unavailable.",
                 cancellationToken);
-            return;
+            return true;
         }
 
         var expectedSequence = TryReadExpectedSequence(intent.Diagnostic)
@@ -1292,6 +1299,12 @@ public sealed partial class CoWorkService
         var text = run.Kind == CoWorkAgentRunKind.Direct
             ? string.Join("\n\n", messages.Select(message => message.Body))
             : await BuildMissionRunInputAsync(run, cancellationToken);
+        if (!await TryAcquireProjectWriterLeaseAsync(run, cancellationToken))
+        {
+            await ReleaseIntentAsync(intent.DispatchIntentId, cancellationToken);
+            return false;
+        }
+
         _dispatchFaultInjector?.Invoke(CoWorkDispatchFaultPoint.BeforeSubmitTurn);
         var submitted = await _sessions.EnqueueInputAsync(
             new EnqueueInputRequest(
@@ -1308,7 +1321,7 @@ public sealed partial class CoWorkService
                 submitted.Error?.Code ?? CoWorkErrorCodes.SessionUnavailable,
                 submitted.Error?.Message ?? "AgentRun Turn submission failed.",
                 cancellationToken);
-            return;
+            return true;
         }
 
         _dispatchFaultInjector?.Invoke(CoWorkDispatchFaultPoint.AfterSubmitTurn);
@@ -1363,6 +1376,7 @@ public sealed partial class CoWorkService
                 return 0;
             },
             cancellationToken);
+        return true;
     }
 
     private async Task<bool> ExecuteDeliverMessageIntentAsync(
@@ -1650,6 +1664,194 @@ public sealed partial class CoWorkService
         }
     }
 
+    private async Task<bool> TryAcquireProjectWriterLeaseAsync(
+        AgentRunSnapshot run,
+        CancellationToken cancellationToken)
+    {
+        if (_projectWriterLeases is null ||
+            run.ExecutionWorkspace.Mode != CoWorkWorkspaceMode.Project ||
+            run.WorkspaceAccess != CoWorkWorkspaceAccess.ReadWrite)
+        {
+            return true;
+        }
+
+        var lease = await _projectWriterLeases.TryAcquireAsync(
+            new ProjectWriterLeaseOwner(
+                ProjectWriterLeaseOwnerKind.CoWorkAgentRun,
+                run.AgentRunId),
+            cancellationToken);
+        if (lease is null)
+        {
+            return false;
+        }
+
+        await PersistProjectWriterLeaseAsync(
+            run.AgentRunId,
+            lease,
+            cancellationToken);
+        return true;
+    }
+
+    private async Task MaintainProjectWriterLeasesAsync(
+        CancellationToken cancellationToken)
+    {
+        if (_projectWriterLeases is null || _sessions is null)
+        {
+            return;
+        }
+
+        var runs = await _store.ReadAsync(
+            async (connection, token) =>
+            {
+                await using var command = connection.CreateCommand();
+                command.CommandText =
+                    """
+                    SELECT agent_run_id, project_writer_lease_id,
+                           project_writer_lease_expires_utc
+                    FROM agent_runs
+                    WHERE status IN ('starting', 'running')
+                      AND workspace_mode = 'project'
+                      AND workspace_access = 'readWrite'
+                      AND project_writer_lease_id IS NOT NULL
+                    ORDER BY created_utc, agent_run_id;
+                    """;
+                await using var reader = await command.ExecuteReaderAsync(token);
+                var values = new List<(Guid RunId, Guid LeaseId, long ExpiresUtc)>();
+                while (await reader.ReadAsync(token))
+                {
+                    values.Add((
+                        Guid.Parse(reader.GetString(0)),
+                        Guid.Parse(reader.GetString(1)),
+                        reader.GetInt64(2)));
+                }
+
+                return values.ToArray();
+            },
+            cancellationToken);
+        var renewAt = ProjectWriterLeaseLimits.LeaseDuration -
+                      ProjectWriterLeaseLimits.RenewalInterval;
+        foreach (var item in runs)
+        {
+            var expiresAt =
+                DateTimeOffset.FromUnixTimeMilliseconds(item.ExpiresUtc);
+            if (expiresAt - _timeProvider.GetUtcNow() > renewAt)
+            {
+                continue;
+            }
+
+            var owner = new ProjectWriterLeaseOwner(
+                ProjectWriterLeaseOwnerKind.CoWorkAgentRun,
+                item.RunId);
+            var renewed = await _projectWriterLeases.RenewAsync(
+                owner,
+                item.LeaseId,
+                cancellationToken);
+            if (renewed is not null)
+            {
+                await PersistProjectWriterLeaseAsync(
+                    item.RunId,
+                    renewed,
+                    cancellationToken);
+                continue;
+            }
+
+            var run = await ReadAgentRunAsync(item.RunId, cancellationToken);
+            if (run is null)
+            {
+                continue;
+            }
+
+            var thread = await _sessions.GetThreadAsync(
+                run.ThreadId,
+                cancellationToken);
+            if (thread.Value?.ActiveTurnId is { } turnId)
+            {
+                _ = await _sessions.CancelTurnAsync(
+                    new CancelTurnRequest(
+                        run.ThreadId,
+                        turnId,
+                        Guid.CreateVersion7(),
+                        thread.Value.CurrentSequence),
+                    cancellationToken);
+            }
+
+            await SettleAgentRunAsync(
+                run,
+                CoWorkAgentRunStatus.Failed,
+                actualUsage: null,
+                CoWorkErrorCodes.InvalidState,
+                "Project writer lease was lost.",
+                cancellationToken);
+        }
+    }
+
+    private async Task PersistProjectWriterLeaseAsync(
+        Guid runId,
+        ProjectWriterLease lease,
+        CancellationToken cancellationToken) =>
+        await _store.WriteAsync(
+            async (connection, transaction, token) =>
+            {
+                await ExecuteSqlAsync(
+                    connection,
+                    transaction,
+                    """
+                    UPDATE agent_runs
+                    SET project_writer_lease_id = $leaseId,
+                        project_writer_lease_expires_utc = $expiresUtc,
+                        updated_utc = $now
+                    WHERE agent_run_id = $runId
+                      AND status IN ('starting', 'running');
+                    """,
+                    token,
+                    ("$leaseId", lease.LeaseId),
+                    ("$expiresUtc", lease.ExpiresAtUtc.ToUnixTimeMilliseconds()),
+                    ("$now", UtcNowMilliseconds()),
+                    ("$runId", runId));
+                return 0;
+            },
+            cancellationToken);
+
+    private async Task ReleaseProjectWriterLeaseAsync(
+        Guid runId,
+        CancellationToken cancellationToken)
+    {
+        if (_projectWriterLeases is null)
+        {
+            return;
+        }
+
+        var leaseId = await _store.ReadAsync(
+            async (connection, token) =>
+            {
+                await using var command = connection.CreateCommand();
+                command.CommandText =
+                    """
+                    SELECT project_writer_lease_id
+                    FROM agent_runs
+                    WHERE agent_run_id = $runId;
+                    """;
+                var parameter = command.CreateParameter();
+                parameter.ParameterName = "$runId";
+                parameter.Value = runId.ToString("D");
+                command.Parameters.Add(parameter);
+                var value = await command.ExecuteScalarAsync(token);
+                return value is null or DBNull
+                    ? (Guid?)null
+                    : Guid.Parse((string)value);
+            },
+            cancellationToken);
+        if (leaseId is not null)
+        {
+            _ = await _projectWriterLeases.ReleaseAsync(
+                new ProjectWriterLeaseOwner(
+                    ProjectWriterLeaseOwnerKind.CoWorkAgentRun,
+                    runId),
+                leaseId.Value,
+                cancellationToken);
+        }
+    }
+
     private async Task<bool> ExecuteDeliverOriginIntentAsync(
         DispatchIntentSnapshot intent,
         CancellationToken cancellationToken)
@@ -1767,6 +1969,7 @@ public sealed partial class CoWorkService
                 CoWorkDispatchFaultPoint.BeforeMissionCompletion);
         }
 
+        await ReleaseProjectWriterLeaseAsync(run.AgentRunId, cancellationToken);
         await _store.WriteAsync(
             async (connection, transaction, token) =>
             {
@@ -1801,7 +2004,9 @@ public sealed partial class CoWorkService
                         completed_utc = $now,
                         updated_utc = $now,
                         lease_owner = NULL,
-                        lease_expires_utc = NULL
+                        lease_expires_utc = NULL,
+                        project_writer_lease_id = NULL,
+                        project_writer_lease_expires_utc = NULL
                     WHERE agent_run_id = $runId;
                     """,
                     token,

@@ -46,6 +46,11 @@ public sealed class AutomationsModule : IOpenCoWorkModule
     public void ConfigureServices(IServiceCollection services)
     {
         services.TryAddSingleton<AutomationsConfig>();
+        foreach (var contributor in AutomationsStateMigrationContributors.Create())
+        {
+            services.AddSingleton(contributor);
+        }
+
         services.TryAddSingleton<AutomationsModuleRuntime>();
     }
 

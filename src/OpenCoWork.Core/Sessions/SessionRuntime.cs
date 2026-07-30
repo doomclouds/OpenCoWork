@@ -35,6 +35,9 @@ public static class OpenCoWorkSessionExtensions
         });
         services.TryAddSingleton<IWorkspaceStateStore>(serviceProvider =>
             serviceProvider.GetRequiredService<StateRuntime>());
+        services.TryAddSingleton<ProjectWriterLeaseService>();
+        services.TryAddSingleton<IProjectWriterLeaseService>(serviceProvider =>
+            serviceProvider.GetRequiredService<ProjectWriterLeaseService>());
         services.TryAddSingleton(serviceProvider =>
         {
             var paths = serviceProvider.GetRequiredService<OpenCoWorkPaths>();

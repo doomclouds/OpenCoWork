@@ -39,6 +39,19 @@ public sealed class CoWorkPersistenceTests
         using var files = new TempWorkspace();
         IWorkspaceStateStore store = await CreateStoreAsync(files, cancellationToken);
 
+        Assert.Equal(
+            1L,
+            await store.ReadAsync(
+                (connection, token) =>
+                    ScalarAsync<long>(
+                        connection,
+                        """
+                        SELECT count(*) FROM sqlite_schema
+                        WHERE type = 'index'
+                          AND name = 'ix_agent_runs_project_writer';
+                        """,
+                        token),
+                cancellationToken));
         await store.WriteAsync(
             async (connection, transaction, token) =>
             {

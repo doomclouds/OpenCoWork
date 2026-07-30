@@ -5,6 +5,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using OpenCoWork.Abstractions;
+using OpenCoWork.Automations;
 using OpenCoWork.Core.Agents;
 using OpenCoWork.Core.Capabilities;
 using OpenCoWork.Core.Configuration;
@@ -414,7 +415,7 @@ namespace OpenCoWork.App
                 await WorkspaceInitializer.InitializeAsync(
                     paths,
                     new RuntimeConfig().State.BusyTimeout,
-                    TeamsStateMigrationContributors.Create(),
+                    StateContributors(),
                     cancellationToken);
                 await output.WriteLineAsync(
                     $"Initialized OpenCoWork workspace: {paths.WorkspaceRoot}");
@@ -440,7 +441,7 @@ namespace OpenCoWork.App
             {
                 var report = await DiagnosticRunner.RunAsync(
                     request,
-                    TeamsStateMigrationContributors.Create(),
+                    StateContributors(),
                     cancellationToken);
                 await output.WriteLineAsync(
                     json
@@ -456,6 +457,13 @@ namespace OpenCoWork.App
                 return 3;
             }
         }
+
+        private static IReadOnlyList<IWorkspaceStateMigrationContributor>
+            StateContributors() =>
+            [
+                .. TeamsStateMigrationContributors.Create(),
+                .. AutomationsStateMigrationContributors.Create(),
+            ];
 
         private static async Task<int> RunChatAsync(
             string? explicitWorkspace,

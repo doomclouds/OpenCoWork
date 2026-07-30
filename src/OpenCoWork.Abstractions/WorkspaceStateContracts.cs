@@ -53,6 +53,44 @@ public interface IWorkspaceStateMigrationContributor
         CancellationToken cancellationToken);
 }
 
+public enum ProjectWriterLeaseOwnerKind
+{
+    CoWorkAgentRun,
+    AutomationRun,
+}
+
+public sealed record ProjectWriterLeaseOwner(
+    ProjectWriterLeaseOwnerKind Kind,
+    Guid OwnerId);
+
+public sealed record ProjectWriterLease(
+    Guid LeaseId,
+    ProjectWriterLeaseOwner Owner,
+    DateTimeOffset ExpiresAtUtc);
+
+public static class ProjectWriterLeaseLimits
+{
+    public static readonly TimeSpan LeaseDuration = TimeSpan.FromMinutes(2);
+    public static readonly TimeSpan RenewalInterval = TimeSpan.FromSeconds(30);
+}
+
+public interface IProjectWriterLeaseService
+{
+    ValueTask<ProjectWriterLease?> TryAcquireAsync(
+        ProjectWriterLeaseOwner owner,
+        CancellationToken cancellationToken = default);
+
+    ValueTask<ProjectWriterLease?> RenewAsync(
+        ProjectWriterLeaseOwner owner,
+        Guid leaseId,
+        CancellationToken cancellationToken = default);
+
+    ValueTask<bool> ReleaseAsync(
+        ProjectWriterLeaseOwner owner,
+        Guid leaseId,
+        CancellationToken cancellationToken = default);
+}
+
 public sealed record ManagedWorktreeCreateRequest(
     Guid AgentRunId,
     string BaseCommitSha);

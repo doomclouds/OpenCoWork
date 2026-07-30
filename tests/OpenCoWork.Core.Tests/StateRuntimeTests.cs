@@ -29,6 +29,9 @@ public sealed class StateRuntimeTests
         "workspace_memory_versions",
     ];
 
+    private static readonly string[] CurrentCoreSchemaTables =
+        [.. SessionSchemaTables.Append("project_writer_lease").Order()];
+
     private static readonly string[] SessionSchemaIndexes =
     [
         "ix_agent_invocations_thread",
@@ -377,7 +380,7 @@ public sealed class StateRuntimeTests
 
         await using var migrated = await retry.OpenReadWriteConnectionAsync(cancellationToken);
         Assert.Equal(
-            SessionSchemaTables,
+            CurrentCoreSchemaTables,
             await ReadStringsAsync(
                 migrated,
                 """
@@ -388,7 +391,7 @@ public sealed class StateRuntimeTests
                 """,
                 cancellationToken));
         Assert.Equal(
-            6L,
+            7L,
             await ScalarAsync<long>(
                 migrated,
                 "SELECT schema_version FROM state_info WHERE id = 1;",

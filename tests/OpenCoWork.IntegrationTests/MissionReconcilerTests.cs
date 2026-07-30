@@ -176,8 +176,26 @@ public sealed class MissionReconcilerTests
             Assert.Equal(
                 1,
                 await MissionTestData.ActiveTaskRunsAsync(project, mission.MissionId, token));
+            var automationOwner = new ProjectWriterLeaseOwner(
+                ProjectWriterLeaseOwnerKind.AutomationRun,
+                Guid.CreateVersion7());
+            Assert.Null(await project.WriterLeases.TryAcquireAsync(
+                automationOwner,
+                token));
             projectExecutor.Release();
-            await project.Service.ReconcilePendingAsync(token);
+            _ = await MissionTestData.ReconcileUntilAsync(
+                project,
+                mission.MissionId,
+                value => value.Status == CoWorkMissionStatus.Completed,
+                token);
+            var automationLease = Assert.IsType<ProjectWriterLease>(
+                await project.WriterLeases.TryAcquireAsync(
+                    automationOwner,
+                    token));
+            Assert.True(await project.WriterLeases.ReleaseAsync(
+                automationOwner,
+                automationLease.LeaseId,
+                token));
         }
 
         var worktreeExecutor = new GatedMissionExecutor();
@@ -205,6 +223,67 @@ public sealed class MissionReconcilerTests
                 worktreeToken));
         worktreeExecutor.Release();
         await worktree.Service.ReconcilePendingAsync(worktreeToken);
+    }
+
+    [Fact]
+    public async Task Lost_project_writer_lease_cancels_the_turn_and_fails_the_run()
+    {
+        var executor = new GatedMissionExecutor();
+        var clock = new AdjustableTimeProvider(
+            new DateTimeOffset(2026, 7, 30, 8, 0, 0, TimeSpan.Zero));
+        await using var workspace = await CoWorkTestWorkspace.CreateAsync(
+            executor: executor,
+            timeProvider: clock);
+        var token = TestContext.Current.CancellationToken;
+        var setup = await MissionTestData.CreateAsync(
+            workspace,
+            CoWorkWorkspaceMode.Project,
+            20_000,
+            ("leader", CoWorkMemberRole.Leader, Array.Empty<string>()),
+            ("writer", CoWorkMemberRole.Member, ["file.write"]));
+        var mission = setup.Mission;
+        _ = await MissionTestData.AddTaskAsync(
+            workspace,
+            mission,
+            "writer",
+            setup.Members["writer"].MemberId,
+            true,
+            false,
+            [],
+            token);
+        mission = await MissionTestData.GetMissionAsync(
+            workspace,
+            mission.MissionId,
+            token);
+        _ = await workspace.Service.ActivateMissionAsync(
+            new MissionCommandRequest(
+                MissionTestData.Command(mission.Revision),
+                mission.MissionId),
+            token);
+        await workspace.Service.ReconcilePendingAsync(token);
+
+        clock.Advance(ProjectWriterLeaseLimits.LeaseDuration);
+        await workspace.Service.ReconcilePendingAsync(token);
+
+        mission = await MissionTestData.GetMissionAsync(
+            workspace,
+            mission.MissionId,
+            token);
+        Assert.Contains(
+            mission.Tasks,
+            task => task.Status == CoWorkTaskStatus.Failed);
+        Assert.Equal(
+            1,
+            await MissionTestData.CountAsync(
+                workspace.Store,
+                """
+                SELECT count(*) FROM agent_runs
+                WHERE mission_id = $id
+                  AND status = 'failed'
+                  AND error_code = 'cowork.invalidState';
+                """,
+                token,
+                ("$id", mission.MissionId)));
     }
 }
 
@@ -411,6 +490,15 @@ internal sealed class GatedMissionExecutor : ISessionExecutor
     }
 
     public void Release() => _release.TrySetResult();
+}
+
+internal sealed class AdjustableTimeProvider(DateTimeOffset utcNow) : TimeProvider
+{
+    private DateTimeOffset _utcNow = utcNow;
+
+    public override DateTimeOffset GetUtcNow() => _utcNow;
+
+    public void Advance(TimeSpan value) => _utcNow += value;
 }
 
 internal sealed class FakeManagedWorktrees(OpenCoWorkPaths paths)
