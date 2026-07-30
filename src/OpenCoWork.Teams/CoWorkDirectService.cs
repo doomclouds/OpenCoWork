@@ -13,6 +13,7 @@ internal enum CoWorkDispatchFaultPoint
     AfterCreateThread,
     BeforeSubmitTurn,
     AfterSubmitTurn,
+    BeforeDeliverMessage,
 }
 
 internal sealed class CoWorkDispatchCrashException(CoWorkDispatchFaultPoint faultPoint)
@@ -500,6 +501,7 @@ public sealed partial class CoWorkService
             return;
         }
 
+        await RecoverArtifactsOnceAsync(cancellationToken);
         await _reconcileGate.WaitAsync(cancellationToken);
         try
         {
@@ -982,7 +984,13 @@ public sealed partial class CoWorkService
                         await ExecuteSubmitTurnIntentAsync(intent, cancellationToken);
                         break;
                     case CoWorkDispatchKind.DeliverMessage:
-                        await ExecuteDeliverMessageIntentAsync(intent, cancellationToken);
+                        if (!await ExecuteDeliverMessageIntentAsync(
+                                intent,
+                                cancellationToken))
+                        {
+                            return false;
+                        }
+
                         break;
                     default:
                         await DeadLetterIntentAsync(
@@ -1342,22 +1350,34 @@ public sealed partial class CoWorkService
             cancellationToken);
     }
 
-    private async Task ExecuteDeliverMessageIntentAsync(
+    private async Task<bool> ExecuteDeliverMessageIntentAsync(
         DispatchIntentSnapshot intent,
         CancellationToken cancellationToken)
     {
         var message = await ReadMailboxMessageAsync(intent.EntityId, cancellationToken)
-                      ?? throw InvalidState("Direct message was not found.");
-        var thread = await _sessions!.GetThreadAsync(message.RecipientId, cancellationToken);
-        if (thread.Value?.ActiveTurnId is not { } activeTurnId)
+                      ?? throw InvalidState("Mailbox message was not found.");
+        var recipientThreadId = await ResolveMailboxRecipientThreadAsync(
+            message,
+            cancellationToken);
+        if (recipientThreadId is null)
         {
             await ReleaseIntentAsync(intent.DispatchIntentId, cancellationToken);
-            return;
+            return false;
         }
 
+        _dispatchFaultInjector?.Invoke(CoWorkDispatchFaultPoint.BeforeDeliverMessage);
+        var thread = await _sessions!.GetThreadAsync(
+            recipientThreadId.Value,
+            cancellationToken);
+        if (thread.Value is null)
+        {
+            throw new IOException("Mailbox recipient Session is unavailable.");
+        }
+
+        var activeTurnId = thread.Value.ActiveTurnId;
         var queued = await _sessions.EnqueueInputAsync(
             new EnqueueInputRequest(
-                message.RecipientId,
+                recipientThreadId.Value,
                 intent.DispatchIntentId,
                 thread.Value.CurrentSequence,
                 message.Body,
@@ -1370,17 +1390,20 @@ public sealed partial class CoWorkService
                 queued.Error?.Code ?? CoWorkErrorCodes.SessionUnavailable,
                 queued.Error?.Message ?? "Direct message delivery failed.",
                 cancellationToken);
-            return;
+            return true;
         }
 
-        var current = await _sessions.GetThreadAsync(message.RecipientId, cancellationToken);
-        if (current.Value?.ActiveTurnId == activeTurnId &&
+        var current = await _sessions.GetThreadAsync(
+            recipientThreadId.Value,
+            cancellationToken);
+        if (activeTurnId is not null &&
+            current.Value?.ActiveTurnId == activeTurnId &&
             queued.Value.TurnId is null)
         {
             _ = await _sessions.SteerTurnAsync(
                 new SteerTurnRequest(
-                    message.RecipientId,
-                    activeTurnId,
+                    recipientThreadId.Value,
+                    activeTurnId.Value,
                     queued.Value.QueueItem.QueueItemId,
                     Guid.CreateVersion7(),
                     current.Value.CurrentSequence),
@@ -1397,8 +1420,10 @@ public sealed partial class CoWorkService
                     """
                     UPDATE mailbox_messages
                     SET status = 'delivered',
-                        attempt_count = attempt_count + 1,
-                        delivered_utc = $now
+                        attempt_count = $attempt,
+                        delivered_utc = $now,
+                        error_code = NULL,
+                        diagnostic = NULL
                     WHERE mailbox_message_id = $messageId;
 
                     UPDATE cowork_dispatch_intents
@@ -1410,12 +1435,67 @@ public sealed partial class CoWorkService
                     """,
                     token,
                     ("$now", now),
+                    ("$attempt", intent.Attempt),
                     ("$messageId", message.MessageId),
                     ("$intentId", intent.DispatchIntentId));
                 return 0;
             },
             cancellationToken);
+        return true;
     }
+
+    private async Task<Guid?> ResolveMailboxRecipientThreadAsync(
+        MailboxMessageSnapshot message,
+        CancellationToken cancellationToken) =>
+        await _store.ReadAsync(
+            async (connection, token) =>
+            {
+                if (message.Scope == CoWorkMailboxScope.Direct)
+                {
+                    return await ReadOptionalGuidAsync(
+                        connection,
+                        """
+                        SELECT recipient_thread_id
+                        FROM mailbox_messages
+                        WHERE mailbox_message_id = $messageId;
+                        """,
+                        token,
+                        ("$messageId", message.MessageId));
+                }
+
+                return await ReadOptionalGuidAsync(
+                    connection,
+                    """
+                    SELECT coalesce(
+                        CASE member.role
+                            WHEN 'leader' THEN mission.leader_thread_id
+                        END,
+                        (
+                            SELECT run.thread_id
+                            FROM agent_runs run
+                            WHERE run.mission_id = message.mission_id
+                              AND run.member_id = message.recipient_member_id
+                              AND run.thread_id IS NOT NULL
+                            ORDER BY
+                                CASE run.status
+                                    WHEN 'running' THEN 0
+                                    WHEN 'starting' THEN 1
+                                    WHEN 'pending' THEN 2
+                                    ELSE 3
+                                END,
+                                run.created_utc DESC
+                            LIMIT 1
+                        ))
+                    FROM mailbox_messages message
+                    JOIN mission_members member
+                      ON member.mission_member_id = message.recipient_member_id
+                    JOIN missions mission ON mission.mission_id = message.mission_id
+                    WHERE message.mailbox_message_id = $messageId;
+                    """,
+                    token,
+                    ("$messageId", message.MessageId));
+            },
+            cancellationToken);
 
     private async Task ObserveTerminalRunsAsync(CancellationToken cancellationToken)
     {
@@ -2176,6 +2256,7 @@ public sealed partial class CoWorkService
                     """
                     UPDATE cowork_dispatch_intents
                     SET status = 'pending',
+                        attempt_count = max(0, attempt_count - 1),
                         lease_owner = NULL,
                         lease_expires_utc = NULL,
                         updated_utc = $now
@@ -2203,6 +2284,12 @@ public sealed partial class CoWorkService
             return;
         }
 
+        await UpdateMailboxAttemptAsync(
+            intent,
+            status: null,
+            errorCode: null,
+            diagnostic,
+            cancellationToken);
         await Task.Delay(
             TimeSpan.FromMilliseconds(10L << Math.Min(intent.Attempt - 1, 6)),
             _timeProvider,
@@ -2304,9 +2391,69 @@ public sealed partial class CoWorkService
                     ("$diagnostic", diagnostic),
                     ("$now", UtcNowMilliseconds()),
                     ("$intentId", intent.DispatchIntentId));
+                if (string.Equals(
+                        intent.EntityKind,
+                        "mailboxMessage",
+                        StringComparison.Ordinal))
+                {
+                    await ExecuteSqlAsync(
+                        connection,
+                        transaction,
+                        """
+                        UPDATE mailbox_messages
+                        SET status = 'deadLettered',
+                            attempt_count = $attempt,
+                            error_code = $errorCode,
+                            diagnostic = $diagnostic
+                        WHERE mailbox_message_id = $messageId;
+                        """,
+                        token,
+                        ("$attempt", intent.Attempt),
+                        ("$errorCode", errorCode),
+                        ("$diagnostic", _sensitiveData.Redact(diagnostic)),
+                        ("$messageId", intent.EntityId));
+                }
+
                 return 0;
             },
             cancellationToken);
+
+    private async Task UpdateMailboxAttemptAsync(
+        DispatchIntentSnapshot intent,
+        CoWorkMailboxStatus? status,
+        string? errorCode,
+        string diagnostic,
+        CancellationToken cancellationToken)
+    {
+        if (!string.Equals(intent.EntityKind, "mailboxMessage", StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        await _store.WriteAsync(
+            async (connection, transaction, token) =>
+            {
+                await ExecuteSqlAsync(
+                    connection,
+                    transaction,
+                    """
+                    UPDATE mailbox_messages
+                    SET attempt_count = $attempt,
+                        status = coalesce($status, status),
+                        error_code = $errorCode,
+                        diagnostic = $diagnostic
+                    WHERE mailbox_message_id = $messageId;
+                    """,
+                    token,
+                    ("$attempt", intent.Attempt),
+                    ("$status", status is null ? null : EnumText(status.Value)),
+                    ("$errorCode", errorCode),
+                    ("$diagnostic", _sensitiveData.Redact(diagnostic)),
+                    ("$messageId", intent.EntityId));
+                return 0;
+            },
+            cancellationToken);
+    }
 
     private async Task FailRunAndIntentAsync(
         DispatchIntentSnapshot intent,
@@ -2887,7 +3034,7 @@ public sealed partial class CoWorkService
                    message_kind, content, mission_task_id, artifact_id,
                    status, attempt_count, error_code,
                    created_utc,
-                   coalesce(delivered_utc, acknowledged_utc, created_utc)
+                   coalesce(acknowledged_utc, delivered_utc, created_utc)
             FROM mailbox_messages
             WHERE mailbox_message_id = $id;
             """;
