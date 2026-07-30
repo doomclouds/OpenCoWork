@@ -53,7 +53,18 @@ public sealed class AutomationsModule : IOpenCoWorkModule
 
         services.TryAddSingleton<AutomationDefinitionLoader>();
         services.TryAddSingleton<AutomationTemplateRenderer>();
-        services.TryAddSingleton<AutomationsModuleRuntime>();
+        services.TryAddSingleton(serviceProvider =>
+            new AutomationSourceRuntime(
+                serviceProvider.GetRequiredService<IWorkspaceStateStore>(),
+                serviceProvider.GetRequiredService<WorkspaceRuntimeDescriptor>(),
+                serviceProvider.GetRequiredService<AutomationDefinitionLoader>(),
+                serviceProvider.GetRequiredService<TimeProvider>()));
+        services.TryAddSingleton(serviceProvider =>
+            AutomationsModuleRuntime.Create(
+                serviceProvider.GetRequiredService<AutomationsConfig>(),
+                () => serviceProvider.GetService<IWorkspaceStateStore>() is null
+                    ? null
+                    : serviceProvider.GetRequiredService<AutomationSourceRuntime>()));
     }
 
     public ValueTask StartAsync(
@@ -69,31 +80,62 @@ public sealed class AutomationsModule : IOpenCoWorkModule
             .StopAsync(cancellationToken);
 }
 
-public sealed class AutomationsModuleRuntime(AutomationsConfig config)
+public sealed class AutomationsModuleRuntime
 {
+    private readonly AutomationsConfig _config;
+    private readonly Func<AutomationSourceRuntime?> _source;
+    private AutomationSourceRuntime? _runningSource;
     private int _bindingAvailability = (int)ToolBindingAvailability.Unavailable;
+
+    public AutomationsModuleRuntime(AutomationsConfig config)
+        : this(config, static () => null)
+    {
+    }
+
+    private AutomationsModuleRuntime(
+        AutomationsConfig config,
+        Func<AutomationSourceRuntime?> source)
+    {
+        _config = config ?? throw new ArgumentNullException(nameof(config));
+        _source = source ?? throw new ArgumentNullException(nameof(source));
+    }
+
+    internal static AutomationsModuleRuntime Create(
+        AutomationsConfig config,
+        Func<AutomationSourceRuntime?> source) =>
+        new(config, source);
 
     public ToolBindingAvailability BindingAvailability =>
         (ToolBindingAvailability)Volatile.Read(ref _bindingAvailability);
 
-    internal ValueTask StartAsync(CancellationToken cancellationToken)
+    internal async ValueTask StartAsync(CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        if (config.Enabled)
+        if (_config.Enabled)
         {
+            var source = _source();
+            if (source is not null)
+            {
+                await source.StartAsync(cancellationToken);
+            }
+
+            _runningSource = source;
             Volatile.Write(
                 ref _bindingAvailability,
                 (int)ToolBindingAvailability.Available);
         }
-
-        return ValueTask.CompletedTask;
     }
 
-    internal ValueTask StopAsync(CancellationToken cancellationToken)
+    internal async ValueTask StopAsync(CancellationToken cancellationToken)
     {
         Volatile.Write(
             ref _bindingAvailability,
             (int)ToolBindingAvailability.Unavailable);
-        return ValueTask.CompletedTask;
+        var source = _runningSource;
+        _runningSource = null;
+        if (source is not null)
+        {
+            await source.StopAsync(cancellationToken);
+        }
     }
 }
