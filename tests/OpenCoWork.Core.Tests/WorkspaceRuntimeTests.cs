@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using OpenCoWork.Abstractions;
+using OpenCoWork.Automations;
 using OpenCoWork.Core.Hosting;
 using OpenCoWork.Teams;
 using Xunit;
@@ -376,6 +377,54 @@ public sealed class WorkspaceRuntimeTests
         Assert.True(probe.BindingWasUnavailableWhenSessionStopped);
     }
 
+    [Fact]
+    public async Task Automations_is_non_primary_and_binding_follows_runtime_lifecycle()
+    {
+        var probe = new AutomationsLifecycleProbe();
+        var services = new ServiceCollection();
+        services.AddSingleton(probe);
+        services.AddSingleton(new AutomationsConfig { Enabled = true });
+        var registry = new ModuleRegistry(
+        [
+            Module<AutomationsSessionModule>("session", []),
+            Module<AutomationsModule>("automations", ["session"]),
+            Module<AutomationsHostModule>("host", ["automations"], canBePrimaryHost: true),
+        ]);
+        services.AddOpenCoWorkRuntime(
+            registry,
+            registry.SelectPrimaryModule(),
+            TimeSpan.FromSeconds(1));
+        await using var provider = services.BuildServiceProvider();
+        var runtime = provider.GetRequiredService<WorkspaceRuntime>();
+        var binding = provider.GetRequiredService<AutomationsModuleRuntime>();
+
+        Assert.Equal(ToolBindingAvailability.Unavailable, binding.BindingAvailability);
+
+        await runtime.StartAsync(TestContext.Current.CancellationToken);
+        Assert.Equal(ToolBindingAvailability.Available, binding.BindingAvailability);
+
+        await runtime.StopAsync(TestContext.Current.CancellationToken);
+
+        Assert.Equal(ToolBindingAvailability.Unavailable, binding.BindingAvailability);
+        Assert.True(probe.BindingWasUnavailableWhenSessionStopped);
+    }
+
+    [Fact]
+    public async Task Disabled_automations_stays_unavailable()
+    {
+        var module = new AutomationsModule();
+        var services = new ServiceCollection();
+        module.ConfigureServices(services);
+        await using var provider = services.BuildServiceProvider();
+        var binding = provider.GetRequiredService<AutomationsModuleRuntime>();
+
+        await module.StartAsync(provider, TestContext.Current.CancellationToken);
+        Assert.Equal(ToolBindingAvailability.Unavailable, binding.BindingAvailability);
+
+        await module.StopAsync(provider, TestContext.Current.CancellationToken);
+        Assert.Equal(ToolBindingAvailability.Unavailable, binding.BindingAvailability);
+    }
+
     private static WorkspaceRuntime CreateRuntime(
         LifecycleProbe probe,
         params ModuleDescriptor[] modules) =>
@@ -527,7 +576,52 @@ public sealed class WorkspaceRuntimeTests
             ValueTask.CompletedTask;
     }
 
+    public sealed class AutomationsSessionModule : IOpenCoWorkModule
+    {
+        public void ConfigureServices(IServiceCollection services)
+        {
+        }
+
+        public ValueTask StartAsync(
+            IServiceProvider services,
+            CancellationToken cancellationToken) =>
+            ValueTask.CompletedTask;
+
+        public ValueTask StopAsync(
+            IServiceProvider services,
+            CancellationToken cancellationToken)
+        {
+            services.GetRequiredService<AutomationsLifecycleProbe>()
+                .BindingWasUnavailableWhenSessionStopped =
+                services.GetRequiredService<AutomationsModuleRuntime>().BindingAvailability ==
+                ToolBindingAvailability.Unavailable;
+            return ValueTask.CompletedTask;
+        }
+    }
+
+    public sealed class AutomationsHostModule : IOpenCoWorkModule
+    {
+        public void ConfigureServices(IServiceCollection services)
+        {
+        }
+
+        public ValueTask StartAsync(
+            IServiceProvider services,
+            CancellationToken cancellationToken) =>
+            ValueTask.CompletedTask;
+
+        public ValueTask StopAsync(
+            IServiceProvider services,
+            CancellationToken cancellationToken) =>
+            ValueTask.CompletedTask;
+    }
+
     public sealed class TeamsLifecycleProbe
+    {
+        public bool BindingWasUnavailableWhenSessionStopped { get; set; }
+    }
+
+    public sealed class AutomationsLifecycleProbe
     {
         public bool BindingWasUnavailableWhenSessionStopped { get; set; }
     }

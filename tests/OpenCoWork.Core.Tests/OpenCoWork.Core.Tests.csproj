@@ -16,6 +16,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\..\src\OpenCoWork.Automations\OpenCoWork.Automations.csproj" />
     <ProjectReference Include="..\..\src\OpenCoWork.Core\OpenCoWork.Core.csproj" />
     <ProjectReference Include="..\..\src\OpenCoWork.Teams\OpenCoWork.Teams.csproj" />
     <ProjectReference Include="..\OpenCoWork.PluginFixture\OpenCoWork.PluginFixture.csproj" />

@@ -1,4 +1,5 @@
 using OpenCoWork.Abstractions;
+using OpenCoWork.Automations;
 using OpenCoWork.Core.Configuration;
 using OpenCoWork.Teams;
 using Xunit;
@@ -53,6 +54,13 @@ public sealed class ConfigurationPipelineTests
             {"type":"object","properties":{"count":{"type":"integer","minimum":1,"maximum":10}},"required":["count"],"additionalProperties":false}
             """),
         new(
+            "automations",
+            typeof(AutomationsConfig),
+            static () => new AutomationsConfig(),
+            """
+            {"type":"object","properties":{"enabled":{"type":"boolean"},"maxConcurrentRuns":{"type":"integer","minimum":1,"maximum":16},"maximumAttentionTimeout":{"type":"string","format":"duration"},"maximumRunTimeout":{"type":"string","format":"duration"}},"additionalProperties":false}
+            """),
+        new(
             "teams",
             typeof(CoWorkConfig),
             static () => new CoWorkConfig(),
@@ -60,6 +68,74 @@ public sealed class ConfigurationPipelineTests
             {"type":"object","properties":{"dispatchLease":{"type":"string","format":"duration"},"leaseRenewalInterval":{"type":"string","format":"duration"},"maxConcurrentAgentRuns":{"type":"integer","minimum":1,"maximum":64},"maxConcurrentAgentRunsPerMission":{"type":"integer","minimum":1,"maximum":16},"maxDepth":{"type":"integer","minimum":1,"maximum":4},"maximumArtifactBytes":{"type":"integer","minimum":1,"maximum":67108864},"maximumDispatchAttempts":{"type":"integer","minimum":5,"maximum":5},"maximumMailboxMessageBytes":{"type":"integer","minimum":1,"maximum":65536},"maximumMembersPerMission":{"type":"integer","minimum":1,"maximum":16},"maximumOwnedFileBytes":{"type":"integer","minimum":1,"maximum":536870912},"maximumTasksPerMission":{"type":"integer","minimum":1,"maximum":256}},"additionalProperties":false}
             """),
     ];
+
+    [Fact]
+    public void Automations_configuration_is_disabled_by_default_and_enforces_workspace_caps()
+    {
+        var defaults = ConfigLoader.Load(new ConfigLoadRequest(Descriptors));
+
+        Assert.True(defaults.Validation.IsValid);
+        var automations = defaults.Snapshot!.GetRequiredSection<AutomationsConfig>();
+        Assert.False(automations.Enabled);
+        Assert.Equal(3, automations.MaxConcurrentRuns);
+        Assert.Equal(TimeSpan.FromMinutes(30), automations.MaximumRunTimeout);
+        Assert.Equal(TimeSpan.FromHours(24), automations.MaximumAttentionTimeout);
+
+        using var files = new TempDirectory();
+        var invalid = files.Write(
+            "invalid-automations.jsonc",
+            """
+            {
+              "automations": {
+                "maxConcurrentRuns": 17
+              }
+            }
+            """);
+        var loaded = ConfigLoader.Load(new ConfigLoadRequest(Descriptors)
+        {
+            WorkspaceConfigPath = invalid,
+        });
+
+        Assert.False(loaded.Validation.IsValid);
+        Assert.Contains(
+            loaded.Validation.Diagnostics,
+            diagnostic =>
+                diagnostic.Code == "OCWCFG007" &&
+                diagnostic.Path == "automations.maxConcurrentRuns");
+
+        var invalidDurations = files.Write(
+            "invalid-automation-durations.jsonc",
+            """
+            {
+              "automations": {
+                "maximumRunTimeout": "25h",
+                "maximumAttentionTimeout": "169h"
+              }
+            }
+            """);
+        loaded = ConfigLoader.Load(new ConfigLoadRequest(Descriptors)
+        {
+            WorkspaceConfigPath = invalidDurations,
+        });
+
+        Assert.False(loaded.Validation.IsValid);
+        Assert.Contains(
+            loaded.Validation.Diagnostics,
+            diagnostic =>
+                diagnostic.Code == "OCWCFG008" &&
+                diagnostic.Path == "automations" &&
+                diagnostic.Message.StartsWith(
+                    nameof(AutomationsConfig.MaximumRunTimeout),
+                    StringComparison.Ordinal));
+        Assert.Contains(
+            loaded.Validation.Diagnostics,
+            diagnostic =>
+                diagnostic.Code == "OCWCFG008" &&
+                diagnostic.Path == "automations" &&
+                diagnostic.Message.StartsWith(
+                    nameof(AutomationsConfig.MaximumAttentionTimeout),
+                    StringComparison.Ordinal));
+    }
 
     [Fact]
     public void Teams_configuration_uses_safe_defaults_and_enforces_hard_limits()

@@ -2,6 +2,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using OpenCoWork.Abstractions;
 using OpenCoWork.App;
+using OpenCoWork.Automations;
 using OpenCoWork.Core.Capabilities;
 using OpenCoWork.Core.Configuration;
 using OpenCoWork.Core.Hosting;
@@ -34,6 +35,7 @@ public sealed class RuntimeCompositionIntegrationTests
                     module => Assert.IsType<SessionModule>(module),
                     module => Assert.IsType<AcpModule>(module),
                     module => Assert.IsType<AppServerModule>(module),
+                    module => Assert.IsType<AutomationsModule>(module),
                     module => Assert.IsType<CliModule>(module),
                     module => Assert.IsType<TeamsModule>(module));
                 Assert.IsType<ModuleLifecycleCoordinator>(
@@ -51,7 +53,7 @@ public sealed class RuntimeCompositionIntegrationTests
                     host.Services.GetRequiredService<SecretRedactor>(),
                     host.Services.GetRequiredService<ISensitiveDataService>());
                 Assert.Equal(
-                    ["session", "acp", "app-server", "cli", "teams"],
+                    ["session", "acp", "app-server", "automations", "cli", "teams"],
                     host.Services.GetRequiredService<ModuleRegistry>()
                         .StartupOrder.Select(module => module.Id));
                 var capabilities = host.Services

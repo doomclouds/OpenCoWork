@@ -1,4 +1,5 @@
 using OpenCoWork.Abstractions;
+using OpenCoWork.Automations;
 using OpenCoWork.Core.Hosting;
 using Xunit;
 
@@ -60,6 +61,29 @@ public sealed class ModuleRegistryTests
         Assert.Equal(
             "OCWMOD006",
             Assert.Throws<ModuleRegistryException>(() => tied.SelectPrimaryModule()).Code);
+    }
+
+    [Fact]
+    public void Automations_is_non_primary_and_starts_after_session()
+    {
+        var attribute = typeof(AutomationsModule)
+            .GetCustomAttributes(typeof(OpenCoWorkModuleAttribute), inherit: false)
+            .Cast<OpenCoWorkModuleAttribute>()
+            .Single();
+        var registry = new ModuleRegistry(
+        [
+            new ModuleDescriptor(
+                typeof(AutomationsModule),
+                attribute.Id,
+                attribute.Dependencies,
+                attribute.Priority,
+                attribute.CanBePrimaryHost),
+            Module("session", [], canBePrimaryHost: true),
+        ]);
+
+        Assert.Equal(["session", "automations"], registry.StartupOrder.Select(item => item.Id));
+        Assert.False(attribute.CanBePrimaryHost);
+        Assert.Equal("session", registry.SelectPrimaryModule().Id);
     }
 
     public static TheoryData<ModuleDescriptor[], string> InvalidCatalogs =>

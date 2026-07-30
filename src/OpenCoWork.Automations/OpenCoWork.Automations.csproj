@@ -1,5 +1,11 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
   <ItemGroup>
+    <PackageReference Include="Cronos" />
+    <PackageReference Include="Fluid.Core" />
+    <PackageReference Include="YamlDotNet" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\OpenCoWork.Abstractions\OpenCoWork.Abstractions.csproj" />
     <ProjectReference Include="..\OpenCoWork.Generators\OpenCoWork.Generators.csproj"
                       OutputItemType="Analyzer"

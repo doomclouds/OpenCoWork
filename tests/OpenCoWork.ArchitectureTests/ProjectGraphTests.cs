@@ -47,7 +47,12 @@ public sealed class ProjectGraphTests
             "OpenCoWork.Core.Tests",
             "net10.0",
             "Exe",
-            ["OpenCoWork.Core", "OpenCoWork.PluginFixture", "OpenCoWork.Teams"],
+            [
+                "OpenCoWork.Automations",
+                "OpenCoWork.Core",
+                "OpenCoWork.PluginFixture",
+                "OpenCoWork.Teams",
+            ],
             []),
         new("OpenCoWork.Protocol.Tests", "net10.0", "Exe", ["OpenCoWork.Protocol"], []),
         new("OpenCoWork.Generators.Tests", "net10.0", "Exe", ["OpenCoWork.Generators"], []),
@@ -145,6 +150,43 @@ public sealed class ProjectGraphTests
             errors,
             error => error.Contains(
                 "OpenCoWork.Protocol -> OpenCoWork.Teams",
+                StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void Automations_and_protocol_reject_forbidden_edges()
+    {
+        var projects = FrozenProjects.ToDictionary(
+            contract => contract.Name,
+            contract => new ProjectModel(
+                contract.Name,
+                contract.TargetFramework,
+                contract.OutputType,
+                contract.AssemblyName ?? contract.Name,
+                [.. contract.ProjectReferences],
+                [.. contract.AnalyzerReferences],
+                []));
+
+        projects["OpenCoWork.Automations"].ProjectReferences.Add("OpenCoWork.Core");
+        projects["OpenCoWork.Automations"].ProjectReferences.Add("OpenCoWork.Teams");
+        projects["OpenCoWork.Protocol"].ProjectReferences.Add("OpenCoWork.Automations");
+
+        var errors = FindReferenceMismatches(projects);
+
+        Assert.Contains(
+            errors,
+            error => error.Contains(
+                "OpenCoWork.Automations -> OpenCoWork.Core",
+                StringComparison.Ordinal));
+        Assert.Contains(
+            errors,
+            error => error.Contains(
+                "OpenCoWork.Automations -> OpenCoWork.Teams",
+                StringComparison.Ordinal));
+        Assert.Contains(
+            errors,
+            error => error.Contains(
+                "OpenCoWork.Protocol -> OpenCoWork.Automations",
                 StringComparison.Ordinal));
     }
 
@@ -250,6 +292,51 @@ public sealed class ProjectGraphTests
 
         Assert.Equal(["OpenCoWork.Core"], references);
         Assert.Equal(["9.4.0"], packageVersions);
+    }
+
+    [Fact]
+    public void Automation_dependencies_are_frozen_and_referenced_only_by_automations()
+    {
+        var repositoryRoot = FindRepositoryRoot();
+        var expected = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["Cronos"] = "0.13.0",
+            ["Fluid.Core"] = "2.31.0",
+            ["YamlDotNet"] = "18.1.0",
+        };
+        var projectFiles = Directory.EnumerateFiles(
+            Path.Combine(repositoryRoot, "src"),
+            "*.csproj",
+            SearchOption.AllDirectories);
+
+        foreach (var package in expected)
+        {
+            var references = projectFiles
+                .Where(path => XDocument.Load(path)
+                    .Descendants()
+                    .Any(element =>
+                        element.Name.LocalName == "PackageReference" &&
+                        string.Equals(
+                            element.Attribute("Include")?.Value,
+                            package.Key,
+                            StringComparison.Ordinal)))
+                .Select(path => Path.GetFileNameWithoutExtension(path)!)
+                .ToArray();
+            var versions = XDocument
+                .Load(Path.Combine(repositoryRoot, "Directory.Packages.props"))
+                .Descendants()
+                .Where(element =>
+                    element.Name.LocalName == "PackageVersion" &&
+                    string.Equals(
+                        element.Attribute("Include")?.Value,
+                        package.Key,
+                        StringComparison.Ordinal))
+                .Select(element => element.Attribute("Version")!.Value)
+                .ToArray();
+
+            Assert.Equal(["OpenCoWork.Automations"], references);
+            Assert.Equal([package.Value], versions);
+        }
     }
 
     private static Dictionary<string, ProjectModel> LoadProjects(string repositoryRoot)
