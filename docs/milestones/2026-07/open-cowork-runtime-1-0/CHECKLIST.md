@@ -9,8 +9,8 @@ Milestone standard: [README.md](README.md)
 - Status: In Progress
 - Progress: 7/11
 - Done: 7
-- In progress: 0
-- Not started: 4
+- In progress: 1
+- Not started: 3
 - Deferred: 0
 - Split: 0
 
@@ -59,11 +59,11 @@ Milestone standard: [README.md](README.md)
   - Related archive: docs/superpowers/archives/2026-07/2026-07-29-open-cowork-m6-capability-ecosystem-archives.md
   - Completion signal: Capability Catalog、插件与 Skill、Provider/Auth、MCP/LSP、动态与延迟工具、Hook、Git/Terminal/Memory 和 Wire 1.1 已通过 win-x64、osx-arm64 发布目录真机验收；M6-ACC-001 至 M6-ACC-010 全部 Passed，M10 仍须重跑最终发布候选。
 - [ ] 8. M7 - Multi-Agent CoWork
-  - Status: Not Started
-  - Related spec: docs/superpowers/specs/2026-07-25-open-cowork-runtime-1-0-roadmap.md
-  - Related plan: None yet.
+  - Status: In Progress
+  - Related spec: docs/superpowers/specs/2026-07-30-open-cowork-m7-multi-agent-cowork-design.md
+  - Related plan: docs/superpowers/plans/2026-07-30-open-cowork-m7-multi-agent-cowork-implementation-plan.md
   - Related archive: None yet.
-  - Completion signal: Mission DAG、Mailbox、Worktree、恢复、综合和单次回传验收通过。
+  - Completion signal: M7 的 27 项设计决策与 10-Outcome 实施计划已冻结并落盘；尚未开始实现。
 - [ ] 9. M8 - Automations and Scheduler
   - Status: Not Started
   - Related spec: docs/superpowers/specs/2026-07-25-open-cowork-runtime-1-0-roadmap.md
