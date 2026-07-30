@@ -47,7 +47,7 @@ public sealed class ProjectGraphTests
             "OpenCoWork.Core.Tests",
             "net10.0",
             "Exe",
-            ["OpenCoWork.Core", "OpenCoWork.PluginFixture"],
+            ["OpenCoWork.Core", "OpenCoWork.PluginFixture", "OpenCoWork.Teams"],
             []),
         new("OpenCoWork.Protocol.Tests", "net10.0", "Exe", ["OpenCoWork.Protocol"], []),
         new("OpenCoWork.Generators.Tests", "net10.0", "Exe", ["OpenCoWork.Generators"], []),
@@ -108,6 +108,43 @@ public sealed class ProjectGraphTests
             errors,
             error => error.Contains(
                 "OpenCoWork.Protocol -> OpenCoWork.Core",
+                StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void Teams_and_protocol_reject_forbidden_edges()
+    {
+        var projects = FrozenProjects.ToDictionary(
+            contract => contract.Name,
+            contract => new ProjectModel(
+                contract.Name,
+                contract.TargetFramework,
+                contract.OutputType,
+                contract.AssemblyName ?? contract.Name,
+                [.. contract.ProjectReferences],
+                [.. contract.AnalyzerReferences],
+                []));
+
+        projects["OpenCoWork.Teams"].ProjectReferences.Add("OpenCoWork.Core");
+        projects["OpenCoWork.Teams"].ProjectReferences.Add("OpenCoWork.Automations");
+        projects["OpenCoWork.Protocol"].ProjectReferences.Add("OpenCoWork.Teams");
+
+        var errors = FindReferenceMismatches(projects);
+
+        Assert.Contains(
+            errors,
+            error => error.Contains(
+                "OpenCoWork.Teams -> OpenCoWork.Core",
+                StringComparison.Ordinal));
+        Assert.Contains(
+            errors,
+            error => error.Contains(
+                "OpenCoWork.Teams -> OpenCoWork.Automations",
+                StringComparison.Ordinal));
+        Assert.Contains(
+            errors,
+            error => error.Contains(
+                "OpenCoWork.Protocol -> OpenCoWork.Teams",
                 StringComparison.Ordinal));
     }
 

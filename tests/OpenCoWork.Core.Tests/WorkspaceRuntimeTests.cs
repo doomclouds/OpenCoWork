@@ -3,6 +3,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using OpenCoWork.Abstractions;
 using OpenCoWork.Core.Hosting;
+using OpenCoWork.Teams;
 using Xunit;
 
 namespace OpenCoWork.Core.Tests;
@@ -336,6 +337,45 @@ public sealed class WorkspaceRuntimeTests
             descriptor => descriptor.ServiceType == typeof(RegistrationMarker));
     }
 
+    [Fact]
+    public async Task Teams_is_non_primary_and_binding_follows_runtime_lifecycle()
+    {
+        var attribute = typeof(TeamsModule)
+            .GetCustomAttributes(typeof(OpenCoWorkModuleAttribute), inherit: false)
+            .Cast<OpenCoWorkModuleAttribute>()
+            .Single();
+        Assert.Equal("teams", attribute.Id);
+        Assert.Equal(["session"], attribute.Dependencies);
+        Assert.False(attribute.CanBePrimaryHost);
+
+        var probe = new TeamsLifecycleProbe();
+        var services = new ServiceCollection();
+        services.AddSingleton(probe);
+        var registry = new ModuleRegistry(
+        [
+            Module<TeamsSessionModule>("session", []),
+            Module<TeamsModule>("teams", ["session"]),
+            Module<TeamsHostModule>("host", ["teams"], canBePrimaryHost: true),
+        ]);
+        services.AddOpenCoWorkRuntime(
+            registry,
+            registry.SelectPrimaryModule(),
+            TimeSpan.FromSeconds(1));
+        await using var provider = services.BuildServiceProvider();
+        var runtime = provider.GetRequiredService<WorkspaceRuntime>();
+        var binding = provider.GetRequiredService<CoWorkModuleRuntime>();
+
+        Assert.Equal(ToolBindingAvailability.Unavailable, binding.BindingAvailability);
+
+        await runtime.StartAsync(TestContext.Current.CancellationToken);
+        Assert.Equal(ToolBindingAvailability.Available, binding.BindingAvailability);
+
+        await runtime.StopAsync(TestContext.Current.CancellationToken);
+
+        Assert.Equal(ToolBindingAvailability.Unavailable, binding.BindingAvailability);
+        Assert.True(probe.BindingWasUnavailableWhenSessionStopped);
+    }
+
     private static WorkspaceRuntime CreateRuntime(
         LifecycleProbe probe,
         params ModuleDescriptor[] modules) =>
@@ -445,6 +485,51 @@ public sealed class WorkspaceRuntimeTests
             IServiceProvider services,
             CancellationToken cancellationToken) =>
             ValueTask.CompletedTask;
+    }
+
+    public sealed class TeamsSessionModule : IOpenCoWorkModule
+    {
+        public void ConfigureServices(IServiceCollection services)
+        {
+        }
+
+        public ValueTask StartAsync(
+            IServiceProvider services,
+            CancellationToken cancellationToken) =>
+            ValueTask.CompletedTask;
+
+        public ValueTask StopAsync(
+            IServiceProvider services,
+            CancellationToken cancellationToken)
+        {
+            services.GetRequiredService<TeamsLifecycleProbe>()
+                .BindingWasUnavailableWhenSessionStopped =
+                services.GetRequiredService<CoWorkModuleRuntime>().BindingAvailability ==
+                ToolBindingAvailability.Unavailable;
+            return ValueTask.CompletedTask;
+        }
+    }
+
+    public sealed class TeamsHostModule : IOpenCoWorkModule
+    {
+        public void ConfigureServices(IServiceCollection services)
+        {
+        }
+
+        public ValueTask StartAsync(
+            IServiceProvider services,
+            CancellationToken cancellationToken) =>
+            ValueTask.CompletedTask;
+
+        public ValueTask StopAsync(
+            IServiceProvider services,
+            CancellationToken cancellationToken) =>
+            ValueTask.CompletedTask;
+    }
+
+    public sealed class TeamsLifecycleProbe
+    {
+        public bool BindingWasUnavailableWhenSessionStopped { get; set; }
     }
 
     public sealed class NoopHostedService : IHostedService

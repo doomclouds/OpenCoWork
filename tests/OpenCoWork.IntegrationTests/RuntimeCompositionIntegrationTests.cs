@@ -7,6 +7,7 @@ using OpenCoWork.Core.Configuration;
 using OpenCoWork.Core.Hosting;
 using OpenCoWork.Core.State;
 using OpenCoWork.Core.Workspaces;
+using OpenCoWork.Teams;
 using Xunit;
 
 namespace OpenCoWork.IntegrationTests;
@@ -32,7 +33,8 @@ public sealed class RuntimeCompositionIntegrationTests
                     module => Assert.IsType<SessionModule>(module),
                     module => Assert.IsType<AcpModule>(module),
                     module => Assert.IsType<AppServerModule>(module),
-                    module => Assert.IsType<CliModule>(module));
+                    module => Assert.IsType<CliModule>(module),
+                    module => Assert.IsType<TeamsModule>(module));
                 Assert.IsType<ModuleLifecycleCoordinator>(
                     Assert.Single(host.Services.GetServices<IHostedService>()));
 
@@ -42,7 +44,7 @@ public sealed class RuntimeCompositionIntegrationTests
                 Assert.Equal(WorkspaceRuntimeStatus.Running, runtime.Status);
                 Assert.Equal("cli", runtime.StartedState.PrimaryHost.Id);
                 Assert.Equal(
-                    ["session", "acp", "app-server", "cli"],
+                    ["session", "acp", "app-server", "cli", "teams"],
                     host.Services.GetRequiredService<ModuleRegistry>()
                         .StartupOrder.Select(module => module.Id));
                 var capabilities = host.Services
