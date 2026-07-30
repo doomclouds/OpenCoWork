@@ -70,6 +70,8 @@ public static class OpenCoWorkHostingExtensions
                 stopTimeout));
         services.AddSingleton(serviceProvider =>
             serviceProvider.GetRequiredService<ModuleLifecycleCoordinator>().Runtime);
+        services.AddSingleton<IModuleHealthReporter>(serviceProvider =>
+            serviceProvider.GetRequiredService<WorkspaceRuntime>());
         services.AddSingleton<IHostedService>(serviceProvider =>
             serviceProvider.GetRequiredService<ModuleLifecycleCoordinator>());
         return services;
@@ -289,7 +291,7 @@ public sealed record WorkspaceRuntimeStartedState(
     ModuleDescriptor PrimaryHost,
     DateTimeOffset StartedAtUtc);
 
-public sealed class WorkspaceRuntime : IAsyncDisposable
+public sealed class WorkspaceRuntime : IAsyncDisposable, IModuleHealthReporter
 {
     private readonly ModuleLifecycleCoordinator _coordinator;
     private readonly IServiceProvider _services;

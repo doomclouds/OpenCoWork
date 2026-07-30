@@ -102,6 +102,7 @@ internal sealed class AutomationSourceRuntime : IAsyncDisposable
     private CancellationTokenSource? _lifetime;
     private FileSystemWatcher? _watcher;
     private Task? _worker;
+    private int _healthy;
 
     public AutomationSourceRuntime(
         IWorkspaceStateStore store,
@@ -120,6 +121,12 @@ internal sealed class AutomationSourceRuntime : IAsyncDisposable
     }
 
     public string DefinitionsDirectory { get; }
+
+    public bool IsHealthy => Volatile.Read(ref _healthy) != 0;
+
+    public event Action? Changed;
+
+    public event Action<Exception>? Faulted;
 
     public async ValueTask StartAsync(CancellationToken cancellationToken)
     {
@@ -200,6 +207,8 @@ internal sealed class AutomationSourceRuntime : IAsyncDisposable
                 (connection, transaction, token) =>
                     PublishAsync(connection, transaction, candidates, now, token),
                 cancellationToken);
+            Volatile.Write(ref _healthy, 1);
+            Changed?.Invoke();
         }
         finally
         {
@@ -235,7 +244,16 @@ internal sealed class AutomationSourceRuntime : IAsyncDisposable
                 {
                 }
 
-                await ScanAsync(cancellationToken);
+                try
+                {
+                    await ScanAsync(cancellationToken);
+                }
+                catch (Exception exception) when (
+                    exception is not OperationCanceledException)
+                {
+                    Volatile.Write(ref _healthy, 0);
+                    Faulted?.Invoke(exception);
+                }
             }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)

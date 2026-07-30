@@ -63,6 +63,13 @@ public interface IOpenCoWorkModule
         CancellationToken cancellationToken);
 }
 
+public interface IModuleHealthReporter
+{
+    void ReportDegraded(string moduleId, string reason);
+
+    void ClearDegraded(string moduleId);
+}
+
 [AttributeUsage(AttributeTargets.Class, AllowMultiple = false, Inherited = false)]
 public sealed class ConfigSectionAttribute : Attribute
 {

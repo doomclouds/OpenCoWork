@@ -5,6 +5,16 @@ using OpenCoWork.Abstractions;
 
 namespace OpenCoWork.Automations;
 
+internal sealed class AutomationControlPlane
+{
+    private int _available;
+
+    public bool IsAvailable => Volatile.Read(ref _available) != 0;
+
+    public void SetAvailable(bool available) =>
+        Volatile.Write(ref _available, available ? 1 : 0);
+}
+
 [ConfigSection("automations")]
 public sealed record AutomationsConfig : IValidatableObject
 {
@@ -53,6 +63,7 @@ public sealed class AutomationsModule : IOpenCoWorkModule
 
         services.TryAddSingleton<AutomationDefinitionLoader>();
         services.TryAddSingleton<AutomationTemplateRenderer>();
+        services.TryAddSingleton<AutomationControlPlane>();
         services.TryAddSingleton(serviceProvider =>
             new AutomationSourceRuntime(
                 serviceProvider.GetRequiredService<IWorkspaceStateStore>(),
@@ -63,12 +74,17 @@ public sealed class AutomationsModule : IOpenCoWorkModule
         services.TryAddSingleton<IAutomationService>(serviceProvider =>
             serviceProvider.GetRequiredService<AutomationService>());
         services.TryAddSingleton<AutomationDispatcher>();
+        services.TryAddSingleton<AutomationReconciler>();
         services.TryAddSingleton(serviceProvider =>
             AutomationsModuleRuntime.Create(
                 serviceProvider.GetRequiredService<AutomationsConfig>(),
                 () => serviceProvider.GetService<IWorkspaceStateStore>() is null
                     ? null
-                    : serviceProvider.GetRequiredService<AutomationSourceRuntime>()));
+                    : serviceProvider.GetRequiredService<AutomationSourceRuntime>(),
+                () => serviceProvider.GetService<IWorkspaceStateStore>() is null
+                    ? null
+                    : serviceProvider.GetRequiredService<AutomationReconciler>(),
+                serviceProvider.GetRequiredService<AutomationControlPlane>()));
     }
 
     public ValueTask StartAsync(
@@ -88,26 +104,35 @@ public sealed class AutomationsModuleRuntime
 {
     private readonly AutomationsConfig _config;
     private readonly Func<AutomationSourceRuntime?> _source;
+    private readonly Func<AutomationReconciler?> _reconciler;
+    private readonly AutomationControlPlane? _controlPlane;
     private AutomationSourceRuntime? _runningSource;
+    private AutomationReconciler? _runningReconciler;
     private int _bindingAvailability = (int)ToolBindingAvailability.Unavailable;
 
     public AutomationsModuleRuntime(AutomationsConfig config)
-        : this(config, static () => null)
+        : this(config, static () => null, static () => null, null)
     {
     }
 
     private AutomationsModuleRuntime(
         AutomationsConfig config,
-        Func<AutomationSourceRuntime?> source)
+        Func<AutomationSourceRuntime?> source,
+        Func<AutomationReconciler?> reconciler,
+        AutomationControlPlane? controlPlane)
     {
         _config = config ?? throw new ArgumentNullException(nameof(config));
         _source = source ?? throw new ArgumentNullException(nameof(source));
+        _reconciler = reconciler ?? throw new ArgumentNullException(nameof(reconciler));
+        _controlPlane = controlPlane;
     }
 
     internal static AutomationsModuleRuntime Create(
         AutomationsConfig config,
-        Func<AutomationSourceRuntime?> source) =>
-        new(config, source);
+        Func<AutomationSourceRuntime?> source,
+        Func<AutomationReconciler?> reconciler,
+        AutomationControlPlane controlPlane) =>
+        new(config, source, reconciler, controlPlane);
 
     public ToolBindingAvailability BindingAvailability =>
         (ToolBindingAvailability)Volatile.Read(ref _bindingAvailability);
@@ -118,12 +143,39 @@ public sealed class AutomationsModuleRuntime
         if (_config.Enabled)
         {
             var source = _source();
-            if (source is not null)
+            var reconciler = _reconciler();
+            try
             {
-                await source.StartAsync(cancellationToken);
+                if (source is not null)
+                {
+                    await source.StartAsync(cancellationToken);
+                }
+
+                _controlPlane?.SetAvailable(true);
+                if (reconciler is not null)
+                {
+                    await reconciler.StartAsync(cancellationToken);
+                }
+            }
+            catch
+            {
+                _controlPlane?.SetAvailable(false);
+                if (reconciler is not null)
+                {
+                    await reconciler.StopAsync(CancellationToken.None);
+                }
+
+                if (source is not null)
+                {
+                    await source.StopAsync(CancellationToken.None);
+                }
+
+                throw;
             }
 
             _runningSource = source;
+            _runningReconciler = reconciler;
+            _controlPlane?.SetAvailable(true);
             Volatile.Write(
                 ref _bindingAvailability,
                 (int)ToolBindingAvailability.Available);
@@ -135,6 +187,14 @@ public sealed class AutomationsModuleRuntime
         Volatile.Write(
             ref _bindingAvailability,
             (int)ToolBindingAvailability.Unavailable);
+        _controlPlane?.SetAvailable(false);
+        var reconciler = _runningReconciler;
+        _runningReconciler = null;
+        if (reconciler is not null)
+        {
+            await reconciler.StopAsync(cancellationToken);
+        }
+
         var source = _runningSource;
         _runningSource = null;
         if (source is not null)

@@ -360,7 +360,7 @@ public sealed class AutomationServiceTests
         Assert.Equal(AutomationErrorCodes.Unavailable, globallyDisabled.Error!.Code);
     }
 
-    private sealed class Fixture : IAsyncDisposable
+    internal sealed class Fixture : IAsyncDisposable
     {
         private Fixture(
             AutomationSourceTestWorkspace workspace,
@@ -388,14 +388,19 @@ public sealed class AutomationServiceTests
 
         public static async Task<Fixture> CreateAsync(
             string? secret = null,
-            bool enabled = true)
+            bool enabled = true,
+            int maxConcurrentRuns = AutomationRuntimeLimits.DefaultMaxConcurrentRuns)
         {
             var workspace = await AutomationSourceTestWorkspace.CreateAsync();
             ISensitiveDataService sensitive = secret is null
                 ? new NoSensitiveDataService()
                 : new CanarySensitiveDataService(secret);
             var runtime = new MutableRuntimeSnapshotProvider();
-            var config = new AutomationsConfig { Enabled = enabled };
+            var config = new AutomationsConfig
+            {
+                Enabled = enabled,
+                MaxConcurrentRuns = maxConcurrentRuns,
+            };
             var paths = new OpenCoWorkPaths(workspace.Root);
             var prepared = new PreparedAutomationTurnStore(paths, sensitive);
             var renderer = new AutomationTemplateRenderer(
@@ -536,7 +541,7 @@ public sealed class AutomationServiceTests
             """;
     }
 
-    private sealed class MutableRuntimeSnapshotProvider : IAutomationRuntimeSnapshotProvider
+    internal sealed class MutableRuntimeSnapshotProvider : IAutomationRuntimeSnapshotProvider
     {
         public bool WorkspaceTrusted { get; set; } = true;
 

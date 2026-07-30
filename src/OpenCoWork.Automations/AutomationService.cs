@@ -15,7 +15,8 @@ internal sealed class AutomationService(
     IAutomationPreparedTurnStore preparedTurns,
     IAutomationRuntimeSnapshotProvider runtime,
     AutomationsConfig config,
-    TimeProvider timeProvider) : IAutomationService
+    TimeProvider timeProvider,
+    AutomationControlPlane? controlPlane = null) : IAutomationService
 {
     private static readonly JsonSerializerOptions JsonOptions =
         new(JsonSerializerDefaults.Web);
@@ -235,11 +236,96 @@ internal sealed class AutomationService(
             return ReceiptResult(receipt, requestSha256);
         }
 
+        return await StartRunCoreAsync(
+            request,
+            requestSha256,
+            new RunTrigger(
+                AutomationTriggerKind.Manual,
+                $"manual:{request.CommandId:D}",
+                null,
+                null,
+                null),
+            cancellationToken);
+    }
+
+    internal async Task<AutomationResult<AutomationRunSnapshot>> StartScheduledRunAsync(
+        string automationId,
+        DateTimeOffset expectedNextOccurrenceUtc,
+        CancellationToken cancellationToken)
+    {
+        var projection = await source.ReadAsync(automationId, cancellationToken);
+        if (projection?.Schedule is not { } schedule ||
+            projection.DefinitionVersion is null)
+        {
+            return await Failure<AutomationRunSnapshot>(
+                AutomationErrorCodes.NotFound,
+                "Automation Schedule was not found.",
+                cancellationToken);
+        }
+
+        var now = timeProvider.GetUtcNow();
+        var advance = AutomationScheduleCalculator.Advance(
+            schedule.Cron,
+            schedule.TimeZone,
+            expectedNextOccurrenceUtc,
+            now);
+        if (advance.CoalescedOccurrenceUtc is not { } scheduledForUtc)
+        {
+            return Error<AutomationRunSnapshot>(
+                projection.AutomationRevision,
+                AutomationErrorCodes.Conflict,
+                "Automation Schedule is not due.");
+        }
+
+        var idempotencyKey = AutomationScheduleCalculator.IdempotencyKey(
+            automationId,
+            projection.DefinitionVersion,
+            scheduledForUtc);
+        var runId = ScheduledRunId(scheduledForUtc, idempotencyKey);
+        var requestSha256 = Hash($"cron:{idempotencyKey}");
+        if (await ReadReceiptAsync(runId, cancellationToken) is { } receipt)
+        {
+            return ReceiptResult(receipt, requestSha256);
+        }
+
+        using var inputs = JsonDocument.Parse("{}");
+        var request = new StartAutomationRunRequest(
+            new AutomationActorContext(AutomationActorKind.Scheduler, "scheduler"),
+            automationId,
+            inputs.RootElement.Clone(),
+            runId,
+            projection.Revision);
+        return await StartRunCoreAsync(
+            request,
+            requestSha256,
+            new RunTrigger(
+                AutomationTriggerKind.Cron,
+                idempotencyKey,
+                scheduledForUtc,
+                expectedNextOccurrenceUtc,
+                advance.NextOccurrenceUtc),
+            cancellationToken);
+    }
+
+    private async Task<AutomationResult<AutomationRunSnapshot>> StartRunCoreAsync(
+        StartAutomationRunRequest request,
+        string requestSha256,
+        RunTrigger trigger,
+        CancellationToken cancellationToken)
+    {
         if (!config.Enabled)
         {
             return await Failure<AutomationRunSnapshot>(
                 AutomationErrorCodes.Unavailable,
                 "Automations are disabled.",
+                cancellationToken);
+        }
+
+        if (controlPlane is { IsAvailable: false })
+        {
+            return await Failure<AutomationRunSnapshot>(
+                AutomationErrorCodes.Unavailable,
+                "The Automation control plane is unavailable.",
                 cancellationToken);
         }
 
@@ -301,7 +387,9 @@ internal sealed class AutomationService(
             definition,
             runId,
             request.Inputs,
-            new AutomationTriggerContext("manual", null),
+            new AutomationTriggerContext(
+                trigger.Kind == AutomationTriggerKind.Manual ? "manual" : "cron",
+                trigger.ScheduledForUtc),
             cancellationToken);
         if (!rendered.IsValid)
         {
@@ -380,6 +468,7 @@ internal sealed class AutomationService(
                     promptSha256,
                     preparedTurnId,
                     captured.Value!,
+                    trigger,
                     token),
                 cancellationToken);
         }
@@ -538,6 +627,7 @@ internal sealed class AutomationService(
         string promptSha256,
         Guid preparedTurnId,
         AutomationRuntimeSnapshot captured,
+        RunTrigger trigger,
         CancellationToken cancellationToken)
     {
         if (await ReadReceiptAsync(
@@ -573,21 +663,18 @@ internal sealed class AutomationService(
                 "Automation Definition changed before Run creation.");
         }
 
-        if (await CountAsync(
+        if (trigger.Kind == AutomationTriggerKind.Cron &&
+            !await ScheduleMatchesAsync(
                 connection,
                 transaction,
-                """
-                SELECT count(*)
-                FROM automation_runs
-                WHERE status IN ('pending', 'running', 'needsAttention');
-                """,
-                cancellationToken) >= config.MaxConcurrentRuns)
+                request.AutomationId,
+                trigger.ExpectedNextOccurrenceUtc!.Value,
+                cancellationToken))
         {
             return Error<AutomationRunSnapshot>(
                 revision,
-                AutomationErrorCodes.RunConflict,
-                "The Automation concurrency limit is active.",
-                retryable: true);
+                AutomationErrorCodes.Conflict,
+                "Automation Schedule changed before Run creation.");
         }
 
         await using (var active = connection.CreateCommand())
@@ -605,12 +692,40 @@ internal sealed class AutomationService(
                     await active.ExecuteScalarAsync(cancellationToken),
                     CultureInfo.InvariantCulture) != 0)
             {
+                if (trigger.Kind == AutomationTriggerKind.Cron)
+                {
+                    await AdvanceScheduleAsync(
+                        connection,
+                        transaction,
+                        request.AutomationId,
+                        trigger,
+                        coalesced: true,
+                        cancellationToken);
+                }
+
                 return Error<AutomationRunSnapshot>(
                     revision,
                     AutomationErrorCodes.RunConflict,
                     "A nonterminal Automation Run already exists.",
                     retryable: true);
             }
+        }
+
+        if (await CountAsync(
+                connection,
+                transaction,
+                """
+                SELECT count(*)
+                FROM automation_runs
+                WHERE status IN ('pending', 'running');
+                """,
+                cancellationToken) >= config.MaxConcurrentRuns)
+        {
+            return Error<AutomationRunSnapshot>(
+                revision,
+                AutomationErrorCodes.RunConflict,
+                "The Automation concurrency limit is active.",
+                retryable: true);
         }
 
         var now = timeProvider.GetUtcNow();
@@ -640,8 +755,8 @@ internal sealed class AutomationService(
                 diagnostic, revision, created_utc, started_utc, updated_utc,
                 completed_utc)
             VALUES (
-                $runId, $automationId, 'manual',
-                $idempotencyKey, NULL, 'pending',
+                $runId, $automationId, $triggerKind,
+                $idempotencyKey, $scheduledOccurrence, 'pending',
                 $definition, $inputsSha, $promptSha,
                 $preparedTurnId, $workspaceMode, $workspaceAccess,
                 $providerId, $modelId, $permissions,
@@ -655,7 +770,12 @@ internal sealed class AutomationService(
             cancellationToken,
             ("$runId", runId.ToString("D")),
             ("$automationId", request.AutomationId),
-            ("$idempotencyKey", $"manual:{runId:D}"),
+            ("$triggerKind",
+                trigger.Kind == AutomationTriggerKind.Manual ? "manual" : "cron"),
+            ("$idempotencyKey", trigger.IdempotencyKey),
+            ("$scheduledOccurrence", trigger.ScheduledForUtc is null
+                ? null
+                : Milliseconds(trigger.ScheduledForUtc.Value)),
             ("$definition", definition.CanonicalDefinition.GetRawText()),
             ("$inputsSha", inputSha256),
             ("$promptSha", promptSha256),
@@ -695,6 +815,17 @@ internal sealed class AutomationService(
                     : "createThread"),
             ("$runId", runId.ToString("D")),
             ("$now", Milliseconds(now)));
+        if (trigger.Kind == AutomationTriggerKind.Cron)
+        {
+            await AdvanceScheduleAsync(
+                connection,
+                transaction,
+                request.AutomationId,
+                trigger,
+                coalesced: false,
+                cancellationToken);
+        }
+
         await ExecuteAsync(
             connection,
             transaction,
@@ -712,7 +843,7 @@ internal sealed class AutomationService(
             new AutomationRunSummary(
                 runId,
                 request.AutomationId,
-                AutomationTriggerKind.Manual,
+                trigger.Kind,
                 AutomationRunStatus.Pending,
                 null,
                 now,
@@ -739,11 +870,13 @@ internal sealed class AutomationService(
                 command_id, actor_kind, actor_id, command_kind, target_id,
                 request_sha256, result_json, revision, created_utc)
             VALUES (
-                $commandId, 'host', $actorId, 'startRun', $targetId,
+                $commandId, $actorKind, $actorId, 'startRun', $targetId,
                 $requestSha, $result, $revision, $now);
             """,
             cancellationToken,
             ("$commandId", request.CommandId.ToString("D")),
+            ("$actorKind",
+                request.Actor.Kind == AutomationActorKind.Host ? "host" : "scheduler"),
             ("$actorId", request.Actor.PrincipalId),
             ("$targetId", runId.ToString("D")),
             ("$requestSha", requestSha256),
@@ -754,6 +887,69 @@ internal sealed class AutomationService(
             snapshot,
             revision,
             null);
+    }
+
+    private static async ValueTask<bool> ScheduleMatchesAsync(
+        DbConnection connection,
+        DbTransaction transaction,
+        string automationId,
+        DateTimeOffset expectedNextOccurrenceUtc,
+        CancellationToken cancellationToken)
+    {
+        await using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText =
+            """
+            SELECT count(*)
+            FROM automation_schedules
+            WHERE automation_id = $id
+              AND next_occurrence_utc = $expected;
+            """;
+        Add(command, "$id", automationId);
+        Add(command, "$expected", Milliseconds(expectedNextOccurrenceUtc));
+        return Convert.ToInt64(
+            await command.ExecuteScalarAsync(cancellationToken),
+            CultureInfo.InvariantCulture) == 1;
+    }
+
+    private async ValueTask AdvanceScheduleAsync(
+        DbConnection connection,
+        DbTransaction transaction,
+        string automationId,
+        RunTrigger trigger,
+        bool coalesced,
+        CancellationToken cancellationToken)
+    {
+        var now = timeProvider.GetUtcNow();
+        await ExecuteAsync(
+            connection,
+            transaction,
+            $"""
+             UPDATE automation_schedules
+             SET last_occurrence_utc = {(coalesced ? "last_occurrence_utc" : "$scheduled")},
+                 coalesced_occurrence_utc = {(coalesced ? "$scheduled" : "NULL")},
+                 next_occurrence_utc = $next,
+                 revision = revision + 1,
+                 updated_utc = $now
+             WHERE automation_id = $id
+               AND next_occurrence_utc = $expected;
+             {(coalesced
+                 ? """
+                   UPDATE automation_state
+                   SET automation_revision = automation_revision + 1,
+                       updated_utc = $now
+                   WHERE id = 1;
+                   """
+                 : string.Empty)}
+             """,
+            cancellationToken,
+            ("$scheduled", Milliseconds(trigger.ScheduledForUtc!.Value)),
+            ("$next", trigger.NextOccurrenceUtc is null
+                ? null
+                : Milliseconds(trigger.NextOccurrenceUtc.Value)),
+            ("$now", Milliseconds(now)),
+            ("$id", automationId),
+            ("$expected", Milliseconds(trigger.ExpectedNextOccurrenceUtc!.Value)));
     }
 
     private Task<Receipt?> ReadReceiptAsync(
@@ -1213,6 +1409,23 @@ internal sealed class AutomationService(
         return new Guid(bytes);
     }
 
+    private static Guid ScheduledRunId(
+        DateTimeOffset scheduledForUtc,
+        string idempotencyKey)
+    {
+        var timestamp = scheduledForUtc.ToUnixTimeMilliseconds();
+        var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(idempotencyKey))[..16];
+        bytes[0] = (byte)(timestamp >> 40);
+        bytes[1] = (byte)(timestamp >> 32);
+        bytes[2] = (byte)(timestamp >> 24);
+        bytes[3] = (byte)(timestamp >> 16);
+        bytes[4] = (byte)(timestamp >> 8);
+        bytes[5] = (byte)timestamp;
+        bytes[6] = (byte)((bytes[6] & 0x0f) | 0x70);
+        bytes[8] = (byte)((bytes[8] & 0x3f) | 0x80);
+        return new Guid(bytes, bigEndian: true);
+    }
+
     private static string Encode(string value) =>
         Convert.ToBase64String(Encoding.UTF8.GetBytes(value))
             .TrimEnd('=')
@@ -1230,6 +1443,13 @@ internal sealed class AutomationService(
         string RequestSha256,
         AutomationRunSnapshot Snapshot,
         long Revision);
+
+    private sealed record RunTrigger(
+        AutomationTriggerKind Kind,
+        string IdempotencyKey,
+        DateTimeOffset? ScheduledForUtc,
+        DateTimeOffset? ExpectedNextOccurrenceUtc,
+        DateTimeOffset? NextOccurrenceUtc);
 
     private sealed record DefinitionProjection(
         string AutomationId,
