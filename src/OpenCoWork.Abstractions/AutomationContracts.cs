@@ -109,6 +109,15 @@ public static class AutomationErrorCodes
     public const string Unavailable = "automation.unavailable";
 }
 
+public static class AutomationTrustBoundary
+{
+    public static CapabilitySourceDescriptor Source { get; } = new(
+        CapabilitySourceKind.Core,
+        "opencowork.automations",
+        "1",
+        "5497351aaf6616991382198f615585905e1cb859bc3aaf1f9ce71e39c57670da");
+}
+
 public sealed record AutomationActorContext(
     AutomationActorKind Kind,
     string PrincipalId);
@@ -140,11 +149,18 @@ public sealed record AutomationDefinitionSummary(
     bool HasSchedule,
     long Revision);
 
+public sealed record AutomationDefinitionActivationSnapshot(
+    bool GlobalEnabled,
+    bool WorkspaceTrusted,
+    bool DefinitionEnabled,
+    CapabilitySourceDescriptor TrustSource);
+
 public sealed record AutomationDefinitionSnapshot(
     AutomationDefinitionSummary Summary,
     string SourceRelativePath,
     JsonElement? Definition,
-    IReadOnlyList<OpenCoWorkDiagnostic> Diagnostics);
+    IReadOnlyList<OpenCoWorkDiagnostic> Diagnostics,
+    AutomationDefinitionActivationSnapshot Activation);
 
 public sealed record AutomationScheduleSnapshot(
     string AutomationId,
@@ -173,13 +189,17 @@ public sealed record AutomationCapabilitySnapshot(
     string Sha256,
     long Generation);
 
+public sealed record AutomationEffectPermissionSnapshot(
+    string Effect,
+    ToolAuthorityDecision Decision);
+
 public sealed record AutomationPermissionSnapshot(
     string TrustSnapshotId,
     long CatalogRevision,
     IReadOnlyList<string> Plugins,
     IReadOnlyList<string> Skills,
     IReadOnlyList<string> Tools,
-    IReadOnlyList<string> Effects);
+    IReadOnlyList<AutomationEffectPermissionSnapshot> Effects);
 
 public sealed record AutomationRunSnapshot(
     AutomationRunSummary Summary,
@@ -195,6 +215,69 @@ public sealed record AutomationRunSnapshot(
     string ModelId,
     AutomationPermissionSnapshot Permissions,
     IReadOnlyList<AutomationCapabilitySnapshot> Capabilities);
+
+public sealed record AutomationWorkspaceTrustSnapshot(
+    bool IsTrusted,
+    CapabilitySourceDescriptor Source,
+    string TrustSnapshotId);
+
+public sealed record AutomationRuntimeSnapshotRequest(
+    IReadOnlyList<string> Plugins,
+    IReadOnlyList<string> Skills,
+    IReadOnlyList<string> Tools,
+    IReadOnlyList<string> Effects);
+
+public sealed record AutomationRuntimeSnapshot(
+    AutomationWorkspaceTrustSnapshot Trust,
+    string ProviderId,
+    string ModelId,
+    AutomationPermissionSnapshot Permissions,
+    IReadOnlyList<AutomationCapabilitySnapshot> Capabilities);
+
+public sealed record AutomationRuntimeCaptureResult(
+    AutomationRuntimeSnapshot? Value,
+    AutomationError? Error)
+{
+    public bool IsSuccess => Value is not null && Error is null;
+}
+
+public interface IAutomationRuntimeSnapshotProvider
+{
+    ValueTask<AutomationWorkspaceTrustSnapshot> GetWorkspaceTrustAsync(
+        CancellationToken cancellationToken = default);
+
+    Task<AutomationRuntimeCaptureResult> CaptureAsync(
+        AutomationRuntimeSnapshotRequest request,
+        CancellationToken cancellationToken = default);
+}
+
+public sealed record AutomationPreparedTurnSnapshot(
+    Guid PreparedTurnId,
+    string RequestSha256,
+    string RenderedPrompt,
+    string RenderedPromptSha256,
+    DateTimeOffset CreatedAtUtc);
+
+public sealed record AutomationPreparedTurnWriteResult(
+    AutomationPreparedTurnSnapshot? Value,
+    bool IsReplay,
+    bool IsConflict);
+
+public interface IAutomationPreparedTurnStore
+{
+    Task<AutomationPreparedTurnWriteResult> PrepareAsync(
+        AutomationPreparedTurnSnapshot preparedTurn,
+        CancellationToken cancellationToken = default);
+
+    Task<AutomationPreparedTurnSnapshot?> ReadAsync(
+        Guid preparedTurnId,
+        CancellationToken cancellationToken = default);
+
+    Task<bool> DeleteAsync(
+        Guid preparedTurnId,
+        string requestSha256,
+        CancellationToken cancellationToken = default);
+}
 
 public sealed record ListAutomationDefinitionsRequest(
     AutomationActorContext Actor,

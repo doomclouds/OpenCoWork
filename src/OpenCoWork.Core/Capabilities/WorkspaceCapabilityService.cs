@@ -554,7 +554,11 @@ internal sealed class WorkspaceCapabilityService : ICapabilityService
             await _files.SaveTrustDecisionsAsync(
                 new TrustDecisionsDocument(1, Array.AsReadOnly(decisions)),
                 cancellationToken);
-            await _runtime.RefreshDiscoveredAsync(cancellationToken);
+            if (!IsAutomationTrustDecision(decision))
+            {
+                await _runtime.RefreshDiscoveredAsync(cancellationToken);
+            }
+
             return DomainResult(
                 new { trusted = true },
                 _runtime.CurrentCatalog.Revision);
@@ -589,7 +593,11 @@ internal sealed class WorkspaceCapabilityService : ICapabilityService
             await _files.SaveTrustDecisionsAsync(
                 new TrustDecisionsDocument(1, Array.AsReadOnly(decisions)),
                 cancellationToken);
-            await _runtime.RefreshDiscoveredAsync(cancellationToken);
+            if (!IsAutomationTrustDecision(identity))
+            {
+                await _runtime.RefreshDiscoveredAsync(cancellationToken);
+            }
+
             return DomainResult(
                 new { trusted = false },
                 _runtime.CurrentCatalog.Revision);
@@ -765,6 +773,19 @@ internal sealed class WorkspaceCapabilityService : ICapabilityService
             right.SourceId,
             right.SourceVersion,
             right.Sha256);
+
+    private static bool IsAutomationTrustDecision(
+        CapabilityTrustDecision decision)
+    {
+        var source = AutomationTrustBoundary.Source;
+        return decision.SourceKind == source.Kind &&
+               string.Equals(decision.SourceId, source.Id, StringComparison.Ordinal) &&
+               string.Equals(
+                   decision.SourceVersion,
+                   source.Version,
+                   StringComparison.Ordinal) &&
+               string.Equals(decision.Sha256, source.Sha256, StringComparison.Ordinal);
+    }
 
     private static CapabilityDynamicToolRegistration Map(
         DynamicToolRegistrationSnapshot snapshot) =>

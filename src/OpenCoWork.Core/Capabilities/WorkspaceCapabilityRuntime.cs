@@ -87,6 +87,17 @@ public static class OpenCoWorkCapabilityExtensions
                     .CreateCoreContributions(),
             ],
             serviceProvider.GetRequiredService<WorkspaceCapabilityDiscovery>()));
+        services.TryAddSingleton<IAutomationRuntimeSnapshotProvider>(serviceProvider =>
+            new AutomationRuntimeSnapshotProvider(
+                serviceProvider.GetRequiredService<CapabilityFileStore>(),
+                serviceProvider.GetRequiredService<
+                    OpenCoWork.Core.Workspaces.OpenCoWorkPaths>(),
+                serviceProvider.GetRequiredService<WorkspaceCapabilityRuntime>(),
+                serviceProvider.GetRequiredService<ToolRuntime>(),
+                serviceProvider.GetRequiredService<
+                    OpenCoWork.Core.Configuration.ToolsConfig>(),
+                serviceProvider.GetRequiredService<
+                    OpenCoWork.Core.Configuration.ModelsConfig>()));
         services.TryAddSingleton(serviceProvider =>
             new PluginManager(
                 serviceProvider.GetRequiredService<PluginPackageStore>(),

@@ -41,6 +41,9 @@ public static class OpenCoWorkSessionExtensions
         services.TryAddSingleton<JsonSchemaValidationService>();
         services.TryAddSingleton<IJsonSchemaValidationService>(serviceProvider =>
             serviceProvider.GetRequiredService<JsonSchemaValidationService>());
+        services.TryAddSingleton<PreparedAutomationTurnStore>();
+        services.TryAddSingleton<IAutomationPreparedTurnStore>(serviceProvider =>
+            serviceProvider.GetRequiredService<PreparedAutomationTurnStore>());
         services.TryAddSingleton(serviceProvider =>
         {
             var paths = serviceProvider.GetRequiredService<OpenCoWorkPaths>();

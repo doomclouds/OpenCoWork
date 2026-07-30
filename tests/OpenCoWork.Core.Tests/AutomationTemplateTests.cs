@@ -22,23 +22,25 @@ public sealed class AutomationTemplateTests
                     "prompt: Do {{ inputs.task }}",
                     """
                     prompt: >-
-                      {{ automation.id }}|{{ inputs.task }}|{{ workspace.mode }}|{{ trigger.kind }}
+                      {{ automation.id }}|{{ run.id }}|{{ inputs.task }}|{{ trigger.kind }}
                     """)));
         var renderer = new AutomationTemplateRenderer(
             new JsonSchemaValidationService(),
             new NoSensitiveDataService(),
             TimeProvider.System);
+        var runId = Guid.CreateVersion7();
         using var manual = JsonDocument.Parse("""{"task":"manual"}""");
 
         var result = await renderer.RenderAsync(
             loaded.Definition!,
+            runId,
             manual.RootElement,
             new AutomationTriggerContext("manual", null),
             TestContext.Current.CancellationToken);
 
         Assert.True(result.IsValid);
         Assert.Equal(
-            "nightly-maintenance|manual|worktree|manual",
+            $"nightly-maintenance|{runId:D}|manual|manual",
             result.Prompt);
         Assert.Equal("manual", result.Inputs!.Value.GetProperty("task").GetString());
     }
@@ -53,6 +55,7 @@ public sealed class AutomationTemplateTests
 
         var result = await renderer.RenderAsync(
             definition,
+            Guid.CreateVersion7(),
             document.RootElement,
             new AutomationTriggerContext("manual", null),
             TestContext.Current.CancellationToken);
@@ -72,12 +75,14 @@ public sealed class AutomationTemplateTests
                      "{{ inputs.GetType }}",
                      "{{ inputs.task.GetType }}",
                      "{{ environment.PATH }}",
+                     "{{ workspace.mode }}",
                  })
         {
             var (definition, renderer) = CreateRenderer(prompt);
             using var inputs = JsonDocument.Parse("""{"task":"manual"}""");
             var result = await renderer.RenderAsync(
                 definition,
+                Guid.CreateVersion7(),
                 inputs.RootElement,
                 new AutomationTriggerContext("manual", null),
                 TestContext.Current.CancellationToken);
@@ -107,6 +112,7 @@ public sealed class AutomationTemplateTests
             defaults: "{}");
         var oversized = await renderer.RenderAsync(
             definition,
+            Guid.CreateVersion7(),
             inputs.RootElement,
             new AutomationTriggerContext("manual", null),
             TestContext.Current.CancellationToken);
@@ -125,6 +131,7 @@ public sealed class AutomationTemplateTests
             JsonDocument.Parse($$"""{"task":"{{secret}}"}""");
         var rejected = await secretRenderer.RenderAsync(
             secretDefinition,
+            Guid.CreateVersion7(),
             secretInputs.RootElement,
             new AutomationTriggerContext("manual", null),
             TestContext.Current.CancellationToken);

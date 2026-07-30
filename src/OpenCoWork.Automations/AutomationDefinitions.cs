@@ -136,6 +136,97 @@ internal sealed partial class AutomationDefinitionLoader(
         }
     }
 
+    public AutomationDefinitionCandidate Hydrate(
+        JsonElement canonical,
+        string definitionVersion)
+    {
+        try
+        {
+            var canonicalBytes = CanonicalJson.Write(canonical);
+            var actualVersion =
+                Convert.ToHexString(SHA256.HashData(canonicalBytes)).ToLowerInvariant();
+            if (!string.Equals(
+                    actualVersion,
+                    definitionVersion,
+                    StringComparison.Ordinal))
+            {
+                throw new InvalidDataException(
+                    "Automation Definition snapshot digest is invalid.");
+            }
+
+            var prompt = canonical.GetProperty("prompt").GetString()
+                         ?? throw new InvalidDataException(
+                             "Automation Definition prompt is invalid.");
+            if (ContainsExternalTemplate(prompt) ||
+                !TemplateParser.TryParse(prompt, out var template, out _))
+            {
+                throw new InvalidDataException(
+                    "Automation Definition template is invalid.");
+            }
+
+            var workspace = canonical.GetProperty("workspace");
+            var scheduleElement = canonical.GetProperty("schedule");
+            var allow = canonical.GetProperty("allow");
+            var inputSchema = canonical.GetProperty("inputSchema").Clone();
+            var defaults = canonical.GetProperty("defaults").Clone();
+            if (!schemas.IsValidSchema(inputSchema) ||
+                !schemas.Evaluate(inputSchema, defaults))
+            {
+                throw new InvalidDataException(
+                    "Automation Definition input schema is invalid.");
+            }
+
+            var candidate = new AutomationDefinitionCandidate(
+                canonical.GetProperty("id").GetString()!,
+                canonical.GetProperty("displayName").GetString()!,
+                canonical.GetProperty("description").ValueKind == JsonValueKind.Null
+                    ? null
+                    : canonical.GetProperty("description").GetString(),
+                canonical.GetProperty("enabled").GetBoolean(),
+                scheduleElement.ValueKind == JsonValueKind.Null
+                    ? null
+                    : new AutomationScheduleCandidate(
+                        scheduleElement.GetProperty("cron").GetString()!,
+                        scheduleElement.GetProperty("timeZone").GetString()!),
+                new AutomationWorkspaceCandidate(
+                    workspace.GetProperty("mode").GetString() == "project"
+                        ? AutomationWorkspaceMode.Project
+                        : AutomationWorkspaceMode.Worktree,
+                    workspace.GetProperty("allowDirtyOrigin").GetBoolean()),
+                prompt,
+                inputSchema,
+                defaults,
+                new AutomationAllowCandidate(
+                    Strings(allow, "plugins"),
+                    Strings(allow, "skills"),
+                    Strings(allow, "tools"),
+                    Strings(allow, "effects")),
+                TimeSpan.FromMilliseconds(
+                    canonical.GetProperty("runTimeoutMilliseconds").GetInt64()),
+                TimeSpan.FromMilliseconds(
+                    canonical.GetProperty("attentionTimeoutMilliseconds").GetInt64()),
+                definitionVersion,
+                canonical.Clone(),
+                template!);
+            if (string.IsNullOrWhiteSpace(candidate.Id) ||
+                string.IsNullOrWhiteSpace(candidate.DisplayName))
+            {
+                throw new InvalidDataException(
+                    "Automation Definition snapshot is invalid.");
+            }
+
+            return candidate;
+        }
+        catch (Exception exception) when (
+            exception is KeyNotFoundException or InvalidOperationException or
+                FormatException or OverflowException or ArgumentException)
+        {
+            throw new InvalidDataException(
+                "Automation Definition snapshot is invalid.",
+                exception);
+        }
+    }
+
     private AutomationDefinitionCandidate Normalize(
         string fileName,
         RawDefinition raw)
@@ -261,7 +352,7 @@ internal sealed partial class AutomationDefinitionLoader(
             CleanList(raw.Allow.Plugins, "allow.plugins"),
             CleanList(raw.Allow.Skills, "allow.skills"),
             CleanList(raw.Allow.Tools, "allow.tools"),
-            CleanList(raw.Allow.Effects, "allow.effects"));
+            CleanEffects(raw.Allow.Effects));
         var canonical = JsonSerializer.SerializeToElement(new
         {
             schemaVersion = 1,
@@ -426,6 +517,12 @@ internal sealed partial class AutomationDefinitionLoader(
         }).RootElement.Clone();
     }
 
+    private static string[] Strings(JsonElement value, string property) =>
+        value.GetProperty(property)
+            .EnumerateArray()
+            .Select(item => item.GetString()!)
+            .ToArray();
+
     private static JsonNode? ToJsonNode(object? value, int depth, NodeCounter counter)
     {
         if (depth > AutomationRuntimeLimits.MaximumDocumentDepth ||
@@ -557,6 +654,26 @@ internal sealed partial class AutomationDefinitionLoader(
         return result;
     }
 
+    private static IReadOnlyList<string> CleanEffects(
+        IReadOnlyList<string>? values)
+    {
+        var result = CleanList(values, "allow.effects");
+        if (result.Any(value => value is not (
+                "workspaceRead" or
+                "workspaceWrite" or
+                "processExecution" or
+                "networkRead" or
+                "externalMutation")))
+        {
+            throw Invalid(
+                AutomationDefinitionDiagnosticCodes.InvalidSchema,
+                "Automation effects are invalid.",
+                "allow.effects");
+        }
+
+        return result;
+    }
+
     private static string Required(string? value, string path) =>
         string.IsNullOrWhiteSpace(value)
             ? throw Invalid(
@@ -643,6 +760,7 @@ internal sealed partial class AutomationTemplateRenderer(
 {
     public async Task<AutomationTemplateRenderResult> RenderAsync(
         AutomationDefinitionCandidate definition,
+        Guid runId,
         JsonElement manualInputs,
         AutomationTriggerContext trigger,
         CancellationToken cancellationToken)
@@ -651,6 +769,11 @@ internal sealed partial class AutomationTemplateRenderer(
         ArgumentNullException.ThrowIfNull(trigger);
         try
         {
+            if (runId.Version != 7)
+            {
+                return Invalid(AutomationDefinitionDiagnosticCodes.InvalidInputs);
+            }
+
             if (manualInputs.ValueKind != JsonValueKind.Object)
             {
                 return Invalid(AutomationDefinitionDiagnosticCodes.InvalidInputs);
@@ -664,7 +787,7 @@ internal sealed partial class AutomationTemplateRenderer(
                 return Invalid(AutomationDefinitionDiagnosticCodes.InvalidInputs);
             }
 
-            ValidateReferences(definition, inputs, trigger);
+            ValidateReferences(definition, runId, inputs, trigger);
             var options = new TemplateOptions
             {
                 MaxSteps = 100_000,
@@ -683,16 +806,11 @@ internal sealed partial class AutomationTemplateRenderer(
                 ["description"] = new StringValue(definition.Description ?? string.Empty),
                 ["definitionVersion"] = new StringValue(definition.DefinitionVersion),
             }));
-            context.SetValue("inputs", Fluid(inputs));
-            context.SetValue("workspace", Dictionary(new Dictionary<string, FluidValue>
+            context.SetValue("run", Dictionary(new Dictionary<string, FluidValue>
             {
-                ["mode"] = new StringValue(
-                    definition.Workspace.Mode == AutomationWorkspaceMode.Project
-                        ? "project"
-                        : "worktree"),
-                ["allowDirtyOrigin"] = BooleanValue.Create(
-                    definition.Workspace.AllowDirtyOrigin),
+                ["id"] = new StringValue(runId.ToString("D")),
             }));
+            context.SetValue("inputs", Fluid(inputs));
             context.SetValue("trigger", Dictionary(new Dictionary<string, FluidValue>
             {
                 ["kind"] = new StringValue(trigger.Kind),
@@ -737,6 +855,7 @@ internal sealed partial class AutomationTemplateRenderer(
 
     private void ValidateReferences(
         AutomationDefinitionCandidate definition,
+        Guid runId,
         JsonElement inputs,
         AutomationTriggerContext trigger)
     {
@@ -749,14 +868,11 @@ internal sealed partial class AutomationTemplateRenderer(
                 description = definition.Description,
                 definitionVersion = definition.DefinitionVersion,
             }),
-            ["inputs"] = inputs,
-            ["workspace"] = JsonSerializer.SerializeToElement(new
+            ["run"] = JsonSerializer.SerializeToElement(new
             {
-                mode = definition.Workspace.Mode == AutomationWorkspaceMode.Project
-                    ? "project"
-                    : "worktree",
-                allowDirtyOrigin = definition.Workspace.AllowDirtyOrigin,
+                id = runId.ToString("D"),
             }),
+            ["inputs"] = inputs,
             ["trigger"] = JsonSerializer.SerializeToElement(new
             {
                 kind = trigger.Kind,

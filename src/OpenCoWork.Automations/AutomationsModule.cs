@@ -59,6 +59,9 @@ public sealed class AutomationsModule : IOpenCoWorkModule
                 serviceProvider.GetRequiredService<WorkspaceRuntimeDescriptor>(),
                 serviceProvider.GetRequiredService<AutomationDefinitionLoader>(),
                 serviceProvider.GetRequiredService<TimeProvider>()));
+        services.TryAddSingleton<AutomationService>();
+        services.TryAddSingleton<IAutomationService>(serviceProvider =>
+            serviceProvider.GetRequiredService<AutomationService>());
         services.TryAddSingleton(serviceProvider =>
             AutomationsModuleRuntime.Create(
                 serviceProvider.GetRequiredService<AutomationsConfig>(),

@@ -34,6 +34,12 @@ public sealed class AutomationContractTests
         Assert.Equal(
             ["Approve", "Reject", "ProvideInput", "Fail", "Cancel"],
             Enum.GetNames<AutomationAttentionResolutionKind>());
+        Assert.Equal(
+            CapabilityTrustScope.UnattendedAutomation,
+            Enum.GetValues<CapabilityTrustScope>()[^1]);
+        Assert.Equal(
+            "opencowork.automations",
+            AutomationTrustBoundary.Source.Id);
 
         Assert.Equal("automation.notFound", AutomationErrorCodes.NotFound);
         Assert.Equal("automation.conflict", AutomationErrorCodes.Conflict);

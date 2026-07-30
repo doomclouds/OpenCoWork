@@ -493,7 +493,9 @@ internal sealed class CapabilityFileStore
     {
         if (!IsClean(decision.SourceId) ||
             !Enum.IsDefined(decision.SourceKind) ||
-            decision.SourceKind is CapabilitySourceKind.Core or CapabilitySourceKind.Conflict ||
+            decision.SourceKind == CapabilitySourceKind.Conflict ||
+            decision.SourceKind == CapabilitySourceKind.Core &&
+            !MatchesAutomationTrustSource(decision) ||
             decision.SourceVersion is not null && !IsClean(decision.SourceVersion) ||
             !IsSha256(decision.Sha256) ||
             decision.AllowedScopes is null ||
@@ -508,7 +510,10 @@ internal sealed class CapabilityFileStore
             denied.Any(scope => !Enum.IsDefined(scope)) ||
             allowed.Distinct().Count() != allowed.Length ||
             denied.Distinct().Count() != denied.Length ||
-            allowed.Intersect(denied).Any())
+            allowed.Intersect(denied).Any() ||
+            decision.SourceKind == CapabilitySourceKind.Core &&
+            allowed.Concat(denied).Any(scope =>
+                scope != CapabilityTrustScope.UnattendedAutomation))
         {
             throw Invalid();
         }
@@ -522,6 +527,19 @@ internal sealed class CapabilityFileStore
             decision.Sha256,
             Array.AsReadOnly(allowed),
             Array.AsReadOnly(denied));
+    }
+
+    private static bool MatchesAutomationTrustSource(
+        CapabilityTrustDecision decision)
+    {
+        var source = AutomationTrustBoundary.Source;
+        return source.Kind == decision.SourceKind &&
+               string.Equals(source.Id, decision.SourceId, StringComparison.Ordinal) &&
+               string.Equals(
+                   source.Version,
+                   decision.SourceVersion,
+                   StringComparison.Ordinal) &&
+               string.Equals(source.Sha256, decision.Sha256, StringComparison.Ordinal);
     }
 
     private static CapabilityOverridesDocument Normalize(

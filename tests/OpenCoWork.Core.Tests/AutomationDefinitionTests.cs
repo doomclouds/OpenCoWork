@@ -185,6 +185,13 @@ public sealed class AutomationDefinitionTests
             },
             {
                 "nightly-maintenance.yaml",
+                ValidYaml().Replace(
+                    "effects: [workspaceRead]",
+                    "effects: [unknownEffect]"),
+                AutomationDefinitionDiagnosticCodes.InvalidSchema
+            },
+            {
+                "nightly-maintenance.yaml",
                 DeepYaml(),
                 AutomationDefinitionDiagnosticCodes.LimitExceeded
             },

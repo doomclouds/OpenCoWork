@@ -57,6 +57,7 @@ public enum CapabilityTrustScope
     OutOfProcess,
     InProcessCode,
     TrustedHook,
+    UnattendedAutomation,
 }
 
 public static class CapabilityErrorCodes
