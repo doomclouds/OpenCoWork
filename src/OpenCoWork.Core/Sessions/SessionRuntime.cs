@@ -22,9 +22,31 @@ public static class OpenCoWorkSessionExtensions
         services.TryAddSingleton<SessionConfig>();
         services.TryAddSingleton(static _ => TimeProvider.System);
         services.TryAddSingleton(serviceProvider =>
-            new StateRuntime(
-                serviceProvider.GetRequiredService<OpenCoWorkPaths>(),
-                serviceProvider.GetRequiredService<RuntimeConfig>().State.BusyTimeout));
+        {
+            var paths = serviceProvider.GetRequiredService<OpenCoWorkPaths>();
+            var busyTimeout =
+                serviceProvider.GetRequiredService<RuntimeConfig>().State.BusyTimeout;
+            var contributors = serviceProvider
+                .GetServices<IWorkspaceStateMigrationContributor>()
+                .ToArray();
+            return contributors.Length == 0
+                ? new StateRuntime(paths, busyTimeout)
+                : new StateRuntime(paths, busyTimeout, contributors);
+        });
+        services.TryAddSingleton<IWorkspaceStateStore>(serviceProvider =>
+            serviceProvider.GetRequiredService<StateRuntime>());
+        services.TryAddSingleton(serviceProvider =>
+        {
+            var paths = serviceProvider.GetRequiredService<OpenCoWorkPaths>();
+            return new WorkspaceRuntimeDescriptor(
+                paths.WorkspaceRoot,
+                paths.OpenCoWorkDirectory,
+                paths.RuntimeDirectory,
+                paths.TeamsRuntimeDirectory,
+                paths.MissionsDirectory,
+                paths.SubAgentsDirectory,
+                paths.WorktreesDirectory);
+        });
         services.TryAddSingleton(serviceProvider =>
             new BackgroundTerminalRuntime(
                 serviceProvider.GetRequiredService<OpenCoWorkPaths>(),

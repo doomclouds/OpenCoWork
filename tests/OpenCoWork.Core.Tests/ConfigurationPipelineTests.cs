@@ -1,5 +1,6 @@
 using OpenCoWork.Abstractions;
 using OpenCoWork.Core.Configuration;
+using OpenCoWork.Teams;
 using Xunit;
 
 namespace OpenCoWork.Core.Tests;
@@ -51,7 +52,77 @@ public sealed class ConfigurationPipelineTests
             """
             {"type":"object","properties":{"count":{"type":"integer","minimum":1,"maximum":10}},"required":["count"],"additionalProperties":false}
             """),
+        new(
+            "teams",
+            typeof(CoWorkConfig),
+            static () => new CoWorkConfig(),
+            """
+            {"type":"object","properties":{"dispatchLease":{"type":"string","format":"duration"},"leaseRenewalInterval":{"type":"string","format":"duration"},"maxConcurrentAgentRuns":{"type":"integer","minimum":1,"maximum":64},"maxConcurrentAgentRunsPerMission":{"type":"integer","minimum":1,"maximum":16},"maxDepth":{"type":"integer","minimum":1,"maximum":4},"maximumArtifactBytes":{"type":"integer","minimum":1,"maximum":67108864},"maximumDispatchAttempts":{"type":"integer","minimum":5,"maximum":5},"maximumMailboxMessageBytes":{"type":"integer","minimum":1,"maximum":65536},"maximumMembersPerMission":{"type":"integer","minimum":1,"maximum":16},"maximumOwnedFileBytes":{"type":"integer","minimum":1,"maximum":536870912},"maximumTasksPerMission":{"type":"integer","minimum":1,"maximum":256}},"additionalProperties":false}
+            """),
     ];
+
+    [Fact]
+    public void Teams_configuration_uses_safe_defaults_and_enforces_hard_limits()
+    {
+        var defaults = ConfigLoader.Load(new ConfigLoadRequest(Descriptors));
+
+        Assert.True(defaults.Validation.IsValid);
+        var teams = defaults.Snapshot!.GetRequiredSection<CoWorkConfig>();
+        Assert.Equal(1, teams.MaxDepth);
+        Assert.Equal(16, teams.MaxConcurrentAgentRuns);
+        Assert.Equal(4, teams.MaxConcurrentAgentRunsPerMission);
+        Assert.Equal(TimeSpan.FromMinutes(2), teams.DispatchLease);
+
+        using var files = new TempDirectory();
+        var invalid = files.Write(
+            "invalid-teams.jsonc",
+            """
+            {
+              "teams": {
+                "maximumMembersPerMission": 17
+              }
+            }
+            """);
+        var loaded = ConfigLoader.Load(new ConfigLoadRequest(Descriptors)
+        {
+            WorkspaceConfigPath = invalid,
+        });
+
+        Assert.False(loaded.Validation.IsValid);
+        Assert.Contains(
+            loaded.Validation.Diagnostics,
+            diagnostic => diagnostic.Path?.Contains(
+                "maximumMembersPerMission",
+                StringComparison.OrdinalIgnoreCase) == true);
+
+        var inconsistent = files.Write(
+            "inconsistent-teams.jsonc",
+            """
+            {
+              "teams": {
+                "maxConcurrentAgentRuns": 4,
+                "maxConcurrentAgentRunsPerMission": 5,
+                "dispatchLease": "10s",
+                "leaseRenewalInterval": "10s"
+              }
+            }
+            """);
+        var inconsistentLoaded = ConfigLoader.Load(new ConfigLoadRequest(Descriptors)
+        {
+            WorkspaceConfigPath = inconsistent,
+        });
+        Assert.False(inconsistentLoaded.Validation.IsValid);
+        Assert.Contains(
+            inconsistentLoaded.Validation.Diagnostics,
+            diagnostic => diagnostic.Message.Contains(
+                "MaxConcurrentAgentRunsPerMission",
+                StringComparison.Ordinal));
+        Assert.Contains(
+            inconsistentLoaded.Validation.Diagnostics,
+            diagnostic => diagnostic.Message.Contains(
+                "LeaseRenewalInterval",
+                StringComparison.Ordinal));
+    }
 
     [Fact]
     public void Tool_effect_policies_use_safe_defaults_and_workspace_can_only_narrow_user_policy()

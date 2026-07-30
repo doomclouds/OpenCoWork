@@ -95,11 +95,19 @@ public static class DiagnosticRunner
         Converters = { new JsonStringEnumConverter() },
     };
 
+    public static Task<DoctorReport> RunAsync(
+        DoctorRequest request,
+        CancellationToken cancellationToken = default) =>
+        RunAsync(request, [], cancellationToken);
+
     public static async Task<DoctorReport> RunAsync(
         DoctorRequest request,
+        IEnumerable<IWorkspaceStateMigrationContributor> contributors,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(request);
+        ArgumentNullException.ThrowIfNull(contributors);
+        var frozenContributors = contributors.ToArray();
         var checks = new List<DiagnosticCheck>(8);
         checks.Add(await CheckRuntimeAsync(request.StartupDirectory, cancellationToken));
         checks.Add(CheckPlatform());
@@ -131,12 +139,14 @@ public static class DiagnosticRunner
             var sqlite = await CheckSqliteAsync(
                 paths!,
                 config.Snapshot,
+                frozenContributors,
                 cancellationToken);
             checks.Add(sqlite);
             checks.Add(sqlite.Status == DiagnosticStatus.Passed
                 ? await CheckMemoryAsync(
                     paths!,
                     config.Snapshot,
+                    frozenContributors,
                     cancellationToken)
                 : Skipped("memory", "SQLite state is unavailable."));
         }
@@ -256,6 +266,10 @@ public static class DiagnosticRunner
                          paths.RuntimeDirectory,
                          paths.StateDatabasePath,
                          paths.LogsDirectory,
+                         paths.TeamsRuntimeDirectory,
+                         paths.MissionsDirectory,
+                         paths.SubAgentsDirectory,
+                         paths.WorktreesDirectory,
                      })
             {
                 WorkspacePathGuard.ResolveContained(
@@ -310,6 +324,7 @@ public static class DiagnosticRunner
     private static async Task<DiagnosticCheck> CheckSqliteAsync(
         OpenCoWorkPaths paths,
         EffectiveConfigSnapshot config,
+        IReadOnlyList<IWorkspaceStateMigrationContributor> contributors,
         CancellationToken cancellationToken)
     {
         if (!File.Exists(paths.StateDatabasePath))
@@ -322,19 +337,19 @@ public static class DiagnosticRunner
             var runtime = config.GetRequiredSection<RuntimeConfig>();
             var state = await new StateRuntime(
                     paths,
-                    runtime.State.BusyTimeout)
+                    runtime.State.BusyTimeout,
+                    contributors)
                 .InspectAsync(cancellationToken);
-            var valid = state.SchemaVersion == StateMigrations.CurrentVersion &&
-                        state.TargetVersion == StateMigrations.CurrentVersion &&
+            var expectedVersion = contributors.Count == 0
+                ? StateMigrations.VersionFiveOnly[^1].Version
+                : StateMigrations.CurrentVersion;
+            var valid = state.SchemaVersion == expectedVersion &&
+                        state.TargetVersion == expectedVersion &&
                         string.Equals(
                             state.MigrationStatus,
                             "Completed",
                             StringComparison.Ordinal) &&
                         state.Error is null &&
-                        string.Equals(
-                            state.Tables,
-                            StateMigrations.CurrentTables,
-                            StringComparison.Ordinal) &&
                         string.Equals(state.JournalMode, "wal", StringComparison.OrdinalIgnoreCase) &&
                         state.Synchronous == 2 &&
                         state.ForeignKeys &&
@@ -345,7 +360,7 @@ public static class DiagnosticRunner
             return valid
                 ? Passed(
                     "sqlite",
-                    $"Schema {StateMigrations.CurrentVersion}, Session tables and " +
+                    $"Schema {expectedVersion}, Session tables and " +
                     "read-only PRAGMA policy are valid.")
                 : Failed(
                     "sqlite",
@@ -363,12 +378,16 @@ public static class DiagnosticRunner
     private static async Task<DiagnosticCheck> CheckMemoryAsync(
         OpenCoWorkPaths paths,
         EffectiveConfigSnapshot config,
+        IReadOnlyList<IWorkspaceStateMigrationContributor> contributors,
         CancellationToken cancellationToken)
     {
         try
         {
             var runtime = config.GetRequiredSection<RuntimeConfig>();
-            var state = new StateRuntime(paths, runtime.State.BusyTimeout);
+            var state = new StateRuntime(
+                paths,
+                runtime.State.BusyTimeout,
+                contributors);
             var orphans = await new WorkspaceMemoryRuntime(paths, state)
                 .FindOrphanBlobNamesAsync(cancellationToken);
             return orphans.Count == 0

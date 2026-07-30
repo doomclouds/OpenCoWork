@@ -15,6 +15,7 @@ using OpenCoWork.Core.Sessions;
 using OpenCoWork.Core.Workspaces;
 using OpenCoWork.Generated;
 using OpenCoWork.Protocol;
+using OpenCoWork.Teams;
 
 return await OpenCoWork.App.OpenCoWorkCli.RunAsync(args);
 
@@ -413,6 +414,7 @@ namespace OpenCoWork.App
                 await WorkspaceInitializer.InitializeAsync(
                     paths,
                     new RuntimeConfig().State.BusyTimeout,
+                    TeamsStateMigrationContributors.Create(),
                     cancellationToken);
                 await output.WriteLineAsync(
                     $"Initialized OpenCoWork workspace: {paths.WorkspaceRoot}");
@@ -438,6 +440,7 @@ namespace OpenCoWork.App
             {
                 var report = await DiagnosticRunner.RunAsync(
                     request,
+                    TeamsStateMigrationContributors.Create(),
                     cancellationToken);
                 await output.WriteLineAsync(
                     json

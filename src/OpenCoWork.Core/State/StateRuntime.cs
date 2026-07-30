@@ -1,4 +1,6 @@
+using System.Data.Common;
 using Microsoft.Data.Sqlite;
+using OpenCoWork.Abstractions;
 using OpenCoWork.Core.Workspaces;
 
 namespace OpenCoWork.Core.State;
@@ -15,7 +17,7 @@ internal enum StateMigrationFaultPoint
 
 internal static class StateMigrations
 {
-    internal const int CurrentVersion = 5;
+    internal const int CurrentVersion = 6;
     internal const string VersionTwoTables =
         "items,pending_interactions,session_idempotency," +
         "session_operation_receipts,state_info,threads,turn_queue,turns";
@@ -27,13 +29,13 @@ internal static class StateMigrations
         "agent_invocations,compaction_checkpoints,items,pending_interactions," +
         "provider_usage,session_idempotency,session_operation_receipts," +
         "state_info,threads,tool_invocations,turn_queue,turns";
-    internal const string CurrentTables =
+    internal const string VersionFiveTables =
         "agent_invocations,capability_catalog_state,compaction_checkpoints," +
         "deferred_tool_activations,items,pending_interactions,provider_usage," +
         "session_idempotency,session_operation_receipts,state_info," +
         "terminal_sessions,threads,tool_invocations,turn_queue,turns," +
         "workspace_memories,workspace_memory_versions";
-    internal const string CurrentIndexes =
+    internal const string VersionFiveIndexes =
         "ix_agent_invocations_thread,ix_deferred_tool_activations_thread," +
         "ix_items_thread_sequence,ix_items_turn_sequence," +
         "ix_pending_interactions_thread,ix_provider_usage_thread," +
@@ -42,7 +44,7 @@ internal static class StateMigrations
         "ix_threads_status,ix_threads_updated,ix_tool_invocations_thread_call," +
         "ix_tool_invocations_thread_status,ix_turns_thread," +
         "ix_workspace_memories_search,ix_workspace_memories_status_updated";
-    internal const string CurrentForeignKeys =
+    internal const string VersionFiveForeignKeys =
         "agent_invocations:thread_id->threads.thread_id:cascade," +
         "agent_invocations:turn_id->turns.turn_id:cascade," +
         "compaction_checkpoints:thread_id->threads.thread_id:cascade," +
@@ -546,6 +548,15 @@ internal static class StateMigrations
         new(4, VersionFourSql),
     ];
 
+    internal static readonly IReadOnlyList<StateMigration> VersionFiveOnly =
+    [
+        new(1, VersionOneSql),
+        new(2, VersionTwoSql),
+        new(3, VersionThreeSql),
+        new(4, VersionFourSql),
+        new(5, VersionFiveSql),
+    ];
+
     internal static readonly IReadOnlyList<StateMigration> Current =
     [
         new(1, VersionOneSql),
@@ -553,6 +564,7 @@ internal static class StateMigrations
         new(3, VersionThreeSql),
         new(4, VersionFourSql),
         new(5, VersionFiveSql),
+        new(6, "SELECT 1;"),
     ];
 }
 
@@ -593,8 +605,22 @@ public sealed class StateWriteCoordinator
         _openConnection = openConnection;
     }
 
-    public async Task ExecuteAsync(
+    public Task ExecuteAsync(
         Func<SqliteConnection, SqliteTransaction, CancellationToken, Task> action,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(action);
+        return ExecuteAsync(
+            async (connection, transaction, token) =>
+            {
+                await action(connection, transaction, token);
+                return true;
+            },
+            cancellationToken);
+    }
+
+    public async Task<T> ExecuteAsync<T>(
+        Func<SqliteConnection, SqliteTransaction, CancellationToken, Task<T>> action,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(action);
@@ -607,8 +633,9 @@ public sealed class StateWriteCoordinator
 
             try
             {
-                await action(connection, transaction, cancellationToken);
+                var result = await action(connection, transaction, cancellationToken);
                 await transaction.CommitAsync(cancellationToken);
+                return result;
             }
             catch
             {
@@ -623,16 +650,40 @@ public sealed class StateWriteCoordinator
     }
 }
 
-public sealed class StateRuntime
+public sealed class StateRuntime : IWorkspaceStateStore
 {
     private readonly OpenCoWorkPaths _paths;
     private readonly int _busyTimeoutMilliseconds;
     private readonly IReadOnlyList<StateMigration> _migrations;
+    private readonly IReadOnlyList<IWorkspaceStateMigrationContributor> _contributors;
     private readonly Action<StateMigrationFaultPoint>? _faultInjector;
     private readonly SemaphoreSlim _initializationGate = new(1, 1);
 
-    public StateRuntime(OpenCoWorkPaths paths, TimeSpan busyTimeout)
-        : this(paths, busyTimeout, StateMigrations.Current, faultInjector: null)
+    internal StateRuntime(OpenCoWorkPaths paths, TimeSpan busyTimeout)
+        : this(paths, busyTimeout, StateMigrations.VersionFiveOnly, [], faultInjector: null)
+    {
+    }
+
+    public StateRuntime(
+        OpenCoWorkPaths paths,
+        TimeSpan busyTimeout,
+        IEnumerable<IWorkspaceStateMigrationContributor> contributors)
+        : this(paths, busyTimeout, FreezeContributors(contributors))
+    {
+    }
+
+    private StateRuntime(
+        OpenCoWorkPaths paths,
+        TimeSpan busyTimeout,
+        IReadOnlyList<IWorkspaceStateMigrationContributor> contributors)
+        : this(
+            paths,
+            busyTimeout,
+            contributors.Count == 0
+                ? StateMigrations.VersionFiveOnly
+                : StateMigrations.Current,
+            contributors,
+            faultInjector: null)
     {
     }
 
@@ -641,9 +692,20 @@ public sealed class StateRuntime
         TimeSpan busyTimeout,
         IReadOnlyList<StateMigration> migrations,
         Action<StateMigrationFaultPoint>? faultInjector)
+        : this(paths, busyTimeout, migrations, [], faultInjector)
+    {
+    }
+
+    internal StateRuntime(
+        OpenCoWorkPaths paths,
+        TimeSpan busyTimeout,
+        IReadOnlyList<StateMigration> migrations,
+        IEnumerable<IWorkspaceStateMigrationContributor> contributors,
+        Action<StateMigrationFaultPoint>? faultInjector)
     {
         ArgumentNullException.ThrowIfNull(paths);
         ArgumentNullException.ThrowIfNull(migrations);
+        ArgumentNullException.ThrowIfNull(contributors);
         if (busyTimeout < TimeSpan.Zero ||
             busyTimeout.TotalMilliseconds > int.MaxValue)
         {
@@ -653,11 +715,39 @@ public sealed class StateRuntime
         _paths = paths;
         _busyTimeoutMilliseconds = (int)busyTimeout.TotalMilliseconds;
         _migrations = migrations.ToArray();
+        _contributors = contributors.ToArray();
         _faultInjector = faultInjector;
         WriteCoordinator = new StateWriteCoordinator(OpenReadWriteConnectionAsync);
     }
 
+    private static IReadOnlyList<IWorkspaceStateMigrationContributor> FreezeContributors(
+        IEnumerable<IWorkspaceStateMigrationContributor> contributors)
+    {
+        ArgumentNullException.ThrowIfNull(contributors);
+        return contributors.ToArray();
+    }
+
     public StateWriteCoordinator WriteCoordinator { get; }
+
+    public async ValueTask<T> ReadAsync<T>(
+        Func<DbConnection, CancellationToken, ValueTask<T>> operation,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(operation);
+        await using var connection = await OpenReadOnlyConnectionAsync(cancellationToken);
+        return await operation(connection, cancellationToken);
+    }
+
+    public async ValueTask<T> WriteAsync<T>(
+        Func<DbConnection, DbTransaction, CancellationToken, ValueTask<T>> operation,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(operation);
+        return await WriteCoordinator.ExecuteAsync(
+            async (connection, transaction, token) =>
+                await operation(connection, transaction, token),
+            cancellationToken);
+    }
 
     public async Task InitializeAsync(CancellationToken cancellationToken = default)
     {
@@ -734,6 +824,10 @@ public sealed class StateRuntime
         RejectUncheckpointedJournal(_paths.StateDatabasePath + "-journal");
         var journalMode = ReadJournalMode(_paths.StateDatabasePath);
         await using var connection = await OpenImmutableConnectionAsync(cancellationToken);
+        await ValidateSchemaAsync(
+            connection,
+            _migrations[^1].Version,
+            cancellationToken);
         var synchronous = await ReadPragmaIntAsync(
             connection,
             "synchronous",
@@ -904,25 +998,41 @@ public sealed class StateRuntime
                              readOnly: false,
                              cancellationToken))
             {
-                foreach (var migration in _migrations)
+                await using var transaction = connection.BeginTransaction(deferred: false);
+                try
                 {
-                    await ExecuteAsync(
-                        connection,
-                        migration.Sql,
-                        transaction: null,
-                        cancellationToken);
-                }
+                    foreach (var migration in _migrations)
+                    {
+                        await ExecuteAsync(
+                            connection,
+                            migration.Sql,
+                            transaction,
+                            cancellationToken);
+                        await ApplyContributorsAsync(
+                            migration.Version,
+                            connection,
+                            transaction,
+                            cancellationToken);
+                    }
 
-                if (_migrations.Count > 1)
+                    if (_migrations.Count > 1)
+                    {
+                        await UpdateStateAsync(
+                            connection,
+                            transaction,
+                            _migrations[^1].Version,
+                            "Completed",
+                            _migrations[^1].Version,
+                            error: null,
+                            cancellationToken);
+                    }
+
+                    await transaction.CommitAsync(cancellationToken);
+                }
+                catch
                 {
-                    await UpdateStateAsync(
-                        connection,
-                        transaction: null,
-                        _migrations[^1].Version,
-                        "Completed",
-                        _migrations[^1].Version,
-                        error: null,
-                        cancellationToken);
+                    await transaction.RollbackAsync(CancellationToken.None);
+                    throw;
                 }
 
                 await ValidateSchemaAsync(
@@ -1005,6 +1115,11 @@ public sealed class StateRuntime
                                  item => item.Version > currentVersion))
                     {
                         await ExecuteAsync(connection, migration.Sql, transaction, token);
+                        await ApplyContributorsAsync(
+                            migration.Version,
+                            connection,
+                            transaction,
+                            token);
                         _faultInjector?.Invoke(StateMigrationFaultPoint.Ddl);
                     }
 
@@ -1115,6 +1230,29 @@ public sealed class StateRuntime
                     $"State migration chain must contain each ordered version from 1; expected {expected}.");
             }
         }
+
+        foreach (var contributor in _contributors)
+        {
+            if (contributor.TargetVersion < 1 ||
+                contributor.TargetVersion > _migrations[^1].Version)
+            {
+                throw new StateMigrationException(
+                    $"State migration contributor target {contributor.TargetVersion} is outside the migration chain.");
+            }
+        }
+    }
+
+    private async Task ApplyContributorsAsync(
+        int version,
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        CancellationToken cancellationToken)
+    {
+        foreach (var contributor in _contributors.Where(item =>
+                     item.TargetVersion == version))
+        {
+            await contributor.ApplyAsync(connection, transaction, cancellationToken);
+        }
     }
 
     private SqliteConnection CreateConnection(SqliteOpenMode mode) =>
@@ -1206,7 +1344,7 @@ public sealed class StateRuntime
             System.Globalization.CultureInfo.InvariantCulture);
     }
 
-    private static async Task ValidateSchemaAsync(
+    private async Task ValidateSchemaAsync(
         SqliteConnection connection,
         int expectedVersion,
         CancellationToken cancellationToken)
@@ -1231,11 +1369,17 @@ public sealed class StateRuntime
                 2 => StateMigrations.VersionTwoTables,
                 3 => StateMigrations.VersionThreeTables,
                 4 => StateMigrations.VersionFourTables,
-                StateMigrations.CurrentVersion => StateMigrations.CurrentTables,
+                5 => StateMigrations.VersionFiveTables,
+                StateMigrations.CurrentVersion => null,
                 _ => throw new StateMigrationException(
                     $"State schema version {expectedVersion} has no validation contract."),
             };
-            if (!string.Equals(actual, expected, StringComparison.Ordinal))
+            var valid = expected is not null
+                ? string.Equals(actual, expected, StringComparison.Ordinal)
+                : StateMigrations.VersionFiveTables
+                    .Split(',')
+                    .All((actual ?? string.Empty).Split(',').Contains);
+            if (!valid)
             {
                 throw new StateMigrationException(
                     $"Unexpected state schema tables: {actual ?? "<none>"}.");
@@ -1249,7 +1393,7 @@ public sealed class StateRuntime
                 $"State schema version is {version}; expected {expectedVersion}.");
         }
 
-        if (expectedVersion != StateMigrations.CurrentVersion)
+        if (expectedVersion < 5)
         {
             return;
         }
@@ -1268,10 +1412,15 @@ public sealed class StateRuntime
                 """;
             var actual = Convert.ToString(
                 await indexes.ExecuteScalarAsync(cancellationToken));
-            if (!string.Equals(
+            var valid = expectedVersion == 5
+                ? string.Equals(
                     actual,
-                    StateMigrations.CurrentIndexes,
-                    StringComparison.Ordinal))
+                    StateMigrations.VersionFiveIndexes,
+                    StringComparison.Ordinal)
+                : StateMigrations.VersionFiveIndexes
+                    .Split(',')
+                    .All((actual ?? string.Empty).Split(',').Contains);
+            if (!valid)
             {
                 throw new StateMigrationException(
                     $"Unexpected state schema indexes: {actual ?? "<none>"}.");
@@ -1320,11 +1469,44 @@ public sealed class StateRuntime
                 await foreignKeys.ExecuteScalarAsync(cancellationToken));
             if (!string.Equals(
                     actual,
-                    StateMigrations.CurrentForeignKeys,
+                    StateMigrations.VersionFiveForeignKeys,
                     StringComparison.Ordinal))
             {
                 throw new StateMigrationException(
                     $"Unexpected state schema foreign keys: {actual ?? "<none>"}.");
+            }
+        }
+
+        if (expectedVersion != StateMigrations.CurrentVersion)
+        {
+            return;
+        }
+
+        foreach (var contributor in _contributors)
+        {
+            await contributor.ValidateAsync(connection, cancellationToken);
+        }
+
+        await using (var foreignKeyCheck = connection.CreateCommand())
+        {
+            foreignKeyCheck.CommandText = "PRAGMA foreign_key_check;";
+            await using var reader =
+                await foreignKeyCheck.ExecuteReaderAsync(cancellationToken);
+            if (await reader.ReadAsync(cancellationToken))
+            {
+                throw new StateMigrationException("State schema foreign-key check failed.");
+            }
+        }
+
+        await using (var integrityCheck = connection.CreateCommand())
+        {
+            integrityCheck.CommandText = "PRAGMA integrity_check;";
+            var result = Convert.ToString(
+                await integrityCheck.ExecuteScalarAsync(cancellationToken));
+            if (!string.Equals(result, "ok", StringComparison.Ordinal))
+            {
+                throw new StateMigrationException(
+                    $"State schema integrity check failed: {result ?? "<none>"}.");
             }
         }
     }

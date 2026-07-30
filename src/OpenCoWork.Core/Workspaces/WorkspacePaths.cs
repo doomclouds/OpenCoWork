@@ -39,6 +39,10 @@ public sealed class OpenCoWorkPaths
         ArchivedThreadsDirectory = Path.Combine(ThreadsDirectory, "archived");
         DeletingThreadsDirectory = Path.Combine(ThreadsDirectory, "deleting");
         ThreadRecoveryDirectory = Path.Combine(RuntimeDirectory, "recovery", "threads");
+        TeamsRuntimeDirectory = Path.Combine(RuntimeDirectory, "teams");
+        MissionsDirectory = Path.Combine(TeamsRuntimeDirectory, "missions");
+        SubAgentsDirectory = Path.Combine(TeamsRuntimeDirectory, "subagents");
+        WorktreesDirectory = Path.Combine(RuntimeDirectory, "worktrees");
     }
 
     public string WorkspaceRoot { get; }
@@ -78,6 +82,14 @@ public sealed class OpenCoWorkPaths
     public string DeletingThreadsDirectory { get; }
 
     public string ThreadRecoveryDirectory { get; }
+
+    public string TeamsRuntimeDirectory { get; }
+
+    public string MissionsDirectory { get; }
+
+    public string SubAgentsDirectory { get; }
+
+    public string WorktreesDirectory { get; }
 }
 
 public static class WorkspaceDiscovery

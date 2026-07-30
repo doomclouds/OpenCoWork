@@ -5,7 +5,11 @@ namespace OpenCoWork.Abstractions;
 public sealed record WorkspaceRuntimeDescriptor(
     string WorkspaceRoot,
     string DataRoot,
-    string RuntimeRoot);
+    string RuntimeRoot,
+    string TeamsRoot,
+    string MissionsRoot,
+    string SubAgentsRoot,
+    string WorktreesRoot);
 
 public sealed record ExecutionWorkspaceDescriptor(
     CoWorkWorkspaceMode Mode,

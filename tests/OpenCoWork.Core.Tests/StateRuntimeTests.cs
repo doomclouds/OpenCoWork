@@ -388,7 +388,7 @@ public sealed class StateRuntimeTests
                 """,
                 cancellationToken));
         Assert.Equal(
-            5L,
+            6L,
             await ScalarAsync<long>(
                 migrated,
                 "SELECT schema_version FROM state_info WHERE id = 1;",

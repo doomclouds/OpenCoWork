@@ -1,6 +1,6 @@
 # OpenCoWork M7 Multi-Agent CoWork 实施计划
 
-**Status:** 实施中；Outcome 1 已完成，Outcome 2-10 尚未开始。
+**Status:** 实施中；Outcome 1-2 已完成，Outcome 3-10 尚未开始。
 
 **Goal:** 在现有 Workspace、Session、Agent、Tool、Capability 和 Wire 边界上交付
 可持久、可恢复、受预算和权限约束的 Direct SubAgent 与 Mission 协作闭环。
@@ -25,10 +25,11 @@ Tool 执行根、Git Worktree、并发与 Token 预算、Secret 边界、模块�
 ## 当前实现基线
 
 - `dev` 当前产品基线为 M6 完成态；
-- `StateRuntime` 当前 Schema 为 v5；
+- Core 无 Contributor 的兼容基线仍停在 v5；App Init/Doctor/Runtime 已使用同一 Teams
+  Contributor 集合原子升级全局 Schema v6；
 - OpenCoWork Wire 当前支持 1.0/1.1；
-- `OpenCoWork.Teams` 已作为占位项目进入解决方案，只引用
-  `OpenCoWork.Abstractions`、Analyzer 和允许的 Protocol 扩展点，尚无生产代码；
+- `OpenCoWork.Teams` 已交付非 Primary 模块、冻结契约、Teams 配置和 v6 状态迁移片段，
+  仍只引用 `OpenCoWork.Abstractions`、Analyzer 和允许的 Protocol 扩展点；
 - M0 已冻结测试项目集合，不新增 `OpenCoWork.Teams.Tests`；领域测试放入现有
   `OpenCoWork.Core.Tests` 或 `OpenCoWork.IntegrationTests`；
 - 当前没有 M7 Provider 兼容性声明，编排测试使用可控 Fake Provider。

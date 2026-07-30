@@ -1,4 +1,5 @@
 using System.Text;
+using OpenCoWork.Abstractions;
 using OpenCoWork.Core.State;
 
 namespace OpenCoWork.Core.Workspaces;
@@ -29,6 +30,23 @@ public static class WorkspaceInitializer
             static (statePaths, timeout, token) =>
                 new StateRuntime(statePaths, timeout).InitializeAsync(token),
             cancellationToken);
+
+    public static Task InitializeAsync(
+        OpenCoWorkPaths paths,
+        TimeSpan busyTimeout,
+        IEnumerable<IWorkspaceStateMigrationContributor> contributors,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(contributors);
+        var frozenContributors = contributors.ToArray();
+        return InitializeAsync(
+            paths,
+            busyTimeout,
+            (statePaths, timeout, token) =>
+                new StateRuntime(statePaths, timeout, frozenContributors)
+                    .InitializeAsync(token),
+            cancellationToken);
+    }
 
     internal static Task InitializeAsync(
         OpenCoWorkPaths paths,

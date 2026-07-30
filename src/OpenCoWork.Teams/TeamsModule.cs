@@ -6,8 +6,16 @@ namespace OpenCoWork.Teams;
 [OpenCoWorkModule("teams", Dependencies = ["session"])]
 public sealed class TeamsModule : IOpenCoWorkModule
 {
-    public void ConfigureServices(IServiceCollection services) =>
+    public void ConfigureServices(IServiceCollection services)
+    {
+        services.AddSingleton<CoWorkConfig>();
+        foreach (var contributor in TeamsStateMigrationContributors.Create())
+        {
+            services.AddSingleton(contributor);
+        }
+
         services.AddSingleton<CoWorkModuleRuntime>();
+    }
 
     public ValueTask StartAsync(
         IServiceProvider services,
