@@ -185,16 +185,16 @@ M10 仍须在最终发布候选上重跑完整双平台验收。
 
 | AcceptanceId | Requirement | CapabilityIds | EvidenceType | Platforms | ExpectedEvidence | Status | SupersededBy |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| M7-ACC-001 | SubAgent 父子关系、深度、并发、预算和取消传播持久且可恢复。 | CAP-055 | AutomatedTest | All | 树深/并发/预算边界与重启测试。 | Planned | — |
-| M7-ACC-002 | Team、Member、Mission 使用 SQLite 权威状态，成员会话使用独立 Journal。 | CAP-056 | AutomatedTest | All | 权威源和跨 ID 关联测试。 | Planned | — |
-| M7-ACC-003 | MissionTask DAG 拒绝环，依赖满足后才进入 Ready，并持久化 Blocked 原因。 | CAP-057 | AutomatedTest | All | DAG 性质测试与 Reconciler 结果。 | Planned | — |
-| M7-ACC-004 | Mailbox 支持交接、阻塞、审查、返工和 Artifact 引用，投递/确认幂等。 | CAP-058 | FaultInjection | All | 丢通知、重复投递和 Dead Letter 测试。 | Planned | — |
-| M7-ACC-005 | 同一 Member 互斥、全局并发和 Mission 预算在竞态下不超限。 | CAP-055 | PerformanceTest | All | 高并发调度和计数不变量报告。 | Planned | — |
-| M7-ACC-006 | Artifact/Scratchpad 的路径、摘要、权限和孤儿清理不会越出运行时根。 | CAP-059 | SecurityTest | DualPlatform | Symlink/Reparse Point、篡改与孤儿清理测试。 | Planned | — |
-| M7-ACC-007 | Project/Worktree 隔离正确，Dirty Worktree 不被自动删除或复用。 | CAP-060 | RealPlatformValidation | DualPlatform | Windows/macOS Git Worktree 场景。 | Planned | — |
-| M7-ACC-008 | Leader 仅在必需任务完成后综合，Review/返工不会提前结束 Mission。 | CAP-057, CAP-060 | AutomatedTest | All | DAG、Review 和综合时序测试。 | Planned | — |
-| M7-ACC-009 | Mission 运行中崩溃后可由 Lease/Reconciler 恢复且无重复任务。 | CAP-056, CAP-057, CAP-058 | FaultInjection | All | 各状态崩溃矩阵与恢复报告。 | Planned | — |
-| M7-ACC-010 | 完成通知丢失或重复时，Origin 只接收一次最终结果。 | CAP-060 | FaultInjection | All | Outbound Idempotency 与通知丢失测试。 | Planned | — |
+| M7-ACC-001 | SubAgent 父子关系、深度、并发、预算和取消传播持久且可恢复。 | CAP-055 | AutomatedTest | All | `DirectSubAgentTests`、`CoWorkBudgetRaceTests`、`MissionRecoveryTests`。 | Passed | — |
+| M7-ACC-002 | Team、Member、Mission 使用 SQLite 权威状态，成员会话使用独立 Journal。 | CAP-056 | AutomatedTest | All | `CoWorkPersistenceTests`、`CoWorkServiceTests`、`CoWorkLifecycleTests`。 | Passed | — |
+| M7-ACC-003 | MissionTask DAG 拒绝环，依赖满足后才进入 Ready，并持久化 Blocked 原因。 | CAP-057 | AutomatedTest | All | `MissionDagPropertyTests`、`MissionReconcilerTests`。 | Passed | — |
+| M7-ACC-004 | Mailbox 支持交接、阻塞、审查、返工和 Artifact 引用，投递/确认幂等。 | CAP-058 | FaultInjection | All | `CoWorkMailboxTests`、`CoWorkDispatchFaultTests`。 | Passed | — |
+| M7-ACC-005 | 同一 Member 互斥、全局并发和 Mission 预算在竞态下不超限。 | CAP-055 | PerformanceTest | All | `CoWorkBudgetRaceTests` 的 16 Run 竞态与预算不变量。 | Passed | — |
+| M7-ACC-006 | Artifact/Scratchpad 的路径、摘要、权限和孤儿清理不会越出运行时根。 | CAP-059 | SecurityTest | DualPlatform | macOS Symlink、篡改、Secret 与孤儿恢复已通过；Windows Reparse/Junction 真机待验。 | Planned | — |
+| M7-ACC-007 | Project/Worktree 隔离正确，Dirty Worktree 不被自动删除或复用。 | CAP-060 | RealPlatformValidation | DualPlatform | macOS Git Worktree/Dirty Retention 已通过；Windows 真机待验。 | Planned | — |
+| M7-ACC-008 | Leader 仅在必需任务完成后综合，Review/返工不会提前结束 Mission。 | CAP-057, CAP-060 | AutomatedTest | All | `MissionReviewTests`、`MissionSynthesisTests`。 | Passed | — |
+| M7-ACC-009 | Mission 运行中崩溃后可由 Lease/Reconciler 恢复且无重复任务。 | CAP-056, CAP-057, CAP-058 | FaultInjection | All | 256 Task 恢复与完整 `CoWorkDispatchFaultTests` 矩阵。 | Passed | — |
+| M7-ACC-010 | 完成通知丢失或重复时，Origin 只接收一次最终结果。 | CAP-060 | FaultInjection | All | `OriginDeliveryTests` 与完成前后故障注入。 | Passed | — |
 
 ## 10. M8 - Automations and Scheduler（9）
 
@@ -253,11 +253,11 @@ M10 仍须在最终发布候选上重跑完整双平台验收。
 | M4 | 10 | Passed |
 | M5 | 9 | Passed |
 | M6 | 10 | Passed |
-| M7 | 10 | Planned |
+| M7 | 10 | 8 Passed / 2 Planned |
 | M8 | 9 | Planned |
 | M9 | 10 | Planned |
 | M10 | 12 | Planned |
-| **Total** | **104** | **63 Passed / 41 Planned** |
+| **Total** | **104** | **71 Passed / 33 Planned** |
 
 每个 Slice 标记 Done 前必须：
 

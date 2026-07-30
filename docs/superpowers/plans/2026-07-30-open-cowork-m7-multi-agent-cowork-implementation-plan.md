@@ -1,6 +1,7 @@
 # OpenCoWork M7 Multi-Agent CoWork 实施计划
 
-**Status:** 实施中；Outcome 1-3 已完成，Outcome 4-10 尚未开始。
+**Status:** Outcome 1-9 已完成；Outcome 10 的自动化与 `osx-arm64` 已通过，
+`win-x64` 真机验收待执行，M7 未关闭。
 
 **Goal:** 在现有 Workspace、Session、Agent、Tool、Capability 和 Wire 边界上交付
 可持久、可恢复、受预算和权限约束的 Direct SubAgent 与 Mission 协作闭环。
@@ -24,15 +25,17 @@ Tool 执行根、Git Worktree、并发与 Token 预算、Secret 边界、模块�
 
 ## 当前实现基线
 
-- `dev` 当前产品基线为 M6 完成态；
-- Core 无 Contributor 的兼容基线仍停在 v5；App Init/Doctor/Runtime 已使用同一 Teams
-  Contributor 集合原子升级全局 Schema v6；
-- OpenCoWork Wire 当前支持 1.0/1.1；
-- `OpenCoWork.Teams` 已交付非 Primary 模块、冻结契约、Teams 配置和 v6 状态迁移片段，
-  仍只引用 `OpenCoWork.Abstractions`、Analyzer 和允许的 Protocol 扩展点；
+- `dev` 当前代码基线 `c30f168` 已完成 Outcome 1-9；
+- Workspace State Schema 已原子升级到 v6，Teams、AgentRun、Mission、Mailbox、
+  Artifact、Worktree、Lease、Budget 与 Command Receipt 均以 SQLite 为权威；
+- OpenCoWork Wire 已支持 1.0/1.1/1.2，并保持 ACP v1；
+- `OpenCoWork.Teams` 已交付 Direct SubAgent、Mission DAG、Mailbox、Artifact、
+  Worktree、Review/Rework、Leader Synthesis、恢复与 Origin Once；
 - M0 已冻结测试项目集合，不新增 `OpenCoWork.Teams.Tests`；领域测试放入现有
   `OpenCoWork.Core.Tests` 或 `OpenCoWork.IntegrationTests`；
-- 当前没有 M7 Provider 兼容性声明，编排测试使用可控 Fake Provider。
+- 当前没有 M7 Provider 兼容性声明，编排测试使用可控 Fake Provider；
+- 2026-07-30 的 `osx-arm64` Release、专项/全量回归与发布目录 TestClient 已通过；
+  `win-x64` App/TestClient 仅完成交叉发布，不能替代 Windows 真机证据。
 
 实施前必须先把 M7 Design + Plan 作为独立、已验证的文档基线提交；没有用户授权不得
 从本计划自动进入 Outcome 1。
