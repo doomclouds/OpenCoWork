@@ -61,7 +61,7 @@ public sealed class MissionRecoveryTests
         Assert.All(
             mission.Tasks,
             task => Assert.Equal(CoWorkTaskStatus.Completed, task.Status));
-        Assert.Equal(CoWorkMissionStatus.AwaitingLeaderReview, mission.Status);
+        Assert.Equal(CoWorkMissionStatus.Completed, mission.Status);
     }
 
     [Fact]

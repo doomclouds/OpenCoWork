@@ -72,7 +72,7 @@ public sealed class MissionReconcilerTests
         Assert.All(
             completed.Tasks,
             task => Assert.Equal(CoWorkTaskStatus.Completed, task.Status));
-        Assert.Equal(CoWorkMissionStatus.AwaitingLeaderReview, completed.Status);
+        Assert.Equal(CoWorkMissionStatus.Completed, completed.Status);
         Assert.Equal(
             2,
             await MissionTestData.CountAsync(

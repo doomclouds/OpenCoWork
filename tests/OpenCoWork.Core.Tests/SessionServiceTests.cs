@@ -512,6 +512,61 @@ public sealed class SessionServiceTests
             cancellationToken)).Entries);
     }
 
+    [Fact]
+    public async Task Completed_agent_turn_reactivates_archived_thread_and_replays_once()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        using var files = new TempWorkspace();
+        var (runtime, journal, projection, service) =
+            await CreateServiceAsync(files, cancellationToken);
+        var created = (await service.CreateThreadAsync(
+            new CreateThreadRequest(Guid.CreateVersion7(), 0, "Origin"),
+            cancellationToken)).Value!;
+        _ = await service.ArchiveThreadAsync(
+            new ThreadMutationRequest(
+                created.ThreadId,
+                Guid.CreateVersion7(),
+                created.CurrentSequence),
+            cancellationToken);
+        var request = new AppendCompletedAgentTurnRequest(
+            created.ThreadId,
+            "mission:stable-origin",
+            "Mission completed.");
+
+        var first = await service.AppendCompletedAgentTurnAsync(
+            request,
+            cancellationToken);
+        var replay = await service.AppendCompletedAgentTurnAsync(
+            request,
+            cancellationToken);
+        var restarted = new SessionService(
+            runtime,
+            journal,
+            projection,
+            new SessionConfig());
+        var replayAfterRestart = await restarted.AppendCompletedAgentTurnAsync(
+            request,
+            cancellationToken);
+
+        Assert.Equal(SessionCommandStatus.Committed, first.Status);
+        Assert.Equal(first.Value?.CurrentSequence, replay.Value?.CurrentSequence);
+        Assert.Equal(first.Value?.CurrentSequence, replayAfterRestart.Value?.CurrentSequence);
+        Assert.Equal(ThreadStatus.Active, replayAfterRestart.Value?.Status);
+        var history = await restarted.ReadHistoryAsync(
+            new ReadHistoryRequest(created.ThreadId, PageSize: 100),
+            cancellationToken);
+        Assert.Equal(
+            1,
+            history.Value!.Items.Count(item =>
+                item.Type == SessionEventType.ItemCompleted &&
+                item.Payload.Item is
+                {
+                    Type: SessionItemType.AgentMessage,
+                    Content: TextItemContent text,
+                } &&
+                text.Text == request.Text));
+    }
+
     private static async Task<(
         StateRuntime Runtime,
         ThreadJournal Journal,

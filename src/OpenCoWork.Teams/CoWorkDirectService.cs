@@ -14,6 +14,11 @@ internal enum CoWorkDispatchFaultPoint
     BeforeSubmitTurn,
     AfterSubmitTurn,
     BeforeDeliverMessage,
+    AfterDeliverMessage,
+    BeforeMissionCompletion,
+    AfterMissionCompletion,
+    BeforeOriginDelivery,
+    AfterOriginDelivery,
 }
 
 internal sealed class CoWorkDispatchCrashException(CoWorkDispatchFaultPoint faultPoint)
@@ -981,10 +986,20 @@ public sealed partial class CoWorkService
                         await ExecuteCreateThreadIntentAsync(intent, cancellationToken);
                         break;
                     case CoWorkDispatchKind.SubmitTurn:
+                    case CoWorkDispatchKind.SynthesizeMission:
                         await ExecuteSubmitTurnIntentAsync(intent, cancellationToken);
                         break;
                     case CoWorkDispatchKind.DeliverMessage:
                         if (!await ExecuteDeliverMessageIntentAsync(
+                                intent,
+                                cancellationToken))
+                        {
+                            return false;
+                        }
+
+                        break;
+                    case CoWorkDispatchKind.DeliverOrigin:
+                        if (!await ExecuteDeliverOriginIntentAsync(
                                 intent,
                                 cancellationToken))
                         {
@@ -1375,11 +1390,21 @@ public sealed partial class CoWorkService
         }
 
         var activeTurnId = thread.Value.ActiveTurnId;
+        var expectedSequence = TryReadExpectedSequence(intent.Diagnostic)
+            ?? thread.Value.CurrentSequence;
+        if (intent.Diagnostic is null)
+        {
+            await PersistIntentDiagnosticAsync(
+                intent.DispatchIntentId,
+                $"expectedSequence:{expectedSequence}",
+                cancellationToken);
+        }
+
         var queued = await _sessions.EnqueueInputAsync(
             new EnqueueInputRequest(
                 recipientThreadId.Value,
                 intent.DispatchIntentId,
-                thread.Value.CurrentSequence,
+                expectedSequence,
                 message.Body,
                 TurnAdmission.QueueIfBusy),
             cancellationToken);
@@ -1410,6 +1435,7 @@ public sealed partial class CoWorkService
                 cancellationToken);
         }
 
+        _dispatchFaultInjector?.Invoke(CoWorkDispatchFaultPoint.AfterDeliverMessage);
         await _store.WriteAsync(
             async (connection, transaction, token) =>
             {
@@ -1569,21 +1595,29 @@ public sealed partial class CoWorkService
                 continue;
             }
 
-            var terminal = events.LastOrDefault(item =>
-                item.Type is SessionEventType.TurnCompleted or
-                    SessionEventType.TurnFailed or
-                    SessionEventType.TurnCancelled);
+            var dispatchId = await ReadRunDispatchIdAsync(
+                run.AgentRunId,
+                cancellationToken);
+            var started = dispatchId is null
+                ? null
+                : events.LastOrDefault(item =>
+                    item.Type == SessionEventType.TurnStarted &&
+                    (item.Payload.Turn?.TurnId == dispatchId ||
+                     item.Payload.QueueItem?.QueueItemId == dispatchId));
+            var terminal = started?.Payload.Turn is { } startedTurn
+                ? events.LastOrDefault(item =>
+                    item.Payload.Turn?.TurnId == startedTurn.TurnId &&
+                    item.Type is SessionEventType.TurnCompleted or
+                        SessionEventType.TurnFailed or
+                        SessionEventType.TurnCancelled)
+                : null;
             if (terminal is null)
             {
                 continue;
             }
 
             var terminalTurnId = terminal.Payload.Turn?.TurnId;
-            var turnStartSequence = events.LastOrDefault(item =>
-                    item.Type == SessionEventType.TurnStarted &&
-                    (terminalTurnId is null ||
-                     item.Payload.Turn?.TurnId == terminalTurnId))
-                ?.Sequence ?? 0;
+            var turnStartSequence = started!.Sequence;
             var usage = events
                 .Where(item =>
                     item.Type == SessionEventType.ProviderUsageRecorded &&
@@ -1616,13 +1650,123 @@ public sealed partial class CoWorkService
         }
     }
 
+    private async Task<bool> ExecuteDeliverOriginIntentAsync(
+        DispatchIntentSnapshot intent,
+        CancellationToken cancellationToken)
+    {
+        var state = await _store.ReadAsync(
+            async (connection, token) =>
+            {
+                var mission = await LoadMissionAsync(connection, intent.EntityId, token)
+                              ?? throw NotFound("Mission was not found.");
+                var delivered = await ScalarAsync<long>(
+                    connection,
+                    null,
+                    """
+                    SELECT count(*) FROM missions
+                    WHERE mission_id = $missionId
+                      AND origin_delivered_utc IS NOT NULL;
+                    """,
+                    token,
+                    ("$missionId", mission.MissionId)) != 0;
+                return (Mission: mission, Delivered: delivered);
+            },
+            cancellationToken);
+        if (state.Delivered)
+        {
+            await CompleteIntentAsync(intent.DispatchIntentId, cancellationToken);
+            return true;
+        }
+
+        if (state.Mission.Status != CoWorkMissionStatus.Completed ||
+            string.IsNullOrWhiteSpace(state.Mission.FinalSummary) ||
+            string.IsNullOrWhiteSpace(state.Mission.OriginDeliveryId))
+        {
+            await DeadLetterIntentAsync(
+                intent,
+                CoWorkErrorCodes.InvalidState,
+                "Mission completion is unavailable for Origin delivery.",
+                cancellationToken);
+            return true;
+        }
+
+        _dispatchFaultInjector?.Invoke(CoWorkDispatchFaultPoint.BeforeOriginDelivery);
+        var appended = await _sessions!.AppendCompletedAgentTurnAsync(
+            new AppendCompletedAgentTurnRequest(
+                state.Mission.OriginThreadId,
+                state.Mission.OriginDeliveryId,
+                $"Mission {state.Mission.MissionId:D} completed.\n" +
+                $"Leader Thread: {state.Mission.LeaderThreadId:D}\n" +
+                $"Summary:\n{state.Mission.FinalSummary}"),
+            cancellationToken);
+        if (appended.Value is null)
+        {
+            if (appended.Error?.IsRetryable == true ||
+                appended.Error?.Code == SessionErrorCodes.ThreadBusy)
+            {
+                await ReleaseIntentAsync(intent.DispatchIntentId, cancellationToken);
+                return false;
+            }
+
+            await DeadLetterIntentAsync(
+                intent,
+                appended.Error?.Code ?? CoWorkErrorCodes.SessionUnavailable,
+                appended.Error?.Message ?? "Origin delivery failed.",
+                cancellationToken);
+            return true;
+        }
+
+        _dispatchFaultInjector?.Invoke(CoWorkDispatchFaultPoint.AfterOriginDelivery);
+        await _store.WriteAsync(
+            async (connection, transaction, token) =>
+            {
+                var now = UtcNowMilliseconds();
+                await ExecuteSqlAsync(
+                    connection,
+                    transaction,
+                    """
+                    UPDATE missions
+                    SET origin_delivered_utc = coalesce(origin_delivered_utc, $now),
+                        revision = CASE
+                            WHEN origin_delivered_utc IS NULL THEN revision + 1
+                            ELSE revision
+                        END,
+                        updated_utc = $now
+                    WHERE mission_id = $missionId;
+
+                    UPDATE cowork_dispatch_intents
+                    SET status = 'completed',
+                        lease_owner = NULL,
+                        lease_expires_utc = NULL,
+                        error_code = NULL,
+                        diagnostic = NULL,
+                        updated_utc = $now
+                    WHERE intent_id = $intentId;
+                    """,
+                    token,
+                    ("$now", (object)now),
+                    ("$missionId", state.Mission.MissionId),
+                    ("$intentId", intent.DispatchIntentId));
+                return 0;
+            },
+            cancellationToken);
+        return true;
+    }
+
     private async Task SettleAgentRunAsync(
         AgentRunSnapshot run,
         CoWorkAgentRunStatus status,
         long? actualUsage,
         string? errorCode,
         string? outputSummary,
-        CancellationToken cancellationToken) =>
+        CancellationToken cancellationToken)
+    {
+        if (run.Kind == CoWorkAgentRunKind.LeaderSynthesis)
+        {
+            _dispatchFaultInjector?.Invoke(
+                CoWorkDispatchFaultPoint.BeforeMissionCompletion);
+        }
+
         await _store.WriteAsync(
             async (connection, transaction, token) =>
             {
@@ -1711,10 +1855,87 @@ public sealed partial class CoWorkService
                         ("$taskId", taskId),
                         ("$missionId", current.MissionId));
                 }
+                else if (current.Kind == CoWorkAgentRunKind.LeaderSynthesis &&
+                         current.MissionId is { } missionId)
+                {
+                    var mission = await LoadMissionAsync(connection, missionId, token)
+                                  ?? throw InvalidState("Mission is missing.");
+                    var now = UtcNowMilliseconds();
+                    if (status == CoWorkAgentRunStatus.Completed)
+                    {
+                        var provenance = JsonSerializer.Serialize(
+                            new
+                            {
+                                schemaVersion = 1,
+                                missionId,
+                                leaderThreadId = current.ThreadId,
+                                synthesisRunId = current.AgentRunId,
+                                taskIds = mission.Tasks
+                                    .OrderBy(task => task.CreatedAt)
+                                    .ThenBy(task => task.TaskId)
+                                    .Select(task => task.TaskId)
+                                    .ToArray(),
+                            },
+                            JsonOptions);
+                        await ExecuteSqlAsync(
+                            connection,
+                            transaction,
+                            """
+                            UPDATE missions
+                            SET status = 'completed',
+                                final_summary = $summary,
+                                provenance_json = $provenance,
+                                revision = revision + 1,
+                                updated_utc = $now,
+                                completed_utc = $now
+                            WHERE mission_id = $missionId
+                              AND status = 'awaitingLeaderReview';
+                            """,
+                            token,
+                            ("$summary", outputSummary),
+                            ("$provenance", provenance),
+                            ("$now", now),
+                            ("$missionId", missionId));
+                        await InsertDispatchIntentAsync(
+                            connection,
+                            transaction,
+                            CoWorkDispatchKind.DeliverOrigin,
+                            "missionOrigin",
+                            missionId,
+                            commandId: null,
+                            now,
+                            token);
+                    }
+                    else
+                    {
+                        await ExecuteSqlAsync(
+                            connection,
+                            transaction,
+                            """
+                            UPDATE missions
+                            SET status = 'failed',
+                                revision = revision + 1,
+                                updated_utc = $now,
+                                completed_utc = $now
+                            WHERE mission_id = $missionId
+                              AND status = 'awaitingLeaderReview';
+                            """,
+                            token,
+                            ("$now", now),
+                            ("$missionId", missionId));
+                    }
+                }
 
                 return 0;
             },
             cancellationToken);
+
+        if (run.Kind == CoWorkAgentRunKind.LeaderSynthesis)
+        {
+            _dispatchFaultInjector?.Invoke(
+                CoWorkDispatchFaultPoint.AfterMissionCompletion);
+        }
+    }
 
     private async Task<CoWorkResult<CoWorkPage<DirectSubAgentSnapshot>>>
         ListDirectSubAgentsAsync(
@@ -2315,7 +2536,11 @@ public sealed partial class CoWorkService
                     SET status = 'pending',
                         lease_owner = NULL,
                         lease_expires_utc = NULL,
-                        diagnostic = $diagnostic,
+                        diagnostic = CASE
+                            WHEN diagnostic LIKE 'expectedSequence:%'
+                                THEN diagnostic
+                            ELSE $diagnostic
+                        END,
                         updated_utc = $now
                     WHERE intent_id = $intentId;
                     """,
@@ -2382,7 +2607,11 @@ public sealed partial class CoWorkService
                         lease_owner = NULL,
                         lease_expires_utc = NULL,
                         error_code = $errorCode,
-                        diagnostic = $diagnostic,
+                        diagnostic = CASE
+                            WHEN diagnostic LIKE 'expectedSequence:%'
+                                THEN diagnostic
+                            ELSE $diagnostic
+                        END,
                         updated_utc = $now
                     WHERE intent_id = $intentId;
                     """,
@@ -2564,6 +2793,35 @@ public sealed partial class CoWorkService
         CancellationToken cancellationToken) =>
         await _store.ReadAsync(
             (connection, token) => LoadAgentRunAsync(connection, agentRunId, token),
+            cancellationToken);
+
+    private async Task<Guid?> ReadRunDispatchIdAsync(
+        Guid agentRunId,
+        CancellationToken cancellationToken) =>
+        await _store.ReadAsync(
+            async (connection, token) =>
+            {
+                await using var command = connection.CreateCommand();
+                command.CommandText =
+                    """
+                    SELECT diagnostic
+                    FROM agent_runs
+                    WHERE agent_run_id = $id;
+                    """;
+                AddParameter(command, "$id", agentRunId);
+                var diagnostic = Convert.ToString(
+                    await command.ExecuteScalarAsync(token),
+                    System.Globalization.CultureInfo.InvariantCulture);
+                return (Guid?)(diagnostic is not null &&
+                               diagnostic.StartsWith(
+                                   "turn:",
+                                   StringComparison.Ordinal) &&
+                               Guid.TryParse(
+                                   diagnostic.AsSpan("turn:".Length),
+                                   out var id)
+                    ? id
+                    : null);
+            },
             cancellationToken);
 
     private static async ValueTask<AgentRunSnapshot?> LoadLatestRunForThreadAsync(

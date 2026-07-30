@@ -351,6 +351,110 @@ public sealed partial class CoWorkService
                     }
                 }
 
+                var awaitingMissionIds = await ReadGuidsAsync(
+                    connection,
+                    """
+                    SELECT mission_id
+                    FROM missions
+                    WHERE status = 'awaitingLeaderReview'
+                    ORDER BY created_utc, mission_id;
+                    """,
+                    token);
+                foreach (var missionId in awaitingMissionIds)
+                {
+                    var mission = await LoadMissionAsync(connection, missionId, token);
+                    if (mission?.LeaderThreadId is null ||
+                        await ScalarAsync<long>(
+                            connection,
+                            transaction,
+                            """
+                            SELECT count(*) FROM agent_runs
+                            WHERE mission_id = $missionId
+                              AND run_kind = 'leaderSynthesis';
+                            """,
+                            token,
+                            ("$missionId", missionId)) != 0 ||
+                        !await HasRunCapacityAsync(
+                            connection,
+                            transaction,
+                            missionId,
+                            token))
+                    {
+                        continue;
+                    }
+
+                    var budget = await ReadMissionBudgetAsync(
+                                     connection,
+                                     transaction,
+                                     missionId,
+                                     token)
+                                 ?? throw InvalidState(
+                                     "Mission Budget Scope is missing.");
+                    var reservation = EstimateReservation(mission.Objective);
+                    if (!await TryReserveBudgetAsync(
+                            connection,
+                            transaction,
+                            budget.ScopeId,
+                            reservation,
+                            token))
+                    {
+                        continue;
+                    }
+
+                    var leader = mission.Members.Single(member =>
+                        member.Role == CoWorkMemberRole.Leader);
+                    var runId = Guid.CreateVersion7(_timeProvider.GetUtcNow());
+                    var workspace = new ExecutionWorkspaceDescriptor(
+                        CoWorkWorkspaceMode.Project,
+                        _workspace!.WorkspaceRoot,
+                        Path.Combine(
+                            _workspace.MissionsRoot,
+                            missionId.ToString("D"),
+                            runId.ToString("D"),
+                            "scratchpad"),
+                        WorktreeId: null,
+                        WorktreeRoot: null,
+                        BaseCommitSha: mission.BaseCommitSha);
+                    await InsertMissionAgentRunAsync(
+                        connection,
+                        transaction,
+                        runId,
+                        mission,
+                        task: null,
+                        leader,
+                        CoWorkAgentRunKind.LeaderSynthesis,
+                        attempt: 1,
+                        workspace,
+                        CoWorkWorkspaceAccess.ReadOnly,
+                        reservation,
+                        token);
+                    var now = UtcNowMilliseconds();
+                    await ExecuteSqlAsync(
+                        connection,
+                        transaction,
+                        """
+                        UPDATE agent_runs
+                        SET thread_id = $threadId,
+                            status = 'starting',
+                            updated_utc = $now
+                        WHERE agent_run_id = $runId;
+                        """,
+                        token,
+                        ("$threadId", mission.LeaderThreadId.Value),
+                        ("$now", now),
+                        ("$runId", runId));
+                    await InsertDispatchIntentAsync(
+                        connection,
+                        transaction,
+                        CoWorkDispatchKind.SynthesizeMission,
+                        "agentRun",
+                        runId,
+                        commandId: null,
+                        now,
+                        token);
+                    prepared++;
+                }
+
                 if (prepared != 0)
                 {
                     WakeReconciler();
@@ -385,6 +489,37 @@ public sealed partial class CoWorkService
                         "Use only CoWork orchestration tools to create the initial DAG.";
                 }
 
+                if (run.Kind == CoWorkAgentRunKind.LeaderSynthesis)
+                {
+                    var members = string.Join(
+                        "\n",
+                        mission.Members
+                            .OrderBy(member => member.Order)
+                            .ThenBy(member => member.MemberId)
+                            .Select(member =>
+                                $"- {member.Alias}: {member.Role}; {member.Description}"));
+                    var tasks = string.Join(
+                        "\n",
+                        mission.Tasks
+                            .OrderBy(task => task.CreatedAt)
+                            .ThenBy(task => task.TaskId)
+                            .Select(task =>
+                                $"- {task.Alias}: required={task.Required}; " +
+                                $"status={task.Status}; summary={task.OutputSummary ?? task.BlockedReason ?? "(none)"}"));
+                    var artifacts = await ReadMissionArtifactMetadataAsync(
+                        connection,
+                        mission.MissionId,
+                        token);
+                    return
+                        $"Synthesize Mission {mission.MissionId:D}.\n" +
+                        $"Objective: {mission.Objective}\n" +
+                        $"Frozen responsibilities:\n{members}\n" +
+                        $"Task outcomes:\n{tasks}\n" +
+                        $"Artifact metadata:\n{artifacts}\n" +
+                        "Return the final Mission summary and provenance. " +
+                        "Do not reconstruct full member Thread history.";
+                }
+
                 var task = mission.Tasks.Single(candidate =>
                     candidate.TaskId == run.TaskId);
                 return
@@ -393,6 +528,33 @@ public sealed partial class CoWorkService
                     $"Instructions: {task.Instructions}";
             },
             cancellationToken);
+
+    private static async ValueTask<string> ReadMissionArtifactMetadataAsync(
+        DbConnection connection,
+        Guid missionId,
+        CancellationToken cancellationToken)
+    {
+        await using var command = connection.CreateCommand();
+        command.CommandText =
+            """
+            SELECT display_name, media_type, status, sha256, size_bytes
+            FROM cowork_files
+            WHERE mission_id = $missionId AND kind = 'artifact'
+            ORDER BY created_utc, cowork_file_id;
+            """;
+        AddParameter(command, "$missionId", missionId);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        var artifacts = new List<string>();
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            artifacts.Add(
+                $"- {reader.GetString(0)}: {reader.GetString(1)}; " +
+                $"status={reader.GetString(2)}; sha256={reader.GetString(3)}; " +
+                $"bytes={reader.GetInt64(4)}");
+        }
+
+        return artifacts.Count == 0 ? "(none)" : string.Join("\n", artifacts);
+    }
 
     private static bool CanAwaitLeaderReview(MissionSnapshot mission) =>
         mission.Tasks.Count != 0 &&

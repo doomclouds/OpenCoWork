@@ -60,6 +60,16 @@ public sealed class MissionReviewTests
         Assert.Equal(
             CoWorkTaskStatus.Completed,
             mission.Tasks.Single(task => task.Alias == "optional").Status);
+        Assert.Equal(
+            0,
+            await MissionTestData.CountAsync(
+                workspace.Store,
+                """
+                SELECT count(*) FROM agent_runs
+                WHERE mission_id = $id AND run_kind = 'leaderSynthesis';
+                """,
+                token,
+                ("$id", mission.MissionId)));
 
         var reassigned = await workspace.Service.ReassignMissionTaskAsync(
             new ReassignMissionTaskRequest(
@@ -114,16 +124,16 @@ public sealed class MissionReviewTests
         mission = await MissionTestData.ReconcileUntilAsync(
             workspace,
             mission.MissionId,
-            candidate => candidate.Status == CoWorkMissionStatus.AwaitingLeaderReview,
+            candidate => candidate.Status == CoWorkMissionStatus.Completed,
             token);
-        Assert.Equal(CoWorkMissionStatus.AwaitingLeaderReview, mission.Status);
+        Assert.Equal(CoWorkMissionStatus.Completed, mission.Status);
     }
 
     [Fact]
     public async Task Failed_optional_task_can_be_reassigned_and_waived_without_failing_mission()
     {
         await using var workspace = await CoWorkTestWorkspace.CreateAsync(
-            executor: new FailingMissionExecutor());
+            executor: new MissionCompletionExecutor("optional"));
         var token = TestContext.Current.CancellationToken;
         var setup = await MissionTestData.CreateAsync(
             workspace,
@@ -175,9 +185,9 @@ public sealed class MissionReviewTests
         mission = await MissionTestData.ReconcileUntilAsync(
             workspace,
             mission.MissionId,
-            candidate => candidate.Status == CoWorkMissionStatus.AwaitingLeaderReview,
+            candidate => candidate.Status == CoWorkMissionStatus.Completed,
             token);
-        Assert.Equal(CoWorkMissionStatus.AwaitingLeaderReview, mission.Status);
+        Assert.Equal(CoWorkMissionStatus.Completed, mission.Status);
     }
 
     [Fact]
@@ -221,21 +231,6 @@ public sealed class MissionReviewTests
         Assert.DoesNotContain(secret, summary, StringComparison.Ordinal);
         Assert.Contains("[REDACTED]", summary, StringComparison.Ordinal);
     }
-}
-
-internal sealed class FailingMissionExecutor : ISessionExecutor
-{
-    public ValueTask ExecuteAsync(
-        AgentSession context,
-        ISessionExecutionSink sink,
-        CancellationToken cancellationToken) =>
-        sink.EmitAsync(
-            new FailTurnIntent(
-                new SessionError(
-                    "test.failure",
-                    "Expected test failure.",
-                    IsRetryable: false)),
-            cancellationToken);
 }
 
 internal sealed class TextMissionExecutor(string text) : ISessionExecutor

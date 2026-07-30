@@ -500,6 +500,11 @@ public sealed record EnqueueInputRequest(
     string Text,
     TurnAdmission Admission = TurnAdmission.QueueIfBusy);
 
+public sealed record AppendCompletedAgentTurnRequest(
+    Guid ThreadId,
+    string DeliveryId,
+    string Text);
+
 public sealed record RemoveQueuedInputRequest(
     Guid ThreadId,
     Guid QueueItemId,
@@ -635,6 +640,10 @@ public interface ISessionService
 
     Task<SessionCommandResult<SubmittedTurnInputSnapshot>> EnqueueInputAsync(
         EnqueueInputRequest request,
+        CancellationToken cancellationToken = default);
+
+    Task<SessionCommandResult<ThreadSnapshot>> AppendCompletedAgentTurnAsync(
+        AppendCompletedAgentTurnRequest request,
         CancellationToken cancellationToken = default);
 
     Task<SessionCommandResult<ThreadSnapshot>> RemoveQueuedInputAsync(
