@@ -485,7 +485,7 @@ public sealed partial class CoWorkService : ICoWorkService
             .ToLowerInvariant();
         try
         {
-            return await _store.WriteAsync(
+            var result = await _store.WriteAsync(
                 async (connection, transaction, token) =>
                 {
                     await using (var receipt = connection.CreateCommand())
@@ -549,6 +549,12 @@ public sealed partial class CoWorkService : ICoWorkService
                     return Success(value, revision);
                 },
                 cancellationToken);
+            if (result.IsSuccess)
+            {
+                WakeReconciler();
+            }
+
+            return result;
         }
         catch (CoWorkDomainException exception)
         {

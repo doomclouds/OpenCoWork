@@ -98,6 +98,10 @@ public sealed class CoWorkBudgetRaceTests
                 5_000,
                 CoWorkWorkspaceMode.Project),
             cancellationToken);
+        await WaitForIdleAsync(
+            workspace,
+            first.Value!.ThreadId,
+            cancellationToken);
         var second = await workspace.Service.FollowUpSubAgentAsync(
             new FollowUpSubAgentRequest(
                 Command(),
@@ -107,6 +111,10 @@ public sealed class CoWorkBudgetRaceTests
 
         Assert.True(second.IsSuccess, second.Error?.ToString());
         Assert.Equal(first.Value.BudgetScopeId, second.Value!.BudgetScopeId);
+        await WaitForIdleAsync(
+            workspace,
+            first.Value.ThreadId,
+            cancellationToken);
         var budget = await workspace.Store.ReadAsync(
             (connection, token) => ReadBudgetAsync(
                 connection,
@@ -122,6 +130,30 @@ public sealed class CoWorkBudgetRaceTests
 
     private static CoWorkCommandContext Command() =>
         new(Guid.CreateVersion7(), CoWorkTestWorkspace.Host, ExpectedRevision: null);
+
+    private static async Task WaitForIdleAsync(
+        CoWorkTestWorkspace workspace,
+        Guid childThreadId,
+        CancellationToken cancellationToken)
+    {
+        for (var attempt = 0; attempt < 1_000; attempt++)
+        {
+            var children = await workspace.Service.ListSubAgentChildrenAsync(
+                new SubAgentQueryRequest(
+                    CoWorkTestWorkspace.Host,
+                    workspace.OriginThreadId,
+                    childThreadId),
+                cancellationToken);
+            if (Assert.Single(children.Value!.Items).ActiveRun is null)
+            {
+                return;
+            }
+
+            await Task.Delay(TimeSpan.FromMilliseconds(10), cancellationToken);
+        }
+
+        throw new TimeoutException("Direct SubAgent did not become idle.");
+    }
 
     private static async ValueTask<T> ScalarAsync<T>(
         DbConnection connection,

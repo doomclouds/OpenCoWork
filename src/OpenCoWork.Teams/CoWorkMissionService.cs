@@ -118,6 +118,21 @@ public sealed partial class CoWorkService
                         JsonOptions)),
                     ("$tokenBudget", request.TokenBudget),
                     ("$now", now));
+                await ExecuteSqlAsync(
+                    connection,
+                    transaction,
+                    """
+                    INSERT INTO cowork_budget_scopes (
+                        scope_id, owner_kind, owner_id, limit_tokens,
+                        reserved_tokens, used_tokens, revision)
+                    VALUES (
+                        $scopeId, 'mission', $missionId, $limit,
+                        0, 0, 0);
+                    """,
+                    token,
+                    ("$scopeId", Guid.CreateVersion7(_timeProvider.GetUtcNow())),
+                    ("$missionId", missionId),
+                    ("$limit", request.TokenBudget));
                 foreach (var member in missionMembers)
                 {
                     await ExecuteSqlAsync(
@@ -287,21 +302,6 @@ public sealed partial class CoWorkService
                     token,
                     ("$missionId", request.MissionId),
                     ("$now", now));
-                await ExecuteSqlAsync(
-                    connection,
-                    transaction,
-                    """
-                    INSERT INTO cowork_budget_scopes (
-                        scope_id, owner_kind, owner_id, limit_tokens,
-                        reserved_tokens, used_tokens, revision)
-                    VALUES (
-                        $scopeId, 'mission', $missionId, $limit,
-                        0, 0, 0);
-                    """,
-                    token,
-                    ("$scopeId", Guid.CreateVersion7(_timeProvider.GetUtcNow())),
-                    ("$missionId", request.MissionId),
-                    ("$limit", mission.TokenBudget));
                 return (await LoadMissionAsync(
                     connection,
                     request.MissionId,

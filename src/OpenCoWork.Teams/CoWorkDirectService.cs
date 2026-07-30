@@ -503,18 +503,35 @@ public sealed partial class CoWorkService
         await _reconcileGate.WaitAsync(cancellationToken);
         try
         {
-            for (var count = 0; count < 1_024; count++)
+            for (var cycle = 0; cycle < 1_024; cycle++)
             {
-                var intent = await ClaimIntentAsync(agentRunId: null, cancellationToken);
-                if (intent is null)
+                await ObserveTerminalRunsAsync(cancellationToken);
+                var prepared = await PrepareMissionRunsAsync(cancellationToken);
+                var dispatched = 0;
+                for (var count = 0; count < 1_024; count++)
+                {
+                    var intent = await ClaimIntentAsync(
+                        agentRunId: null,
+                        cancellationToken);
+                    if (intent is null)
+                    {
+                        break;
+                    }
+
+                    if (!await ExecuteIntentAsync(intent, cancellationToken))
+                    {
+                        break;
+                    }
+
+                    dispatched++;
+                }
+
+                await ObserveTerminalRunsAsync(cancellationToken);
+                if (prepared == 0 && dispatched == 0)
                 {
                     break;
                 }
-
-                await ExecuteIntentAsync(intent, cancellationToken);
             }
-
-            await ObserveTerminalRunsAsync(cancellationToken);
         }
         finally
         {
@@ -855,7 +872,10 @@ public sealed partial class CoWorkService
                     break;
                 }
 
-                await ExecuteIntentAsync(intent, cancellationToken);
+                if (!await ExecuteIntentAsync(intent, cancellationToken))
+                {
+                    break;
+                }
             }
 
             await ObserveTerminalRunsAsync(cancellationToken);
@@ -931,10 +951,19 @@ public sealed partial class CoWorkService
             cancellationToken);
     }
 
-    private async Task ExecuteIntentAsync(
+    private async Task<bool> ExecuteIntentAsync(
         DispatchIntentSnapshot intent,
         CancellationToken cancellationToken)
     {
+        var materialized = await MaterializeMissionIntentAsync(
+            intent,
+            cancellationToken);
+        if (materialized is null)
+        {
+            return false;
+        }
+
+        intent = materialized;
         using var renewalCancellation =
             CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         var renewal = RenewLeaseAsync(
@@ -968,6 +997,11 @@ public sealed partial class CoWorkService
             {
                 throw;
             }
+            catch (OperationCanceledException)
+                when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
             catch (Exception exception) when (
                 exception is IOException or TimeoutException)
             {
@@ -978,7 +1012,7 @@ public sealed partial class CoWorkService
             }
             catch (Exception exception)
             {
-                await DeadLetterIntentAsync(
+                await FailRunAndIntentAsync(
                     intent,
                     CoWorkErrorCodes.InvalidState,
                     exception.GetType().Name,
@@ -997,6 +1031,8 @@ public sealed partial class CoWorkService
             {
             }
         }
+
+        return true;
     }
 
     private async Task RenewLeaseAsync(
@@ -1056,9 +1092,13 @@ public sealed partial class CoWorkService
                 throw InvalidState("Managed Worktree service is unavailable.");
             }
 
-            var managed = await _worktrees.CreateAsync(
-                run.AgentRunId,
-                cancellationToken);
+            var managed = workspace.BaseCommitSha is null
+                ? await _worktrees.CreateAsync(run.AgentRunId, cancellationToken)
+                : await _worktrees.CreateAsync(
+                    new ManagedWorktreeCreateRequest(
+                        run.AgentRunId,
+                        workspace.BaseCommitSha),
+                    cancellationToken);
             workspace = workspace with
             {
                 WorktreeId = managed.WorktreeId,
@@ -1076,11 +1116,17 @@ public sealed partial class CoWorkService
                 DisplayName: run.Profile.Name,
                 ProviderId: run.Profile.ProviderId,
                 ModelId: run.Profile.ModelId,
-                AgentMode: AgentMode.Agent,
+                AgentMode: run.Kind is CoWorkAgentRunKind.Direct or
+                    CoWorkAgentRunKind.MissionTask
+                    ? AgentMode.Agent
+                    : AgentMode.Plan,
                 ExecutionWorkspace: workspace,
                 CoWorkProvenance: new CoWorkThreadProvenance(
                     run.AgentRunId,
                     run.Kind,
+                    run.MissionId,
+                    run.TaskId,
+                    run.MemberId,
                     ParentAgentRunId: run.ParentRunId,
                     ParentThreadId: run.ParentThreadId)),
             cancellationToken);
@@ -1141,6 +1187,26 @@ public sealed partial class CoWorkService
                     ("$runId", run.AgentRunId),
                     ("$parentThreadId", run.ParentThreadId),
                     ("$intentId", intent.DispatchIntentId));
+                if (run.Kind == CoWorkAgentRunKind.LeaderPlanning &&
+                    run.MissionId is { } missionId)
+                {
+                    await ExecuteSqlAsync(
+                        connection,
+                        transaction,
+                        """
+                        UPDATE missions
+                        SET leader_thread_id = $threadId,
+                            revision = revision + 1,
+                            updated_utc = $now
+                        WHERE mission_id = $missionId
+                          AND leader_thread_id IS NULL;
+                        """,
+                        token,
+                        ("$threadId", created.Value.ThreadId),
+                        ("$now", now),
+                        ("$missionId", missionId));
+                }
+
                 await InsertDispatchIntentAsync(
                     connection,
                     transaction,
@@ -1166,10 +1232,10 @@ public sealed partial class CoWorkService
             throw InvalidState("AgentRun Thread has not been created.");
         }
 
-        var messages = await ReadPendingDirectMessagesAsync(
-            run.ThreadId,
-            cancellationToken);
-        if (messages.Length == 0)
+        var messages = run.Kind == CoWorkAgentRunKind.Direct
+            ? await ReadPendingDirectMessagesAsync(run.ThreadId, cancellationToken)
+            : [];
+        if (run.Kind == CoWorkAgentRunKind.Direct && messages.Length == 0)
         {
             await FailRunAndIntentAsync(
                 intent,
@@ -1200,9 +1266,9 @@ public sealed partial class CoWorkService
                 cancellationToken);
         }
 
-        var text = string.Join(
-            "\n\n",
-            messages.Select(message => message.Body));
+        var text = run.Kind == CoWorkAgentRunKind.Direct
+            ? string.Join("\n\n", messages.Select(message => message.Body))
+            : await BuildMissionRunInputAsync(run, cancellationToken);
         _dispatchFaultInjector?.Invoke(CoWorkDispatchFaultPoint.BeforeSubmitTurn);
         var submitted = await _sessions.EnqueueInputAsync(
             new EnqueueInputRequest(
@@ -1366,8 +1432,7 @@ public sealed partial class CoWorkService
                     """
                     SELECT agent_run_id
                     FROM agent_runs
-                    WHERE run_kind = 'direct'
-                      AND status IN ('starting', 'running')
+                    WHERE status IN ('starting', 'running')
                       AND thread_id IS NOT NULL
                     ORDER BY created_utc, agent_run_id;
                     """;
@@ -1451,11 +1516,22 @@ public sealed partial class CoWorkService
                 SessionEventType.TurnCancelled => CoWorkAgentRunStatus.Cancelled,
                 _ => CoWorkAgentRunStatus.Failed,
             };
+            var outputSummary = events.LastOrDefault(item =>
+                    item.Type == SessionEventType.ItemCompleted &&
+                    item.Sequence >= turnStartSequence &&
+                    item.Sequence <= terminal.Sequence &&
+                    item.Payload.Item?.Type == SessionItemType.AgentMessage)
+                ?.Payload.Item?.Content is TextItemContent text
+                ? _sensitiveData.Redact(text.Text)
+                : status == CoWorkAgentRunStatus.Completed
+                    ? "Completed without a textual summary."
+                    : terminal.Payload.Error?.Message;
             await SettleAgentRunAsync(
                 run,
                 status,
                 usage == 0 ? null : usage,
                 terminal.Payload.Error?.Code,
+                outputSummary,
                 cancellationToken);
         }
     }
@@ -1465,6 +1541,7 @@ public sealed partial class CoWorkService
         CoWorkAgentRunStatus status,
         long? actualUsage,
         string? errorCode,
+        string? outputSummary,
         CancellationToken cancellationToken) =>
         await _store.WriteAsync(
             async (connection, transaction, token) =>
@@ -1512,6 +1589,49 @@ public sealed partial class CoWorkService
                     ("$diagnostic", actualUsage is null ? "usageUnknown" : null),
                     ("$now", UtcNowMilliseconds()),
                     ("$runId", current.AgentRunId));
+                if (current.TaskId is { } taskId)
+                {
+                    var task = await LoadTaskAsync(connection, taskId, token)
+                               ?? throw InvalidState("Mission Task is missing.");
+                    var taskStatus = status switch
+                    {
+                        CoWorkAgentRunStatus.Completed when task.RequiresReview =>
+                            CoWorkTaskStatus.Review,
+                        CoWorkAgentRunStatus.Completed => CoWorkTaskStatus.Completed,
+                        CoWorkAgentRunStatus.Cancelled => CoWorkTaskStatus.Cancelled,
+                        _ => CoWorkTaskStatus.Failed,
+                    };
+                    var now = UtcNowMilliseconds();
+                    await ExecuteSqlAsync(
+                        connection,
+                        transaction,
+                        """
+                        UPDATE mission_tasks
+                        SET status = $status,
+                            output_summary = $summary,
+                            error_code = $errorCode,
+                            revision = revision + 1,
+                            updated_utc = $now,
+                            completed_utc = CASE
+                                WHEN $status = 'completed' THEN $now
+                                ELSE NULL
+                            END
+                        WHERE mission_task_id = $taskId;
+
+                        UPDATE missions
+                        SET revision = revision + 1,
+                            updated_utc = $now
+                        WHERE mission_id = $missionId;
+                        """,
+                        token,
+                        ("$status", EnumText(taskStatus)),
+                        ("$summary", outputSummary),
+                        ("$errorCode", errorCode),
+                        ("$now", now),
+                        ("$taskId", taskId),
+                        ("$missionId", current.MissionId));
+                }
+
                 return 0;
             },
             cancellationToken);
@@ -1982,12 +2102,13 @@ public sealed partial class CoWorkService
                         relative_path, base_commit_sha, status, is_dirty,
                         trust_json, diagnostic, created_utc, updated_utc)
                     VALUES (
-                        $id, NULL, $runId,
+                        $id, $missionId, $runId,
                         $relativePath, $baseSha, $status, $isDirty,
                         '{}', NULL, $now, $now);
                     """,
                     token,
                     ("$id", worktree.WorktreeId),
+                    ("$missionId", run.MissionId),
                     ("$runId", run.AgentRunId),
                     ("$relativePath", Path.GetRelativePath(
                         _workspace!.WorktreesRoot,
@@ -1996,6 +2117,23 @@ public sealed partial class CoWorkService
                     ("$status", EnumText(worktree.Status)),
                     ("$isDirty", worktree.IsDirty),
                     ("$now", now));
+                if (run.MissionId is { } missionId)
+                {
+                    await ExecuteSqlAsync(
+                        connection,
+                        transaction,
+                        """
+                        UPDATE missions
+                        SET base_commit_sha = COALESCE(base_commit_sha, $baseSha),
+                            updated_utc = $now
+                        WHERE mission_id = $missionId;
+                        """,
+                        token,
+                        ("$baseSha", worktree.BaseCommitSha),
+                        ("$now", now),
+                        ("$missionId", missionId));
+                }
+
                 return 0;
             },
             cancellationToken);
@@ -2190,6 +2328,7 @@ public sealed partial class CoWorkService
                 CoWorkAgentRunStatus.Failed,
                 actualUsage: null,
                 errorCode,
+                outputSummary: _sensitiveData.Redact(diagnostic),
                 cancellationToken);
         }
     }
@@ -2435,8 +2574,13 @@ public sealed partial class CoWorkService
             SELECT scope_id, owner_kind, owner_id,
                    limit_tokens, reserved_tokens, used_tokens
             FROM cowork_budget_scopes
-            WHERE owner_kind = 'agentRun'
-              AND owner_id IN (SELECT agent_run_id FROM lineage)
+            WHERE (owner_kind = 'agentRun'
+                   AND owner_id IN (SELECT agent_run_id FROM lineage))
+               OR (owner_kind = 'mission'
+                   AND owner_id = (
+                       SELECT mission_id
+                       FROM agent_runs
+                       WHERE agent_run_id = $runId))
             LIMIT 1;
             """;
         AddParameter(command, "$runId", agentRunId);

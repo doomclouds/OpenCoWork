@@ -556,7 +556,9 @@ internal sealed class CoWorkTestWorkspace : IAsyncDisposable
         string? secret = null,
         bool completeAgentRuns = true,
         TimeProvider? timeProvider = null,
-        Action<CoWorkDispatchFaultPoint>? dispatchFaultInjector = null)
+        Action<CoWorkDispatchFaultPoint>? dispatchFaultInjector = null,
+        ISessionExecutor? executor = null,
+        Func<OpenCoWorkPaths, IManagedWorktreeService>? worktreeFactory = null)
     {
         var root = Path.Combine(
             Path.GetTempPath(),
@@ -570,14 +572,15 @@ internal sealed class CoWorkTestWorkspace : IAsyncDisposable
             TimeSpan.FromSeconds(2),
             TeamsStateMigrationContributors.Create());
         await store.InitializeAsync(TestContext.Current.CancellationToken);
+        executor ??= completeAgentRuns ? new CompletionExecutor() : null;
         var sessions = new SessionService(
             store,
             new ThreadJournal(paths),
             new SessionProjection(store),
             new SessionConfig(),
             timeProvider,
-            completeAgentRuns ? new CompletionExecutor() : null,
-            executorKind: completeAgentRuns ? "completion" : null,
+            executor,
+            executorKind: executor is null ? null : "test",
             paths: paths);
         var origin = await sessions.CreateThreadAsync(
             new CreateThreadRequest(
@@ -595,7 +598,8 @@ internal sealed class CoWorkTestWorkspace : IAsyncDisposable
             paths.SubAgentsDirectory,
             paths.WorktreesDirectory);
         var sensitiveData = new TestSensitiveDataService(secret);
-        var worktrees = new ManagedWorktreeService(paths);
+        var worktrees = worktreeFactory?.Invoke(paths) ??
+                        new ManagedWorktreeService(paths);
         var service = new CoWorkService(
             store,
             sensitiveData,
