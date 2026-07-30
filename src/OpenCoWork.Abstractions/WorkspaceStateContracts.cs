@@ -93,7 +93,12 @@ public interface IProjectWriterLeaseService
 
 public sealed record ManagedWorktreeCreateRequest(
     Guid AgentRunId,
-    string BaseCommitSha);
+    string BaseCommitSha,
+    bool AllowDirtyOrigin = false);
+
+public sealed record ManagedWorktreeOriginSnapshot(
+    string BaseCommitSha,
+    bool IsDirty);
 
 public sealed record ManagedWorktreeDescriptor(
     Guid WorktreeId,
@@ -104,6 +109,9 @@ public sealed record ManagedWorktreeDescriptor(
 
 public interface IManagedWorktreeService
 {
+    ValueTask<ManagedWorktreeOriginSnapshot> InspectOriginAsync(
+        CancellationToken cancellationToken = default);
+
     ValueTask<ManagedWorktreeDescriptor> CreateAsync(
         Guid agentRunId,
         CancellationToken cancellationToken = default);

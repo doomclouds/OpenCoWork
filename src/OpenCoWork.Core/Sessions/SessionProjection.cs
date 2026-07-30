@@ -990,6 +990,7 @@ internal sealed class SessionProjection
             entry.ThreadId,
             fact.ExecutionWorkspace,
             fact.CoWorkProvenance,
+            fact.AutomationProvenance,
             cancellationToken);
     }
 
@@ -1137,6 +1138,7 @@ internal sealed class SessionProjection
             entry.ThreadId,
             fact.ExecutionWorkspace,
             fact.CoWorkProvenance,
+            automationProvenance: null,
             cancellationToken);
         await InsertHistoryCheckpointAsync(
             connection,
@@ -3134,24 +3136,25 @@ internal sealed class SessionProjection
             connection,
             transaction,
             cancellationToken);
-        command.CommandText = hasExecutionContext
-            ? """
-              SELECT display_name, status, availability, history_mode,
-                     current_sequence, active_turn_id,
-                     created_utc, updated_utc, diagnostic,
-                     provider_id, model_id, agent_mode,
-                     execution_workspace_json, cowork_provenance_json
-              FROM threads
-              WHERE thread_id = $threadId;
-              """
-            : """
-              SELECT display_name, status, availability, history_mode,
-                     current_sequence, active_turn_id,
-                     created_utc, updated_utc, diagnostic,
-                     provider_id, model_id, agent_mode
-              FROM threads
-              WHERE thread_id = $threadId;
-              """;
+        var hasAutomationProvenance = await HasAutomationProvenanceAsync(
+            connection,
+            transaction,
+            cancellationToken);
+        command.CommandText =
+            $"""
+             SELECT display_name, status, availability, history_mode,
+                    current_sequence, active_turn_id,
+                    created_utc, updated_utc, diagnostic,
+                    provider_id, model_id, agent_mode
+                    {(hasExecutionContext
+                        ? ", execution_workspace_json, cowork_provenance_json"
+                        : string.Empty)}
+                    {(hasAutomationProvenance
+                        ? ", automation_provenance_json"
+                        : string.Empty)}
+             FROM threads
+             WHERE thread_id = $threadId;
+             """;
         command.Parameters.AddWithValue("$threadId", Wire(threadId));
         string displayName;
         ThreadStatus status;
@@ -3167,6 +3170,7 @@ internal sealed class SessionProjection
         AgentMode agentMode;
         ExecutionWorkspaceDescriptor? executionWorkspace;
         CoWorkThreadProvenance? coWorkProvenance;
+        AutomationThreadProvenance? automationProvenance;
         await using (var reader = await command.ExecuteReaderAsync(cancellationToken))
         {
             if (!await reader.ReadAsync(cancellationToken))
@@ -3198,6 +3202,13 @@ internal sealed class SessionProjection
                     reader.GetString(13),
                     JsonOptions)
                 : null;
+            var automationIndex = hasExecutionContext ? 14 : 12;
+            automationProvenance =
+                hasAutomationProvenance && !reader.IsDBNull(automationIndex)
+                    ? JsonSerializer.Deserialize<AutomationThreadProvenance>(
+                        reader.GetString(automationIndex),
+                        JsonOptions)
+                    : null;
         }
 
         await using var queueCommand = connection.CreateCommand();
@@ -3248,7 +3259,8 @@ internal sealed class SessionProjection
             modelId,
             agentMode,
             executionWorkspace,
-            coWorkProvenance);
+            coWorkProvenance,
+            automationProvenance);
     }
 
     private static async Task UpdateThreadExecutionContextAsync(
@@ -3257,6 +3269,7 @@ internal sealed class SessionProjection
         Guid threadId,
         ExecutionWorkspaceDescriptor? executionWorkspace,
         CoWorkThreadProvenance? coWorkProvenance,
+        AutomationThreadProvenance? automationProvenance,
         CancellationToken cancellationToken)
     {
         if (!await HasThreadExecutionContextAsync(
@@ -3284,6 +3297,26 @@ internal sealed class SessionProjection
                 ? null
                 : JsonSerializer.Serialize(coWorkProvenance, JsonOptions)),
             ("$threadId", Wire(threadId)));
+
+        if (await HasAutomationProvenanceAsync(
+                connection,
+                transaction,
+                cancellationToken))
+        {
+            await ExecuteRequiredAsync(
+                connection,
+                transaction,
+                """
+                UPDATE threads
+                SET automation_provenance_json = $provenance
+                WHERE thread_id = $threadId;
+                """,
+                cancellationToken,
+                ("$provenance", automationProvenance is null
+                    ? null
+                    : JsonSerializer.Serialize(automationProvenance, JsonOptions)),
+                ("$threadId", Wire(threadId)));
+        }
     }
 
     private static async Task<bool> HasThreadExecutionContextAsync(
@@ -3302,6 +3335,24 @@ internal sealed class SessionProjection
         return Convert.ToInt32(
             await command.ExecuteScalarAsync(cancellationToken),
             CultureInfo.InvariantCulture) == 2;
+    }
+
+    private static async Task<bool> HasAutomationProvenanceAsync(
+        SqliteConnection connection,
+        SqliteTransaction? transaction,
+        CancellationToken cancellationToken)
+    {
+        await using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText =
+            """
+            SELECT COUNT(*)
+            FROM pragma_table_info('threads')
+            WHERE name = 'automation_provenance_json';
+            """;
+        return Convert.ToInt32(
+            await command.ExecuteScalarAsync(cancellationToken),
+            CultureInfo.InvariantCulture) == 1;
     }
 
     private static async Task<IReadOnlyList<string>> ReadStringsAsync(

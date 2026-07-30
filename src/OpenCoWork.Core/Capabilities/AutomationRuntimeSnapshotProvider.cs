@@ -153,7 +153,7 @@ internal sealed class AutomationRuntimeSnapshotProvider(
                     "tool",
                     item.Id,
                     item.Item.Source.Version,
-                    ToolSha256(item.Tool),
+                    ToolRuntime.RegistrationSha256(item.Tool),
                     item.Tool.BindingGeneration)))
             .OrderBy(item => item.Kind, StringComparer.Ordinal)
             .ThenBy(item => item.Id, StringComparer.Ordinal)
@@ -265,21 +265,6 @@ internal sealed class AutomationRuntimeSnapshotProvider(
         ToolEffect.ExternalMutation => "externalMutation",
         _ => throw new ArgumentOutOfRangeException(nameof(value)),
     };
-
-    private static string ToolSha256(ToolRegistration registration) =>
-        Convert.ToHexString(SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(new
-        {
-            registration.Definition.Id,
-            registration.Definition.Name,
-            registration.Definition.Description,
-            registration.Definition.InputSchema,
-            registration.Definition.Effects,
-            registration.Definition.ReplaySafety,
-            registration.RuntimeBindingId,
-            registration.Exposure,
-            registration.Audience,
-            registration.BindingGeneration,
-        }))).ToLowerInvariant();
 
     private static string Hash(string value) =>
         Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value)))

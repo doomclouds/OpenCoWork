@@ -62,6 +62,7 @@ public sealed class AutomationsModule : IOpenCoWorkModule
         services.TryAddSingleton<AutomationService>();
         services.TryAddSingleton<IAutomationService>(serviceProvider =>
             serviceProvider.GetRequiredService<AutomationService>());
+        services.TryAddSingleton<AutomationDispatcher>();
         services.TryAddSingleton(serviceProvider =>
             AutomationsModuleRuntime.Create(
                 serviceProvider.GetRequiredService<AutomationsConfig>(),

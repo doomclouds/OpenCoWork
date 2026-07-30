@@ -68,10 +68,17 @@ public sealed class SourceControlToolTests
             new OpenCoWorkPaths(workspace.Root),
             tool);
         var baseSha = await workspace.HeadAsync(cancellationToken);
+        var agentRunId = Guid.CreateVersion7();
 
         var created = await service.CreateAsync(
-            new ManagedWorktreeCreateRequest(Guid.CreateVersion7(), baseSha),
+            new ManagedWorktreeCreateRequest(agentRunId, baseSha),
             cancellationToken);
+        var recovered = await new ManagedWorktreeService(
+                new OpenCoWorkPaths(workspace.Root),
+                tool)
+            .CreateAsync(
+                new ManagedWorktreeCreateRequest(agentRunId, baseSha),
+                cancellationToken);
         await File.AppendAllTextAsync(
             Path.Combine(workspace.Root, "tracked.txt"),
             "origin-next\n",
@@ -80,6 +87,7 @@ public sealed class SourceControlToolTests
         await workspace.RunGitAsync(["commit", "-m", "origin next"], cancellationToken);
 
         Assert.Equal(CoWorkWorktreeStatus.Ready, created.Status);
+        Assert.Equal(created, recovered);
         Assert.Equal(
             baseSha,
             (await workspace.RunGitAsync(

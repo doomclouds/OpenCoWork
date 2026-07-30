@@ -201,6 +201,12 @@ public sealed record AutomationPermissionSnapshot(
     IReadOnlyList<string> Tools,
     IReadOnlyList<AutomationEffectPermissionSnapshot> Effects);
 
+public sealed record AutomationThreadProvenance(
+    Guid AutomationRunId,
+    string AutomationId,
+    AutomationPermissionSnapshot Permissions,
+    IReadOnlyList<AutomationCapabilitySnapshot> Capabilities);
+
 public sealed record AutomationRunSnapshot(
     AutomationRunSummary Summary,
     string? SafeSummary,

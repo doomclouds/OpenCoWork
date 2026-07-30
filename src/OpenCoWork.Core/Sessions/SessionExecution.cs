@@ -4090,7 +4090,8 @@ internal sealed partial class SessionService
             thread.ModelId,
             thread.AgentMode,
             thread.ExecutionWorkspace,
-            thread.CoWorkProvenance);
+            thread.CoWorkProvenance,
+            thread.AutomationProvenance);
 
     private InternalOperation InternalRequestHash(
         SessionEventType eventType,

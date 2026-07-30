@@ -94,6 +94,13 @@ internal sealed partial class SessionService : ISessionService
                 SessionErrorCodes.InvalidState,
                 "Provider and model must be specified together.");
         }
+        if (request.CoWorkProvenance is not null &&
+            request.AutomationProvenance is not null)
+        {
+            return Rejected<ThreadSnapshot>(
+                SessionErrorCodes.InvalidState,
+                "A Thread can have only one execution provenance.");
+        }
 
         var operation = Wire(SessionEventType.ThreadCreated);
         var requestSha256 = RequestHash(
@@ -108,6 +115,7 @@ internal sealed partial class SessionService : ISessionService
                 request.AgentMode,
                 request.ExecutionWorkspace,
                 request.CoWorkProvenance,
+                request.AutomationProvenance,
             });
         var keyGate = GetIdempotencyGate(request.IdempotencyKey);
         await keyGate.WaitAsync(cancellationToken);
@@ -176,7 +184,8 @@ internal sealed partial class SessionService : ISessionService
                     request.ModelId,
                     request.AgentMode,
                     executionWorkspace,
-                    request.CoWorkProvenance);
+                    request.CoWorkProvenance,
+                    request.AutomationProvenance);
                 return await CommitAsync(
                     request.IdempotencyKey,
                     operation,
@@ -191,7 +200,8 @@ internal sealed partial class SessionService : ISessionService
                         request.ModelId,
                         request.AgentMode,
                         executionWorkspace,
-                        request.CoWorkProvenance),
+                        request.CoWorkProvenance,
+                        request.AutomationProvenance),
                     SessionEventType.ThreadCreated,
                     cancellationToken);
             }
@@ -1167,7 +1177,8 @@ internal sealed partial class SessionService : ISessionService
             modelId ?? snapshot.ModelId,
             agentMode ?? snapshot.AgentMode,
             snapshot.ExecutionWorkspace,
-            snapshot.CoWorkProvenance);
+            snapshot.CoWorkProvenance,
+            snapshot.AutomationProvenance);
 
     private static ThreadSnapshot WithProjectionState(
         ThreadSnapshot snapshot,
@@ -1189,7 +1200,8 @@ internal sealed partial class SessionService : ISessionService
             snapshot.ModelId,
             snapshot.AgentMode,
             snapshot.ExecutionWorkspace,
-            snapshot.CoWorkProvenance);
+            snapshot.CoWorkProvenance,
+            snapshot.AutomationProvenance);
 
     private ExecutionWorkspaceDescriptor CreateProjectWorkspace(Guid threadId)
     {

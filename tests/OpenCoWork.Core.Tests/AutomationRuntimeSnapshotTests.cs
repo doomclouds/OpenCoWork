@@ -36,21 +36,22 @@ public sealed class AutomationRuntimeSnapshotTests
                 DefaultProvider = "provider-a",
                 DefaultModel = "model-a",
             };
+            var toolConfig = new ToolsConfig
+            {
+                Effects = new ToolEffectPoliciesConfig
+                {
+                    WorkspaceWrite = ToolAuthorityDecision.RequireApproval,
+                    ProcessExecution = ToolAuthorityDecision.Deny,
+                    NetworkRead = ToolAuthorityDecision.Allow,
+                    ExternalMutation = ToolAuthorityDecision.RequireApproval,
+                },
+            };
             var provider = new AutomationRuntimeSnapshotProvider(
                 files,
                 paths,
                 catalog,
                 tools,
-                new ToolsConfig
-                {
-                    Effects = new ToolEffectPoliciesConfig
-                    {
-                        WorkspaceWrite = ToolAuthorityDecision.RequireApproval,
-                        ProcessExecution = ToolAuthorityDecision.Deny,
-                        NetworkRead = ToolAuthorityDecision.Allow,
-                        ExternalMutation = ToolAuthorityDecision.RequireApproval,
-                    },
-                },
+                toolConfig,
                 models);
             var read = tools.Registrations.First(item =>
                 item.Definition.Effects == ToolEffect.WorkspaceRead);
@@ -126,6 +127,35 @@ public sealed class AutomationRuntimeSnapshotTests
                 Assert.Equal(64, item.Sha256.Length);
                 Assert.True(item.Generation > 0);
             });
+
+            var provenance = new AutomationThreadProvenance(
+                Guid.CreateVersion7(),
+                "sample",
+                captured.Value.Permissions,
+                captured.Value.Capabilities);
+            var frozen = tools.BuildSnapshot(
+                AgentMode.Agent,
+                toolConfig,
+                AutomationThread(provenance));
+            Assert.Equal(
+                captured.Value.Permissions.Tools,
+                frozen.Registrations
+                    .Select(item => item.Definition.Id.SourceToolId)
+                    .Order(StringComparer.Ordinal));
+
+            var changedCapabilities = captured.Value.Capabilities
+                .Select((item, index) => index == 0
+                    ? item with { Sha256 = new string('0', 64) }
+                    : item)
+                .ToArray();
+            var changed = tools.BuildSnapshot(
+                AgentMode.Agent,
+                toolConfig,
+                AutomationThread(provenance with
+                {
+                    Capabilities = changedCapabilities,
+                }));
+            Assert.True(changed.Registrations.Count < frozen.Registrations.Count);
             await catalog.StopAsync(TestContext.Current.CancellationToken);
         }
         finally
@@ -210,4 +240,24 @@ public sealed class AutomationRuntimeSnapshotTests
     private static string Hash(string value) =>
         Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value)))
             .ToLowerInvariant();
+
+    private static ThreadSnapshot AutomationThread(
+        AutomationThreadProvenance provenance)
+    {
+        var now = DateTimeOffset.UtcNow;
+        return new ThreadSnapshot(
+            Guid.CreateVersion7(),
+            "Automation",
+            ThreadStatus.Active,
+            ThreadAvailability.Available,
+            HistoryMode.Server,
+            currentSequence: 1,
+            activeTurnId: null,
+            queue: [],
+            now,
+            now,
+            SessionProjectionState.Ready,
+            diagnostic: null,
+            automationProvenance: provenance);
+    }
 }

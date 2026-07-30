@@ -506,6 +506,12 @@ internal sealed class FakeManagedWorktrees(OpenCoWorkPaths paths)
 {
     private readonly ConcurrentDictionary<Guid, ManagedWorktreeDescriptor> _items = [];
 
+    public ValueTask<ManagedWorktreeOriginSnapshot> InspectOriginAsync(
+        CancellationToken cancellationToken = default) =>
+        ValueTask.FromResult(new ManagedWorktreeOriginSnapshot(
+            new string('a', 40),
+            IsDirty: false));
+
     public ValueTask<ManagedWorktreeDescriptor> CreateAsync(
         Guid agentRunId,
         CancellationToken cancellationToken = default)

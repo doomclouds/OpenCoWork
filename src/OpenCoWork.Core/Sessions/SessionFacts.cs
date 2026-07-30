@@ -12,7 +12,8 @@ internal sealed record ThreadCreatedFact(
     string? ModelId = null,
     AgentMode AgentMode = AgentMode.Agent,
     ExecutionWorkspaceDescriptor? ExecutionWorkspace = null,
-    CoWorkThreadProvenance? CoWorkProvenance = null);
+    CoWorkThreadProvenance? CoWorkProvenance = null,
+    AutomationThreadProvenance? AutomationProvenance = null);
 
 internal sealed record ThreadRenamedFact(
     string DisplayName,

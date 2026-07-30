@@ -43,6 +43,17 @@ internal sealed partial class ManagedWorktreeService : IManagedWorktreeService
             throw new ArgumentException("Agent Run ID is required.", nameof(agentRunId));
         }
 
+        var origin = await InspectOriginAsync(cancellationToken);
+        return await CreateAsync(
+            new ManagedWorktreeCreateRequest(
+                agentRunId,
+                origin.BaseCommitSha),
+            cancellationToken);
+    }
+
+    public async ValueTask<ManagedWorktreeOriginSnapshot> InspectOriginAsync(
+        CancellationToken cancellationToken = default)
+    {
         var executable = await GitExecutableAsync(cancellationToken);
         var resolvedBase = await RunGitAsync(
             executable,
@@ -50,11 +61,15 @@ internal sealed partial class ManagedWorktreeService : IManagedWorktreeService
             ["rev-parse", "--verify", "HEAD^{commit}"],
             cancellationToken);
         EnsureSuccess(resolvedBase, "Origin HEAD is unavailable.");
-        return await CreateAsync(
-            new ManagedWorktreeCreateRequest(
-                agentRunId,
-                resolvedBase.Stdout.Trim()),
+        var status = await RunGitAsync(
+            executable,
+            _paths.WorkspaceRoot,
+            ["status", "--porcelain=v1", "--untracked-files=all"],
             cancellationToken);
+        EnsureSuccess(status, "Origin Git status failed.");
+        return new ManagedWorktreeOriginSnapshot(
+            resolvedBase.Stdout.Trim().ToLowerInvariant(),
+            !string.IsNullOrEmpty(status.Stdout));
     }
 
     public async ValueTask<ManagedWorktreeDescriptor> CreateAsync(
@@ -87,13 +102,8 @@ internal sealed partial class ManagedWorktreeService : IManagedWorktreeService
                         "Agent Run is already bound to another Base SHA.");
             }
 
-            var originStatus = await RunGitAsync(
-                await GitExecutableAsync(cancellationToken),
-                _paths.WorkspaceRoot,
-                ["status", "--porcelain=v1", "--untracked-files=all"],
-                cancellationToken);
-            EnsureSuccess(originStatus, "Origin Git status failed.");
-            if (!string.IsNullOrEmpty(originStatus.Stdout))
+            var origin = await InspectOriginAsync(cancellationToken);
+            if (origin.IsDirty && !request.AllowDirtyOrigin)
             {
                 throw new InvalidOperationException(
                     "Origin workspace must be clean before creating a Worktree.");
@@ -115,19 +125,26 @@ internal sealed partial class ManagedWorktreeService : IManagedWorktreeService
             }
 
             Directory.CreateDirectory(_paths.WorktreesDirectory);
-            var root = Path.Combine(
+            var containment = WorkspacePathGuard.ResolveContained(
                 _paths.WorktreesDirectory,
+                Path.Combine(_paths.WorktreesDirectory, ".managed-worktree-anchor"),
                 request.AgentRunId.ToString("D"));
-            if (Directory.Exists(root) || File.Exists(root))
+            if (Directory.Exists(containment.PhysicalPath))
+            {
+                var probed = await ProbeExistingAsync(
+                    containment.PhysicalPath,
+                    request,
+                    cancellationToken);
+                _items[probed.WorktreeId] = probed;
+                return probed;
+            }
+
+            if (File.Exists(containment.PhysicalPath))
             {
                 throw new InvalidOperationException(
                     "Managed Worktree path already exists.");
             }
 
-            var containment = WorkspacePathGuard.ResolveContained(
-                _paths.WorktreesDirectory,
-                Path.Combine(_paths.WorktreesDirectory, ".managed-worktree-anchor"),
-                request.AgentRunId.ToString("D"));
             var created = await RunGitAsync(
                 await GitExecutableAsync(cancellationToken),
                 _paths.WorkspaceRoot,
@@ -140,7 +157,7 @@ internal sealed partial class ManagedWorktreeService : IManagedWorktreeService
             EnsureSuccess(created, "Managed Worktree creation failed.");
 
             var descriptor = new ManagedWorktreeDescriptor(
-                Guid.CreateVersion7(),
+                WorktreeId(request.AgentRunId),
                 containment.PhysicalPath,
                 request.BaseCommitSha.ToLowerInvariant(),
                 CoWorkWorktreeStatus.Ready,
@@ -152,6 +169,55 @@ internal sealed partial class ManagedWorktreeService : IManagedWorktreeService
         {
             _gate.Release();
         }
+    }
+
+    private async Task<ManagedWorktreeDescriptor> ProbeExistingAsync(
+        string root,
+        ManagedWorktreeCreateRequest request,
+        CancellationToken cancellationToken)
+    {
+        var executable = await GitExecutableAsync(cancellationToken);
+        var topLevel = await RunGitAsync(
+            executable,
+            root,
+            ["rev-parse", "--show-toplevel"],
+            cancellationToken);
+        var head = await RunGitAsync(
+            executable,
+            root,
+            ["rev-parse", "--verify", "HEAD^{commit}"],
+            cancellationToken);
+        var branch = await RunGitAsync(
+            executable,
+            root,
+            ["rev-parse", "--abbrev-ref", "HEAD"],
+            cancellationToken);
+        var pathComparison = OperatingSystem.IsWindows()
+            ? StringComparison.OrdinalIgnoreCase
+            : StringComparison.Ordinal;
+        if (topLevel.ExitCode != 0 ||
+            head.ExitCode != 0 ||
+            branch.ExitCode != 0 ||
+            !string.Equals(
+                Path.GetFullPath(topLevel.Stdout.Trim()),
+                Path.GetFullPath(root),
+                pathComparison) ||
+            !string.Equals(
+                head.Stdout.Trim(),
+                request.BaseCommitSha,
+                StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(branch.Stdout.Trim(), "HEAD", StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                "Managed Worktree path exists but does not match the requested Base SHA.");
+        }
+
+        return new ManagedWorktreeDescriptor(
+            WorktreeId(request.AgentRunId),
+            root,
+            request.BaseCommitSha.ToLowerInvariant(),
+            CoWorkWorktreeStatus.Ready,
+            IsDirty: false);
     }
 
     public ValueTask<ManagedWorktreeDescriptor?> GetAsync(
@@ -285,6 +351,14 @@ internal sealed partial class ManagedWorktreeService : IManagedWorktreeService
         {
             throw new InvalidOperationException(message);
         }
+    }
+
+    private static Guid WorktreeId(Guid agentRunId)
+    {
+        Span<byte> bytes = stackalloc byte[16];
+        agentRunId.TryWriteBytes(bytes);
+        bytes[^1] ^= 0x77;
+        return new Guid(bytes);
     }
 
     [GeneratedRegex("^[0-9a-fA-F]{40}([0-9a-fA-F]{24})?$")]

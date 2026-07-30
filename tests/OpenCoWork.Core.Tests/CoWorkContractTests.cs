@@ -190,7 +190,7 @@ public sealed class CoWorkContractTests
                 "Microsoft.Data.Sqlite",
                 StringComparison.Ordinal) == true);
         Assert.Equal(
-            ["AgentRunId", "BaseCommitSha"],
+            ["AgentRunId", "AllowDirtyOrigin", "BaseCommitSha"],
             typeof(ManagedWorktreeCreateRequest)
                 .GetProperties()
                 .Select(property => property.Name)

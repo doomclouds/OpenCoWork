@@ -188,7 +188,7 @@ internal sealed partial class ToolRuntime
         AgentMode effectiveAgentMode,
         ToolsConfig config,
         Guid? threadId) =>
-        BuildSnapshot(effectiveAgentMode, config, threadId, provenance: null);
+        BuildSnapshot(effectiveAgentMode, config, threadId, coWorkProvenance: null);
 
     internal EffectiveToolSnapshot BuildSnapshot(
         AgentMode effectiveAgentMode,
@@ -200,17 +200,21 @@ internal sealed partial class ToolRuntime
             effectiveAgentMode,
             config,
             thread.ThreadId,
-            thread.CoWorkProvenance);
+            thread.CoWorkProvenance,
+            thread.AutomationProvenance);
     }
 
     private EffectiveToolSnapshot BuildSnapshot(
         AgentMode effectiveAgentMode,
         ToolsConfig config,
         Guid? threadId,
-        CoWorkThreadProvenance? provenance)
+        CoWorkThreadProvenance? coWorkProvenance,
+        AutomationThreadProvenance? automationProvenance = null)
     {
         ArgumentNullException.ThrowIfNull(config);
-        var authority = BuildAuthority(config);
+        var authority = automationProvenance is null
+            ? BuildAuthority(config)
+            : BuildAutomationAuthority(automationProvenance.Permissions);
         var diagnostics = new List<ToolSnapshotDiagnostic>();
         var eligible = new List<Candidate>();
         Candidate[] candidates;
@@ -288,10 +292,18 @@ internal sealed partial class ToolRuntime
             var canonicalName = CanonicalName(definition.Name);
             if (!MatchesCoWorkAudience(
                     candidate.Registration.Audience,
-                    provenance))
+                    coWorkProvenance,
+                    automationProvenance is not null))
             {
                 diagnostics.Add(Diagnostic(
                     ToolErrorCodes.AudienceDenied,
+                    definition.Id,
+                    canonicalName));
+            }
+            else if (!MatchesAutomationSnapshot(candidate, automationProvenance))
+            {
+                diagnostics.Add(Diagnostic(
+                    ToolErrorCodes.AuthorityDenied,
                     definition.Id,
                     canonicalName));
             }
@@ -372,7 +384,8 @@ internal sealed partial class ToolRuntime
 
     private static bool MatchesCoWorkAudience(
         ToolInvocationAudience audience,
-        CoWorkThreadProvenance? provenance)
+        CoWorkThreadProvenance? provenance,
+        bool isAutomation)
     {
         const ToolInvocationAudience roles =
             ToolInvocationAudience.CoWorkLeader |
@@ -381,6 +394,11 @@ internal sealed partial class ToolRuntime
         if ((audience & roles) == 0)
         {
             return true;
+        }
+
+        if (isAutomation)
+        {
+            return false;
         }
 
         var role = provenance?.RunKind switch
@@ -396,6 +414,35 @@ internal sealed partial class ToolRuntime
             _ => (ToolInvocationAudience)0,
         };
         return (audience & role) != 0;
+    }
+
+    private static bool MatchesAutomationSnapshot(
+        Candidate candidate,
+        AutomationThreadProvenance? provenance)
+    {
+        if (provenance is null)
+        {
+            return true;
+        }
+
+        var registration = candidate.Registration;
+        var definition = registration.Definition;
+        var canonical = $"{definition.Name.Namespace}.{definition.Name.Name}";
+        return provenance.Permissions.Tools.Any(id =>
+                   string.Equals(id, definition.Id.SourceToolId, StringComparison.Ordinal) ||
+                   string.Equals(id, canonical, StringComparison.Ordinal)) &&
+               provenance.Capabilities.Any(capability =>
+                   string.Equals(capability.Kind, "tool", StringComparison.Ordinal) &&
+                   (string.Equals(
+                        capability.Id,
+                        definition.Id.SourceToolId,
+                        StringComparison.Ordinal) ||
+                    string.Equals(capability.Id, canonical, StringComparison.Ordinal)) &&
+                   capability.Generation == registration.BindingGeneration &&
+                   string.Equals(
+                       capability.Sha256,
+                       RegistrationSha256(registration),
+                       StringComparison.Ordinal));
     }
 
     public IReadOnlyList<ChatCompletionToolDefinition> CreateProviderDefinitions(
@@ -819,6 +866,59 @@ internal sealed partial class ToolRuntime
                 ? ToolAuthorityDecision.RequireApproval
                 : config.Effects.ExternalMutation),
     ];
+
+    private static ToolAuthorityPolicy[] BuildAutomationAuthority(
+        AutomationPermissionSnapshot permissions)
+    {
+        var effects = permissions.Effects.ToDictionary(
+            item => item.Effect,
+            item => item.Decision,
+            StringComparer.Ordinal);
+        return
+        [
+            new(ToolEffect.None, ToolAuthorityDecision.Allow),
+            new(
+                ToolEffect.WorkspaceRead,
+                effects.GetValueOrDefault(
+                    "workspaceRead",
+                    ToolAuthorityDecision.Deny)),
+            new(
+                ToolEffect.WorkspaceWrite,
+                effects.GetValueOrDefault(
+                    "workspaceWrite",
+                    ToolAuthorityDecision.Deny)),
+            new(
+                ToolEffect.ProcessExecution,
+                effects.GetValueOrDefault(
+                    "processExecution",
+                    ToolAuthorityDecision.Deny)),
+            new(
+                ToolEffect.NetworkRead,
+                effects.GetValueOrDefault(
+                    "networkRead",
+                    ToolAuthorityDecision.Deny)),
+            new(
+                ToolEffect.ExternalMutation,
+                effects.GetValueOrDefault(
+                    "externalMutation",
+                    ToolAuthorityDecision.Deny)),
+        ];
+    }
+
+    internal static string RegistrationSha256(ToolRegistration registration) =>
+        Convert.ToHexString(SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(new
+        {
+            registration.Definition.Id,
+            registration.Definition.Name,
+            registration.Definition.Description,
+            registration.Definition.InputSchema,
+            registration.Definition.Effects,
+            registration.Definition.ReplaySafety,
+            registration.RuntimeBindingId,
+            registration.Exposure,
+            registration.Audience,
+            registration.BindingGeneration,
+        }))).ToLowerInvariant();
 
     private static ToolAuthorityDecision DecisionFor(
         ToolEffect effects,

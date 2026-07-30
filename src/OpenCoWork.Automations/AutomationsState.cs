@@ -34,6 +34,11 @@ internal sealed class AutomationsStateMigrationContributor
 
     private const string Sql =
         """
+        ALTER TABLE threads
+            ADD COLUMN automation_provenance_json TEXT NULL CHECK (
+                automation_provenance_json IS NULL OR
+                json_valid(automation_provenance_json));
+
         CREATE TABLE automation_state (
             id INTEGER NOT NULL PRIMARY KEY CHECK (id = 1),
             automation_revision INTEGER NOT NULL DEFAULT 0 CHECK (automation_revision >= 0),
@@ -263,6 +268,19 @@ internal sealed class AutomationsStateMigrationContributor
                 cancellationToken) != 1)
         {
             throw new InvalidOperationException("Automation state singleton is missing.");
+        }
+
+        if (await ScalarAsync(
+                connection,
+                """
+                SELECT count(*)
+                FROM pragma_table_info('threads')
+                WHERE name = 'automation_provenance_json';
+                """,
+                cancellationToken) != 1)
+        {
+            throw new InvalidOperationException(
+                "Automation Thread provenance column is missing.");
         }
     }
 
