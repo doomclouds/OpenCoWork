@@ -69,6 +69,15 @@ public sealed class StateMigrationV7Tests
                 connection,
                 "SELECT count(*) FROM automation_state WHERE id = 1;",
                 cancellationToken));
+        var runColumns = await ReadStringsAsync(
+            connection,
+            "SELECT name FROM pragma_table_info('automation_runs') ORDER BY cid;",
+            cancellationToken);
+        Assert.Contains("inputs_sha256", runColumns);
+        Assert.Contains("rendered_prompt_sha256", runColumns);
+        Assert.Contains("prepared_turn_id", runColumns);
+        Assert.DoesNotContain("inputs_json", runColumns);
+        Assert.DoesNotContain("rendered_prompt", runColumns);
         Assert.Equal(
             1L,
             await ScalarAsync<long>(
@@ -190,19 +199,38 @@ public sealed class StateMigrationV7Tests
             INSERT INTO automation_runs (
                 automation_run_id, automation_id, trigger_kind,
                 trigger_idempotency_key, status, definition_snapshot_json,
-                inputs_json, workspace_mode, workspace_access,
+                inputs_sha256, rendered_prompt_sha256, prepared_turn_id,
+                workspace_mode, workspace_access,
                 provider_id, model_id, permission_snapshot_json,
                 capability_snapshot_json, run_deadline_utc,
                 revision, created_utc, updated_utc)
             VALUES (
                 'not-a-uuid', 'daily-check', 'manual', 'manual:invalid',
-                'pending', '{}', '{}', 'project', 'readOnly',
+                'pending', '{}',
+                'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+                'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+                '0195a000-0000-7000-8000-000000000001',
+                'project', 'readOnly',
                 'fake', 'fake-model', '{}', '[]', 2, 1, 1, 1);
             """,
             cancellationToken));
 
         var first = Guid.CreateVersion7().ToString("D");
         var second = Guid.CreateVersion7().ToString("D");
+        await Assert.ThrowsAsync<SqliteException>(() => ExecuteAsync(
+            connection,
+            RunInsert(
+                Guid.CreateVersion7().ToString("D"),
+                "manual:invalid-hash",
+                inputsSha256: "not-a-sha256"),
+            cancellationToken));
+        await Assert.ThrowsAsync<SqliteException>(() => ExecuteAsync(
+            connection,
+            RunInsert(
+                Guid.CreateVersion7().ToString("D"),
+                "manual:invalid-prepared-turn",
+                preparedTurnId: Guid.NewGuid().ToString("D")),
+            cancellationToken));
         await ExecuteAsync(
             connection,
             RunInsert(first, "manual:first"),
@@ -263,18 +291,27 @@ public sealed class StateMigrationV7Tests
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
-    private static string RunInsert(string runId, string idempotencyKey) =>
+    private static string RunInsert(
+        string runId,
+        string idempotencyKey,
+        string inputsSha256 =
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        string renderedPromptSha256 =
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        string? preparedTurnId = null) =>
         $$"""
          INSERT INTO automation_runs (
              automation_run_id, automation_id, trigger_kind,
              trigger_idempotency_key, status, definition_snapshot_json,
-             inputs_json, workspace_mode, workspace_access,
+             inputs_sha256, rendered_prompt_sha256, prepared_turn_id,
+             workspace_mode, workspace_access,
              provider_id, model_id, permission_snapshot_json,
              capability_snapshot_json, run_deadline_utc,
              revision, created_utc, updated_utc)
          VALUES (
              '{{runId}}', 'daily-check', 'manual', '{{idempotencyKey}}',
-             'pending', '{}', '{}', 'project', 'readOnly',
+             'pending', '{}', '{{inputsSha256}}', '{{renderedPromptSha256}}',
+             '{{preparedTurnId ?? runId}}', 'project', 'readOnly',
              'fake', 'fake-model', '{}', '[]', 2, 1, 1, 1);
          """;
 

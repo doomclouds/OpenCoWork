@@ -106,8 +106,23 @@ internal sealed class AutomationsStateMigrationContributor
                     'completed', 'failed', 'cancelled', 'timedOut')),
             definition_snapshot_json TEXT NOT NULL CHECK (
                 json_valid(definition_snapshot_json)),
-            inputs_json TEXT NOT NULL CHECK (json_valid(inputs_json)),
-            rendered_prompt TEXT NULL,
+            inputs_sha256 TEXT NOT NULL CHECK (
+                length(inputs_sha256) = 64 AND
+                inputs_sha256 = lower(inputs_sha256) AND
+                inputs_sha256 NOT GLOB '*[^0-9a-f]*'),
+            rendered_prompt_sha256 TEXT NOT NULL CHECK (
+                length(rendered_prompt_sha256) = 64 AND
+                rendered_prompt_sha256 = lower(rendered_prompt_sha256) AND
+                rendered_prompt_sha256 NOT GLOB '*[^0-9a-f]*'),
+            prepared_turn_id TEXT NOT NULL UNIQUE CHECK (
+                length(prepared_turn_id) = 36 AND
+                prepared_turn_id = lower(prepared_turn_id) AND
+                substr(prepared_turn_id, 9, 1) = '-' AND
+                substr(prepared_turn_id, 14, 1) = '-' AND
+                substr(prepared_turn_id, 15, 1) = '7' AND
+                substr(prepared_turn_id, 19, 1) = '-' AND
+                substr(prepared_turn_id, 20, 1) IN ('8', '9', 'a', 'b') AND
+                substr(prepared_turn_id, 24, 1) = '-'),
             workspace_mode TEXT NOT NULL CHECK (
                 workspace_mode IN ('project', 'worktree')),
             workspace_access TEXT NOT NULL CHECK (

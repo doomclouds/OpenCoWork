@@ -1,6 +1,7 @@
 # OpenCoWork M8 Automations and Scheduler 实施计划
 
-**Status:** Design + Plan 已冻结；M8 实现未开始，Outcome 1 待用户单独授权。
+**Status:** Design + Plan 已冻结（修订 1）；Outcome 1-4 与设计纠偏已完成，继续
+Outcome 5。
 
 **Goal:** 在现有 Workspace、Session、Agent、Tool、Capability、Managed Worktree、
 SQLite State 和 Wire 边界上交付安全、可版本控制、可恢复的无人值守 Automation
@@ -44,8 +45,10 @@ Thread/Turn、跨根写入、无人值守提权或非幂等副作用自动重放
   Protocol Tests 和 Protocol TestClient，不创建新测试程序集；
 - M8 不增加真实 Provider 声明，调度、恢复和发布验收使用确定性 Fake Agent/Tool。
 
-实施前必须先把 M8 Design + Plan 作为独立、已验证的文档基线提交；本计划的提交
-不授权自动进入 Outcome 1。
+初始 M8 Design + Plan 已作为独立基线提交。Outcome 5 前发现 SQLite 隐私边界与
+崩溃恢复顺序冲突，用户已确认修订 1：由 Session Prepared Turn 持久暂存 Rendered
+Prompt，Automation State 只保存 ID/摘要；Workspace Trust 复用 M6
+`UnattendedAutomation` scope，Unattended Policy 复用 `ToolsConfig.Effects`。
 
 ## 执行规则
 
@@ -67,6 +70,8 @@ Thread/Turn、跨根写入、无人值守提权或非幂等副作用自动重放
 - YAML 只缩小 Trust、Unattended Policy 与冻结 Catalog 权限，不能扩大权限；
 - 事务只写状态、Receipt、Lease 和 Intent；Git、Session、文件系统与通知副作用
   必须在事务外执行并可探测；
+- Prepared Turn 是 Session Journal 的惰性写前暂存，不是第二套 Automation Outbox；
+  SQLite 只保存 Prepared Turn ID、Inputs SHA-256 和 Rendered Prompt SHA-256；
 - 所有测试只使用临时 Workspace、临时 Git 仓库和临时用户目录，不读取、修改或
   清理真实 `~/.opencowork`；
 - Secret 不进入 SQLite、Journal 通知、日志、Wire、stdout/stderr、测试输出或快照；
@@ -90,6 +95,25 @@ dotnet build OpenCoWork.slnx -c Release --no-restore
 ```
 
 全量回归失败时不得提交该 Outcome。
+
+### 设计修订 1：对齐 Prepared Turn、Trust 与 State v7 隐私边界
+
+- Red:
+  - 扩展 `StateMigrationV7Tests.cs`，证明 `automation_runs` 不含 `inputs_json` /
+    `rendered_prompt`，且强制保存合法的 Inputs/Prompt SHA-256 与 Prepared Turn
+    UUIDv7；
+- Work:
+  - 更新 M8 Design + Plan，冻结 Session Prepared Turn 的持久化、幂等、清理和
+    fail-closed 恢复语义；
+  - 冻结 M6 `UnattendedAutomation` Trust identity 与
+    `ToolsConfig.Effects` Policy 复用路径；
+  - 纠正未发布的 State v7 DDL 和测试插入，不为内部旧 v7 开发数据库增加兼容迁移。
+- Verify:
+  - `dotnet test tests/OpenCoWork.Core.Tests/OpenCoWork.Core.Tests.csproj -c Release --no-restore --filter FullyQualifiedName~StateMigrationV7Tests`
+  - `dotnet test OpenCoWork.slnx -c Release --no-restore`
+  - `dotnet build OpenCoWork.slnx -c Release --no-restore`
+- Commit:
+  - `fix(m8): align staged turn persistence`
 
 ### Outcome 1：冻结 Automation 契约、Config、模块和依赖边界
 
@@ -224,10 +248,13 @@ dotnet build OpenCoWork.slnx -c Release --no-restore
   - List/Get 只读取 SQLite 投影，YAML 文件仍是定义事实源，Service 不提供 CRUD；
   - Manual Start 在一个事务中校验 Host Actor、Definition Revision、三重激活门、
     输入、权限交集、单实例和固定上限；
-  - Run 创建时冻结规范化 Definition、Inputs 摘要、Rendered Prompt、Provider/Model、
-    Trust/Policy/YAML/Catalog 交集和 Plugin/Skill/Tool 身份/摘要；
-  - SQLite 不保存 Inputs、Rendered Prompt 或 Secret；完整内容只在提交 Thread 时
-    进入现有 Journal 安全边界；
+  - Run 创建前通过窄 Session 契约，以稳定 ID/Request SHA-256 原子写入惰性
+    Prepared Turn；不创建 Thread、Turn 或执行任务；
+  - Run 创建时冻结规范化 Definition、Inputs SHA-256、Rendered Prompt SHA-256、
+    Prepared Turn ID、Provider/Model、Trust/Policy/YAML/Catalog 交集和
+    Plugin/Skill/Tool 身份/摘要；
+  - SQLite 不保存 Inputs、Rendered Prompt 或 Secret；完整 Prompt 只进入 Session
+    Prepared Turn / Thread Journal 安全边界；
   - `AutomationResult<T>` 只承载 value、automationRevision、isReplay、error，不复制
     Wire 错误包络。
 - Verify:
@@ -251,6 +278,8 @@ dotnet build OpenCoWork.slnx -c Release --no-restore
     Worktree Run 不领取该 Lease。
 - Work:
   - 实现持久 `automation_dispatch_intents` 的领取、续约、结果提交和探测；
+  - 按稳定 Prepared Turn ID/Request SHA-256 探测并消费 Session 暂存；缺失、损坏或
+    摘要不符时 fail-closed，孤儿暂存按共享 Lease 时间界限清理；
   - 在事务外按 Worktree → Thread → Turn 顺序执行副作用，每一步使用稳定幂等键；
   - Project 直接绑定 Workspace Root；含 `WorkspaceWrite` 的有效快照先领取 Core
     Project Writer Lease；

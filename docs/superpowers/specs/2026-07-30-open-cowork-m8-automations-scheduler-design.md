@@ -2,7 +2,7 @@
 
 ## 文档状态
 
-- 状态：设计已冻结
+- 状态：设计已冻结（修订 1）
 - 日期：2026-07-30
 - 所属里程碑：OpenCoWork Runtime 1.0 / M8
 - 已确认决策：29 项
@@ -26,6 +26,12 @@
 本文冻结 M8 已确认的产品边界、定义模型、时钟语义、权限交集、Run 状态、
 并发、Worktree、持久化、Wire 1.3、验证矩阵和 Outcome 边界。本文是后续计划的
 设计基线；实施计划已经单独确认，但 Design + Plan 基线提交不授权开始编码。
+
+修订 1 在 Outcome 5 开始前修复两项不能同时满足的原冻结表述：Run/Intent 必须先
+持久化并可崩溃恢复，但 SQLite 又不得保存 Inputs 或 Rendered Prompt。修订后由
+Session 持久边界暂存惰性的 Prepared Turn，Automation State 只保存稳定 ID 和摘要；
+同时明确 Workspace Trust 与 Unattended Policy 复用 M6 Trust 和现有 Tool Policy，
+不增加第二套信任文件或第五项 Automations Config。
 
 M7 当前仍等待 `win-x64` 真机验收。M8 设计工作不得把 M7 标记为完成，也不得
 把 M8 里程碑状态提前改为 In Progress。
@@ -79,12 +85,14 @@ flowchart TD
     Files["automations/definitions/*.yaml<br/>定义事实源"] --> Loader["Definition Loader<br/>Schema + Fluid Parse + Version Hash"]
     Loader --> Projection["State v7<br/>Definition / Schedule 投影"]
     Wire["Host / Wire 1.3"] --> Service["IAutomationService<br/>唯一写边界"]
+    Service --> Prepared["Session Prepared Turn<br/>惰性、持久、未启动"]
     Service --> State["IWorkspaceStateStore<br/>同一个 state.db"]
     Projection --> State
     State --> Reconciler["AutomationReconciler"]
     Reconciler --> Intent["Automation Dispatch Intent"]
     Intent --> Worktree["IManagedWorktreeService"]
-    Intent --> Session["ISessionService<br/>1 Thread + 1 Turn"]
+    Intent --> Session["ISessionService<br/>消费 Prepared Turn<br/>1 Thread + 1 Turn"]
+    Prepared --> Session
     Session --> Pipeline["ToolInvocationPipeline<br/>Unattended Snapshot"]
     Session --> Reconciler
     Worktree --> Reconciler
@@ -99,7 +107,7 @@ flowchart TD
 | `IAutomationService` | 查询投影、手动启动、取消、处理 Attention、Revision 和幂等命令 | 直接改 YAML、直接调用模型或 Git |
 | `AutomationReconciler` | 到期、合并、Lease、Intent、Session 终态和恢复 | Thread/Turn 状态机、Tool 重放规则 |
 | Core State | 同一数据库、迁移事务、写串行化、共享资源 Lease | Automation 业务决策 |
-| `ISessionService` | 创建 Unattended Thread、提交一个 Turn、等待与恢复 | Automation Schedule 权威状态 |
+| `ISessionService` | 暂存 Prepared Turn、创建 Unattended Thread、提交一个 Turn、等待与恢复 | Automation Schedule 权威状态 |
 | `ToolInvocationPipeline` | 快照、权限、审批、执行、结果不明和审计 | 因无人值守扩大权限 |
 | Wire Adapter | 版本协商、DTO、参数校验和 Changed 通知 | 定义文件写入或第二套 Revision |
 
@@ -341,15 +349,20 @@ Run 创建前必须依次完成：
 6. 解析 Project / Worktree、Base Commit 和 Dirty Origin；
 7. 计算 Workspace Trust、Unattended Policy 和 YAML allowlist 交集；
 8. 冻结 Plugin、Skill、Tool Definition/Binding Generation 和权限快照；
-9. 在单个 `BEGIN IMMEDIATE` 事务中创建 `Pending` Run、必要 Intent、
-   Command Receipt，并推进 Schedule。
+9. 通过窄 Session 契约，以稳定 Prepared Turn ID 和 Request SHA-256 在
+   `runtime/recovery/threads/prepared/` 原子暂存 Secret Canary 已通过的 Rendered
+   Prompt；该步骤不创建 Thread、Turn 或执行任务；
+10. 在单个 `BEGIN IMMEDIATE` 事务中创建 `Pending` Run、必要 Intent、
+    Command Receipt，并推进 Schedule。
 
 Run 至少冻结：
 
 - `automationId` 和 `definitionVersion`；
 - 规范化 Definition Snapshot；
 - Trigger Kind、`scheduledForUtc` 和触发幂等键；
-- 已验证 Inputs 和已渲染 Prompt；
+- 已验证 Inputs SHA-256、Rendered Prompt SHA-256 和 Prepared Turn ID；完整
+  Rendered Prompt 仅存在 Session Prepared Turn / Thread Journal，原始 Inputs
+  不持久化；
 - Project / Worktree 模式、Base Commit 和执行空间请求；
 - Workspace Trust Snapshot ID；
 - Unattended 权限决策；
@@ -366,6 +379,22 @@ Binding 已卸载、Generation 改变或 Lease 失效必须失败关闭，不能
 `automation_runs` 只保存终态、时间、`threadId`、`worktreeId`、安全错误和最多
 16 KiB UTF-8 的最终摘要。完整 Prompt、消息、工具调用与输出继续由 Thread Journal
 权威保存，不复制进 Automation State。
+
+Session Prepared Turn 是 Thread Journal 的窄写前暂存，而不是 Automation Outbox：
+
+- 文件只包含 Prepared Turn ID、Request SHA-256、Rendered Prompt、创建 UTC 和
+  完整性摘要，不保存原始 Inputs、Secret、运行时委托或能力对象；
+- 写入使用 Session Runtime 现有路径守卫、临时文件、原子替换、WriteThrough 和
+  Secret Canary；相同 ID + Request SHA-256 幂等重放，不同请求返回冲突；
+- Prepared Turn 在 Run 事务前写入；事务失败时立即删除，进程崩溃遗留且两分钟后
+  仍无 Run/Receipt 引用的暂存由 Reconciler 删除；
+- Run 事务成功后，Dispatch Intent 只引用 Prepared Turn ID；Worktree 和 Thread
+  创建完成后，Session 将同一 Prompt 提交为唯一 Turn；
+- 只有 Thread Journal 已确认唯一 Turn 后才删除 Prepared Turn；删除前崩溃时按
+  稳定 ID 和 Request SHA-256 探测重放；
+- Run 引用的 Prepared Turn 缺失、摘要不符或损坏时 fail-closed，经固定 Intent
+  尝试耗尽后使用 `automation.retryExhausted` 终结，不从当前 YAML 或新 Inputs
+  重新渲染。
 
 规则：
 
@@ -401,6 +430,17 @@ AND YAML enabled == true
 - 任一激活条件关闭都只停止新 Run，不隐式取消已有非终态 Run；
 - 仓库中仅出现 YAML 文件不能自动获得无人值守执行权。
 
+Workspace Trust 复用 M6 `trust/decide` / `trust/revoke` 与用户级
+`~/.opencowork/trust/decisions.json`：
+
+- M8 增加 `CapabilityTrustScope.UnattendedAutomation`；
+- 稳定信任身份为 Core source `opencowork.automations`、版本 `1`，Source SHA-256
+  来自固定 canonical descriptor；descriptor 变化会使旧决定失效并要求重新授权；
+- Automation Definition 查询返回该稳定 source descriptor 与当前授权状态，Host
+  仍通过 M6 Capability Trust 命令授权，不新增 Automation 专用 Trust API；
+- Run 保存匹配决定和 source descriptor 的 canonical SHA-256 作为
+  Workspace Trust Snapshot ID，不保存用户级信任文件正文。
+
 ### 7.2 有效权限
 
 Run 有效权限为：
@@ -415,7 +455,13 @@ Workspace 当前 Trust
 规则：
 
 - YAML 只能缩小权限，不能授予权限；
-- Workspace Unattended Policy 必须显式允许写文件、执行进程、访问网络或外部变更；
+- Workspace Unattended Policy 直接复用现有 `ToolsConfig.Effects`，不增加平行
+  Policy 文件或配置段；
+- `Allow` 才允许对应 Effect 无人值守自动执行，`RequireApproval` 保留工具但必须
+  经 Session Approval 进入 `NeedsAttention`，`Deny` 从有效权限中移除；
+- 写文件、执行进程或访问网络必须由 `ToolsConfig.Effects` 显式 `Allow` 才能自动
+  执行；`ExternalMutation` 沿用 M6 约束，不能配置为 `Allow`，因此始终需要审批或
+  被拒绝；
 - `ToolPlanningThreadKind` 使用 `Unattended`；
 - Plan、Audience、Exposure、Binding Lease、Authority、Policy、Hook 和 Approval 顺序
   继续由 `ToolInvocationPipeline` 决定；
@@ -615,7 +661,7 @@ v7 总计增加 7 张表：M8 自有 6 张，Core 共享 1 张。
 | `automation_state` | Workspace 单例 `automationRevision` 与更新时间 |
 | `automation_definitions` | ID、文件相对路径、Source 状态/摘要、当前版本、可运行投影、Revision、诊断与 tombstone |
 | `automation_schedules` | Automation、Cron、IANA 时区、next/last/coalesced UTC、Revision |
-| `automation_runs` | Trigger、状态、冻结快照、Thread、Worktree、Deadline、Lease、安全错误、16 KiB 摘要与诊断 |
+| `automation_runs` | Trigger、状态、冻结快照、Inputs/Prompt SHA-256、Prepared Turn ID、Thread、Worktree、Deadline、Lease、安全错误、16 KiB 摘要与诊断 |
 | `automation_dispatch_intents` | Side-effect 类型、实体、幂等键、Attempt、Lease、状态、诊断 |
 | `automation_command_receipts` | Command ID、Actor、类型、目标、结果、Revision |
 
@@ -630,7 +676,7 @@ v7 总计增加 7 张表：M8 自有 6 张，Core 共享 1 张。
 - Thread ID、Worktree ID 和 Dispatch Intent 幂等键唯一；
 - JSON Snapshot 必须 `json_valid`；
 - Deadline、Lease 和时间字段统一保存 UTC；
-- SQLite 不保存 Secret、完整 Thread 历史或运行时委托；
+- SQLite 不保存 Inputs、Rendered Prompt、Secret、完整 Thread 历史或运行时委托；
 - 不增加定义版本历史表、事件表、Outbox、Repository 或 Unit of Work。
 
 定义历史由 Git 提供；Run 自身保存当时的完整规范化 Snapshot，足以审计历史行为。
@@ -659,11 +705,11 @@ Reconciler 每轮按固定顺序处理：
 
 1. 响应显式取消和已到期 Run / Attention Deadline；
 2. 从 Session 持久事实恢复 `Running` / `NeedsAttention` / 终态；
-3. 探测并修复 Thread、Turn 和 Worktree Intent 的未知结果；
+3. 探测并修复 Prepared Turn、Thread、Turn 和 Worktree Intent 的未知结果；
 4. 回收过期 Dispatch Lease；
 5. 计算 Cron 到期、停机合并点与下一次运行；
 6. 在事务内创建 Run / Intent 或领取 Pending Run；
-7. 在事务外执行 Worktree、Thread 和 Turn 副作用；
+7. 在事务外消费 Prepared Turn 并执行 Worktree、Thread 和 Turn 副作用；
 8. 以相同幂等键写回结果；
 9. 为新终态 Run 提交并执行 Archive Thread Intent；
 10. 自动清理无变化的 Worktree；
@@ -1073,7 +1119,7 @@ M8 后续实施计划必须保持以下十个 Outcome，不把迁移、公共契
 | 2 | 单 YAML、自包含 Fluid、文件名身份、内容摘要版本 | 3 |
 | 3 | 5 段 Cron、显式 IANA、DST、停机合并与周期幂等 | 5 |
 | 4 | Definition 热更新 fail-closed，已有 Run 使用冻结快照 | 3、6 |
-| 5 | Workspace Trust / Unattended / YAML / Catalog 权限交集 | 7 |
+| 5 | M6 `UnattendedAutomation` Trust / `ToolsConfig.Effects` / YAML / Catalog 权限交集 | 7 |
 | 6 | Approval/Input 恢复，OutcomeUnknown 只能 Fail/Cancel | 8 |
 | 7 | 单实例、Cron 合并、手动冲突、并发 3、复用 Lease | 9 |
 | 8 | 显式 Project/Worktree、每 Run 独立、只清理无变化现场 | 10 |
@@ -1089,9 +1135,9 @@ M8 后续实施计划必须保持以下十个 Outcome，不把迁移、公共契
 | 18 | 全局 Automation Revision、三类实体 Revision 与 Wire CAS 目标 | 11、13 |
 | 19 | v7 使用第六张 `automation_state` 单例表承载全局 Revision | 11 |
 | 20 | Source 三态、合并扫描、诊断脱敏与 `Missing` tombstone | 3、11、13 |
-| 21 | Run 仅存安全摘要，完整内容归 Thread，终态归档且不自动删除 | 6、11、12、13 |
+| 21 | Run 仅存 ID/摘要；Rendered Prompt 经 Session Prepared Turn 进入唯一 Thread，终态归档且不自动删除 | 6、11、12、13 |
 | 22 | Core 单用途 Project Writer Lease、v7 第七表与跨 M7/M8 互斥 | 10、11 |
-| 23 | 四项 Workspace Config、固定运行参数、YAML 只缩小策略 | 6、9、14 |
+| 23 | 四项 Workspace Config、复用 `ToolsConfig.Effects`、固定运行参数、YAML 只缩小策略 | 6、7、9、14 |
 | 24 | Wire/Host 与内部 Scheduler 两类 Actor，禁止模型管理和自审批 | 13 |
 | 25 | Wire keyset 分页、响应包络、List/Get 与三类写 DTO | 13 |
 | 26 | Service/Wire 错误分层、稳定 `automation.*` 全集与 JSON-RPC 映射 | 13、15 |
