@@ -735,6 +735,7 @@ namespace OpenCoWork.App
             services.AddSingleton(snapshot.GetRequiredSection<SessionConfig>());
             services.AddSingleton(snapshot.GetRequiredSection<ModelsConfig>());
             services.AddSingleton(snapshot.GetRequiredSection<ToolsConfig>());
+            services.AddSingleton(snapshot.GetRequiredSection<CoWorkConfig>());
             configureServices?.Invoke(services);
         }
 

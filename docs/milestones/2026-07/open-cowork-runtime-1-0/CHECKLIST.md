@@ -63,7 +63,7 @@ Milestone standard: [README.md](README.md)
   - Related spec: docs/superpowers/specs/2026-07-30-open-cowork-m7-multi-agent-cowork-design.md
   - Related plan: docs/superpowers/plans/2026-07-30-open-cowork-m7-multi-agent-cowork-implementation-plan.md
   - Related archive: None yet.
-  - Completion signal: M7 的 27 项设计决策与 10-Outcome 实施计划已冻结；Outcome 1-2 的 CoWork 契约、Teams 模块边界、SQLite v6、配置和持久化不变量已完成。
+  - Completion signal: M7 的 27 项设计决策与 10-Outcome 实施计划已冻结；Outcome 1-3 的 CoWork 契约、Teams 模块边界、SQLite v6、Profile/Team/Mission Planning、DAG、权限与命令幂等基础已完成。
 - [ ] 9. M8 - Automations and Scheduler
   - Status: Not Started
   - Related spec: docs/superpowers/specs/2026-07-25-open-cowork-runtime-1-0-roadmap.md

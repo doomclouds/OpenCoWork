@@ -1,4 +1,5 @@
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using OpenCoWork.Abstractions;
 
 namespace OpenCoWork.Teams;
@@ -8,12 +9,15 @@ public sealed class TeamsModule : IOpenCoWorkModule
 {
     public void ConfigureServices(IServiceCollection services)
     {
-        services.AddSingleton<CoWorkConfig>();
+        services.TryAddSingleton<CoWorkConfig>();
         foreach (var contributor in TeamsStateMigrationContributors.Create())
         {
             services.AddSingleton(contributor);
         }
 
+        services.TryAddSingleton<CoWorkService>();
+        services.TryAddSingleton<ICoWorkService>(serviceProvider =>
+            serviceProvider.GetRequiredService<CoWorkService>());
         services.AddSingleton<CoWorkModuleRuntime>();
     }
 

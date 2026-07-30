@@ -56,11 +56,11 @@ public sealed class CoWorkPersistenceTests
                         'active', 'available', 'server',
                         0, 0, 1, 1, 'agent');
                     INSERT INTO agent_profiles (
-                        agent_profile_id, name, normalized_name, instructions,
+                        agent_profile_id, name, normalized_name, description, instructions,
                         model_json, tools_json, permission_json, enabled,
                         revision, created_utc, updated_utc)
                     VALUES (
-                        'profile-1', 'worker', 'WORKER', '',
+                        'profile-1', 'worker', 'WORKER', '', '',
                         '{}', '[]', '{}', 1, 0, 1, 1);
                     INSERT INTO missions (
                         mission_id, origin_thread_id, origin_delivery_id,
@@ -75,10 +75,11 @@ public sealed class CoWorkPersistenceTests
                          'three', 'active', 'project', '{}', 10, 0, 1, 1);
                     INSERT INTO mission_members (
                         mission_member_id, mission_id, agent_profile_id,
-                        alias, normalized_alias, role, ordinal, profile_snapshot_json)
+                        alias, normalized_alias, role, description, ordinal,
+                        profile_snapshot_json)
                     VALUES (
                         'member-1', 'mission-1', 'profile-1',
-                        'worker', 'WORKER', 'leader', 0, '{}');
+                        'worker', 'WORKER', 'leader', '', 0, '{}');
                     INSERT INTO cowork_command_receipts (
                         command_id, actor_id, command_kind, target_id,
                         request_sha256, result_json, revision, created_utc)
@@ -102,10 +103,10 @@ public sealed class CoWorkPersistenceTests
                         budget_used_tokens, attempt, created_utc, updated_utc)
                     VALUES
                         ('run-1', 'mission-1', 'member-1', NULL,
-                         'missionTask', 'running', 'worktree', 'readWrite',
+                         'missionTask', 'starting', 'worktree', 'readWrite',
                          10, 0, 0, 1, 1, 1),
                         ('run-2', 'mission-2', NULL, NULL,
-                         'missionTask', 'running', 'project', 'readWrite',
+                         'missionTask', 'starting', 'project', 'readWrite',
                          10, 0, 0, 1, 1, 1);
                     """,
                     token);

@@ -1,6 +1,6 @@
 # OpenCoWork M7 Multi-Agent CoWork 实施计划
 
-**Status:** 实施中；Outcome 1-2 已完成，Outcome 3-10 尚未开始。
+**Status:** 实施中；Outcome 1-3 已完成，Outcome 4-10 尚未开始。
 
 **Goal:** 在现有 Workspace、Session、Agent、Tool、Capability 和 Wire 边界上交付
 可持久、可恢复、受预算和权限约束的 Direct SubAgent 与 Mission 协作闭环。

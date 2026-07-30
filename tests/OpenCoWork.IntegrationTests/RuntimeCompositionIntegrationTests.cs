@@ -5,6 +5,7 @@ using OpenCoWork.App;
 using OpenCoWork.Core.Capabilities;
 using OpenCoWork.Core.Configuration;
 using OpenCoWork.Core.Hosting;
+using OpenCoWork.Core.Logging;
 using OpenCoWork.Core.State;
 using OpenCoWork.Core.Workspaces;
 using OpenCoWork.Teams;
@@ -43,6 +44,12 @@ public sealed class RuntimeCompositionIntegrationTests
                 var runtime = host.Services.GetRequiredService<WorkspaceRuntime>();
                 Assert.Equal(WorkspaceRuntimeStatus.Running, runtime.Status);
                 Assert.Equal("cli", runtime.StartedState.PrimaryHost.Id);
+                Assert.Same(
+                    host.Services.GetRequiredService<CoWorkService>(),
+                    host.Services.GetRequiredService<ICoWorkService>());
+                Assert.Same(
+                    host.Services.GetRequiredService<SecretRedactor>(),
+                    host.Services.GetRequiredService<ISensitiveDataService>());
                 Assert.Equal(
                     ["session", "acp", "app-server", "cli", "teams"],
                     host.Services.GetRequiredService<ModuleRegistry>()

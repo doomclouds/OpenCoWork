@@ -50,6 +50,8 @@ public static class OpenCoWorkAgentExtensions
                 ? new SecretRedactor([])
                 : SecretRedactor.FromSnapshot(snapshot);
         });
+        services.TryAddSingleton<ISensitiveDataService>(serviceProvider =>
+            serviceProvider.GetRequiredService<SecretRedactor>());
         services.TryAddSingleton<IProviderOsSecretStore>(
             static _ => ProviderOsSecretStore.Create());
         services.TryAddSingleton(serviceProvider =>

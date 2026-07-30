@@ -5,11 +5,12 @@ using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using Microsoft.Extensions.Logging;
+using OpenCoWork.Abstractions;
 using OpenCoWork.Core.Configuration;
 
 namespace OpenCoWork.Core.Logging;
 
-public sealed class SecretRedactor
+public sealed class SecretRedactor : ISensitiveDataService
 {
     public const string Replacement = "[REDACTED]";
     private static readonly string[] SensitiveKeys =
@@ -77,6 +78,24 @@ public sealed class SecretRedactor
                 match.Groups["key"].Value +
                 match.Groups["separator"].Value +
                 Replacement);
+    }
+
+    public bool ContainsSensitiveData(string value)
+    {
+        ArgumentNullException.ThrowIfNull(value);
+        return !string.Equals(value, RedactText(value), StringComparison.Ordinal);
+    }
+
+    public string Redact(string value) => RedactText(value);
+
+    public async ValueTask<bool> ContainsSensitiveDataAsync(
+        Stream source,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(source);
+        using var reader = new StreamReader(source, leaveOpen: true);
+        return ContainsSensitiveData(
+            await reader.ReadToEndAsync(cancellationToken));
     }
 
     internal IDisposable RegisterSecret(string secret)

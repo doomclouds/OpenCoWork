@@ -118,6 +118,13 @@ internal sealed class TeamsStateMigrationContributor
         "ix_team_members_leader",
     ];
 
+    private static readonly (string Table, string[] Columns)[] RequiredColumns =
+    [
+        ("agent_profiles", ["description"]),
+        ("mission_members", ["description"]),
+        ("mission_tasks", ["objective", "instructions"]),
+    ];
+
     private const string Sql =
         """
         CREATE TABLE cowork_state (
@@ -131,6 +138,7 @@ internal sealed class TeamsStateMigrationContributor
             agent_profile_id TEXT NOT NULL PRIMARY KEY,
             name TEXT NOT NULL,
             normalized_name TEXT NOT NULL UNIQUE,
+            description TEXT NOT NULL,
             instructions TEXT NOT NULL,
             model_json TEXT NOT NULL CHECK (json_valid(model_json)),
             tools_json TEXT NOT NULL CHECK (json_valid(tools_json)),
@@ -213,6 +221,7 @@ internal sealed class TeamsStateMigrationContributor
             alias TEXT NOT NULL,
             normalized_alias TEXT NOT NULL,
             role TEXT NOT NULL CHECK (role IN ('leader', 'member')),
+            description TEXT NOT NULL,
             ordinal INTEGER NOT NULL CHECK (ordinal >= 0),
             profile_snapshot_json TEXT NOT NULL CHECK (json_valid(profile_snapshot_json)),
             FOREIGN KEY (mission_id) REFERENCES missions (mission_id) ON DELETE CASCADE,
@@ -231,8 +240,8 @@ internal sealed class TeamsStateMigrationContributor
             assigned_member_id TEXT NULL,
             alias TEXT NOT NULL,
             normalized_alias TEXT NOT NULL,
-            title TEXT NOT NULL,
-            description TEXT NOT NULL,
+            objective TEXT NOT NULL,
+            instructions TEXT NOT NULL,
             is_required INTEGER NOT NULL CHECK (is_required IN (0, 1)),
             review_required INTEGER NOT NULL CHECK (review_required IN (0, 1)),
             waived INTEGER NOT NULL DEFAULT 0 CHECK (waived IN (0, 1)),
@@ -324,12 +333,12 @@ internal sealed class TeamsStateMigrationContributor
         CREATE UNIQUE INDEX ix_agent_runs_active_member
             ON agent_runs (mission_id, member_id)
             WHERE member_id IS NOT NULL
-              AND status IN ('pending', 'dispatching', 'running', 'waiting');
+              AND status IN ('pending', 'starting', 'running');
         CREATE UNIQUE INDEX ix_agent_runs_project_writer
             ON agent_runs ((1))
             WHERE workspace_mode = 'project'
               AND workspace_access = 'readWrite'
-              AND status IN ('pending', 'dispatching', 'running', 'waiting');
+              AND status IN ('pending', 'starting', 'running');
 
         CREATE TABLE mailbox_messages (
             mailbox_message_id TEXT NOT NULL PRIMARY KEY,
@@ -495,6 +504,19 @@ internal sealed class TeamsStateMigrationContributor
             throw new InvalidOperationException(
                 $"Unexpected CoWork state indexes: {string.Join(',', indexes)}.");
         }
+
+        foreach (var (table, required) in RequiredColumns)
+        {
+            var columns = await ReadColumnsAsync(
+                connection,
+                table,
+                cancellationToken);
+            if (!required.All(columns.Contains))
+            {
+                throw new InvalidOperationException(
+                    $"CoWork state table '{table}' is missing required columns.");
+            }
+        }
     }
 
     private static async ValueTask ExecuteAsync(
@@ -532,5 +554,22 @@ internal sealed class TeamsStateMigrationContributor
         }
 
         return result.ToArray();
+    }
+
+    private static async ValueTask<HashSet<string>> ReadColumnsAsync(
+        DbConnection connection,
+        string table,
+        CancellationToken cancellationToken)
+    {
+        await using var command = connection.CreateCommand();
+        command.CommandText = $"PRAGMA table_info('{table}');";
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        var result = new HashSet<string>(StringComparer.Ordinal);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            result.Add(reader.GetString(1));
+        }
+
+        return result;
     }
 }

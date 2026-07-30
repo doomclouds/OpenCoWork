@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
+using OpenCoWork.Abstractions;
 using OpenCoWork.Core.Configuration;
 using OpenCoWork.Core.Logging;
 using Xunit;
@@ -35,6 +36,25 @@ public sealed class StructuredLoggingTests
         Assert.Equal(
             $"failed with {SecretRedactor.Replacement}",
             redactor.RedactText($"failed with {providerSecret}"));
+    }
+
+    [Fact]
+    public async Task Sensitive_data_service_scans_text_and_streams()
+    {
+        const string canary = "secret-canary-stream-31af";
+        ISensitiveDataService service = new SecretRedactor([canary]);
+        var cancellationToken = TestContext.Current.CancellationToken;
+        await using var stream = new MemoryStream(
+            System.Text.Encoding.UTF8.GetBytes($"payload={canary}"));
+
+        Assert.True(service.ContainsSensitiveData($"payload={canary}"));
+        Assert.True(await service.ContainsSensitiveDataAsync(
+            stream,
+            cancellationToken));
+        Assert.DoesNotContain(
+            canary,
+            service.Redact($"payload={canary}"),
+            StringComparison.Ordinal);
     }
 
     [Fact]
