@@ -66,8 +66,8 @@ Milestone standard: [README.md](README.md)
   - Completion signal: Outcome 1-9 已完成，Outcome 10 的自动化、双 RID 交叉发布和 `osx-arm64` 真机验收已通过；`M7-ACC-001..005`、`008..010` 为 Passed，`006..007` 与完整 M7 等待 `win-x64` 真机。
 - [ ] 9. M8 - Automations and Scheduler
   - Status: Not Started
-  - Related spec: docs/superpowers/specs/2026-07-25-open-cowork-runtime-1-0-roadmap.md
-  - Related plan: None yet.
+  - Related spec: docs/superpowers/specs/2026-07-30-open-cowork-m8-automations-scheduler-design.md
+  - Related plan: docs/superpowers/plans/2026-07-30-open-cowork-m8-automations-scheduler-implementation-plan.md
   - Related archive: None yet.
   - Completion signal: 去重调度、时区、权限、NeedsAttention 和崩溃恢复验收通过。
 - [ ] 10. M9 - Gateway and Operations
