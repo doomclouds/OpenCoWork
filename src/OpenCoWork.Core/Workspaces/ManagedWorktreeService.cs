@@ -253,7 +253,17 @@ internal sealed partial class ManagedWorktreeService : IManagedWorktreeService
                 ["status", "--porcelain=v1", "--untracked-files=all"],
                 cancellationToken);
             EnsureSuccess(status, "Managed Worktree status failed.");
-            if (!string.IsNullOrEmpty(status.Stdout))
+            var head = await RunGitAsync(
+                await GitExecutableAsync(cancellationToken),
+                current.WorktreeRoot,
+                ["rev-parse", "--verify", "HEAD^{commit}"],
+                cancellationToken);
+            EnsureSuccess(head, "Managed Worktree HEAD is unavailable.");
+            if (!string.IsNullOrEmpty(status.Stdout) ||
+                !string.Equals(
+                    head.Stdout.Trim(),
+                    current.BaseCommitSha,
+                    StringComparison.OrdinalIgnoreCase))
             {
                 var retained = current with
                 {

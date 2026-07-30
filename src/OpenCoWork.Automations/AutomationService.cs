@@ -16,7 +16,9 @@ internal sealed class AutomationService(
     IAutomationRuntimeSnapshotProvider runtime,
     AutomationsConfig config,
     TimeProvider timeProvider,
-    AutomationControlPlane? controlPlane = null) : IAutomationService
+    AutomationControlPlane? controlPlane = null,
+    ISessionService? sessions = null,
+    IProjectWriterLeaseService? writerLeases = null) : IAutomationService
 {
     private static readonly JsonSerializerOptions JsonOptions =
         new(JsonSerializerDefaults.Web);
@@ -598,21 +600,198 @@ internal sealed class AutomationService(
             cancellationToken);
     }
 
-    public Task<AutomationResult<AutomationRunSnapshot>> CancelRunAsync(
+    public async Task<AutomationResult<AutomationRunSnapshot>> CancelRunAsync(
         CancelAutomationRunRequest request,
-        CancellationToken cancellationToken = default) =>
-        Failure<AutomationRunSnapshot>(
-            AutomationErrorCodes.Unavailable,
-            "Automation cancellation is not available yet.",
-            cancellationToken);
+        CancellationToken cancellationToken = default)
+    {
+        if (!ValidHost(request.Actor) ||
+            request.RunId.Version != 7 ||
+            request.CommandId.Version != 7)
+        {
+            return await Failure<AutomationRunSnapshot>(
+                AutomationErrorCodes.PermissionDenied,
+                "Only a valid Host actor can cancel an Automation Run.",
+                cancellationToken);
+        }
 
-    public Task<AutomationResult<AutomationRunSnapshot>> ResolveAttentionAsync(
-        ResolveAutomationAttentionRequest request,
-        CancellationToken cancellationToken = default) =>
-        Failure<AutomationRunSnapshot>(
-            AutomationErrorCodes.Unavailable,
-            "Automation attention resolution is not available yet.",
+        var requestSha256 = RequestSha256(request);
+        if (await ReadReceiptAsync(request.CommandId, cancellationToken) is { } receipt)
+        {
+            return ReceiptResult(receipt, requestSha256);
+        }
+
+        var result = await store.WriteAsync(
+            (connection, transaction, token) => SettleRunAsync(
+                connection,
+                transaction,
+                request.RunId,
+                request.CommandId,
+                request.Actor,
+                request.ExpectedRevision,
+                expectedAttentionId: null,
+                "cancelRun",
+                "cancelled",
+                errorCode: null,
+                diagnostic: null,
+                requestSha256,
+                token),
             cancellationToken);
+        if (!result.IsSuccess)
+        {
+            return result;
+        }
+
+        await CancelSessionTurnAsync(
+            result.Value!,
+            request.CommandId,
+            CancellationToken.None);
+        await ReleaseWriterLeaseAsync(request.RunId, CancellationToken.None);
+        return result;
+    }
+
+    public async Task<AutomationResult<AutomationRunSnapshot>> ResolveAttentionAsync(
+        ResolveAutomationAttentionRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        if (!ValidHost(request.Actor) ||
+            request.RunId.Version != 7 ||
+            request.AttentionId.Version != 7 ||
+            request.CommandId.Version != 7)
+        {
+            return await Failure<AutomationRunSnapshot>(
+                AutomationErrorCodes.PermissionDenied,
+                "Only a valid Host actor can resolve Automation attention.",
+                cancellationToken);
+        }
+
+        var requestSha256 = RequestSha256(request);
+        if (await ReadReceiptAsync(request.CommandId, cancellationToken) is { } receipt)
+        {
+            return ReceiptResult(receipt, requestSha256);
+        }
+
+        var attention = await ReadAttentionContextAsync(
+            request.RunId,
+            cancellationToken);
+        if (attention is null ||
+            attention.Revision != request.ExpectedRevision ||
+            attention.AttentionId != request.AttentionId)
+        {
+            return await Failure<AutomationRunSnapshot>(
+                AutomationErrorCodes.Conflict,
+                "Automation attention changed.",
+                cancellationToken);
+        }
+
+        if (request.Resolution.Kind == AutomationAttentionResolutionKind.Cancel ||
+            (attention.Kind == AutomationAttentionKind.OutcomeUnknown &&
+             request.Resolution.Kind == AutomationAttentionResolutionKind.Fail))
+        {
+            var status = request.Resolution.Kind ==
+                         AutomationAttentionResolutionKind.Cancel
+                ? "cancelled"
+                : "failed";
+            var result = await store.WriteAsync(
+                (connection, transaction, token) => SettleRunAsync(
+                    connection,
+                    transaction,
+                    request.RunId,
+                    request.CommandId,
+                    request.Actor,
+                    request.ExpectedRevision,
+                    request.AttentionId,
+                    "resolveAttention",
+                    status,
+                    status == "failed" ? AutomationErrorCodes.OutcomeUnknown : null,
+                    status == "failed"
+                        ? "Automation outcome was resolved as failed by the Host."
+                        : null,
+                    requestSha256,
+                    token),
+                cancellationToken);
+            if (result.IsSuccess &&
+                request.Resolution.Kind == AutomationAttentionResolutionKind.Cancel)
+            {
+                await CancelSessionTurnAsync(
+                    result.Value!,
+                    request.CommandId,
+                    CancellationToken.None);
+            }
+
+            if (result.IsSuccess)
+            {
+                await ReleaseWriterLeaseAsync(
+                    request.RunId,
+                    CancellationToken.None);
+            }
+
+            return result;
+        }
+
+        if (!TryCreateInteractionResponse(
+                attention.Kind,
+                request.Resolution,
+                out var response))
+        {
+            return Error<AutomationRunSnapshot>(
+                await CurrentRevisionAsync(cancellationToken),
+                AutomationErrorCodes.InvalidState,
+                "The attention resolution does not match its kind.");
+        }
+
+        if (sessions is null ||
+            attention.ThreadId is null ||
+            attention.TurnId is null)
+        {
+            return Error<AutomationRunSnapshot>(
+                await CurrentRevisionAsync(cancellationToken),
+                AutomationErrorCodes.Unavailable,
+                "The Automation Session is unavailable.",
+                retryable: true);
+        }
+
+        var thread = await sessions.GetThreadAsync(
+            attention.ThreadId.Value,
+            cancellationToken);
+        if (thread.Value is null)
+        {
+            return Error<AutomationRunSnapshot>(
+                await CurrentRevisionAsync(cancellationToken),
+                AutomationErrorCodes.Unavailable,
+                "The Automation Session is unavailable.",
+                retryable: true);
+        }
+
+        var resolved = await sessions.ResolveInteractionAsync(
+            new ResolveInteractionRequest(
+                attention.ThreadId.Value,
+                attention.TurnId.Value,
+                request.AttentionId,
+                response!,
+                request.CommandId,
+                thread.Value.CurrentSequence),
+            cancellationToken);
+        if (resolved.Value is null)
+        {
+            return Error<AutomationRunSnapshot>(
+                await CurrentRevisionAsync(cancellationToken),
+                resolved.Error?.Code == SessionErrorCodes.NotFound
+                    ? AutomationErrorCodes.NotFound
+                    : AutomationErrorCodes.Conflict,
+                $"The Automation Session rejected the attention resolution: " +
+                $"{resolved.Error?.Code ?? "unknown"}.",
+                resolved.Error?.IsRetryable ?? false);
+        }
+
+        return await store.WriteAsync(
+            (connection, transaction, token) => CompleteResolutionAsync(
+                connection,
+                transaction,
+                request,
+                requestSha256,
+                token),
+            CancellationToken.None);
+    }
 
     internal static Guid PreparedTurnId(Guid commandId) =>
         DerivedId(commandId, 0xa5);
@@ -952,6 +1131,412 @@ internal sealed class AutomationService(
             ("$expected", Milliseconds(trigger.ExpectedNextOccurrenceUtc!.Value)));
     }
 
+    private async ValueTask<AutomationResult<AutomationRunSnapshot>> SettleRunAsync(
+        DbConnection connection,
+        DbTransaction transaction,
+        Guid runId,
+        Guid commandId,
+        AutomationActorContext actor,
+        long expectedRevision,
+        Guid? expectedAttentionId,
+        string commandKind,
+        string status,
+        string? errorCode,
+        string? diagnostic,
+        string requestSha256,
+        CancellationToken cancellationToken)
+    {
+        var current = await ReadRunAsync(
+            connection,
+            transaction,
+            runId,
+            cancellationToken);
+        var automationRevision = await ReadAutomationRevisionAsync(
+            connection,
+            transaction,
+            cancellationToken);
+        if (current is null)
+        {
+            return Error<AutomationRunSnapshot>(
+                automationRevision,
+                AutomationErrorCodes.NotFound,
+                "Automation Run was not found.");
+        }
+
+        if (current.Summary.Revision != expectedRevision ||
+            (expectedAttentionId is not null &&
+             (current.Summary.Status != AutomationRunStatus.NeedsAttention ||
+              current.AttentionId != expectedAttentionId)))
+        {
+            return Error<AutomationRunSnapshot>(
+                automationRevision,
+                AutomationErrorCodes.Conflict,
+                "Automation Run changed.");
+        }
+
+        if (current.Summary.Status is
+            AutomationRunStatus.Completed or
+            AutomationRunStatus.Failed or
+            AutomationRunStatus.Cancelled or
+            AutomationRunStatus.TimedOut)
+        {
+            return Error<AutomationRunSnapshot>(
+                automationRevision,
+                AutomationErrorCodes.InvalidState,
+                "Automation Run is already terminal.");
+        }
+
+        var now = timeProvider.GetUtcNow();
+        await using (var update = connection.CreateCommand())
+        {
+            update.Transaction = transaction;
+            update.CommandText =
+                """
+                UPDATE automation_runs
+                SET status = $status,
+                    attention_kind = NULL,
+                    attention_deadline_utc = NULL,
+                    error_code = $errorCode,
+                    diagnostic = $diagnostic,
+                    completed_utc = $now,
+                    revision = revision + 1,
+                    updated_utc = $now
+                WHERE automation_run_id = $runId
+                  AND revision = $expectedRevision
+                  AND status IN ('pending', 'running', 'needsAttention');
+                """;
+            Add(update, "$status", status);
+            Add(update, "$errorCode", errorCode);
+            Add(update, "$diagnostic", diagnostic);
+            Add(update, "$now", Milliseconds(now));
+            Add(update, "$runId", runId.ToString("D"));
+            Add(update, "$expectedRevision", expectedRevision);
+            if (await update.ExecuteNonQueryAsync(cancellationToken) != 1)
+            {
+                return Error<AutomationRunSnapshot>(
+                    automationRevision,
+                    AutomationErrorCodes.Conflict,
+                    "Automation Run changed.");
+            }
+        }
+
+        await IncrementAutomationRevisionAsync(
+            connection,
+            transaction,
+            now,
+            cancellationToken);
+        automationRevision++;
+        var snapshot = await ReadRunAsync(
+            connection,
+            transaction,
+            runId,
+            cancellationToken) ?? throw new InvalidDataException(
+            "Automation Run disappeared after settlement.");
+        await InsertReceiptAsync(
+            connection,
+            transaction,
+            commandId,
+            actor,
+            commandKind,
+            runId,
+            requestSha256,
+            snapshot,
+            automationRevision,
+            now,
+            cancellationToken);
+        return new AutomationResult<AutomationRunSnapshot>(
+            snapshot,
+            automationRevision,
+            null);
+    }
+
+    private async ValueTask<AutomationResult<AutomationRunSnapshot>>
+        CompleteResolutionAsync(
+            DbConnection connection,
+            DbTransaction transaction,
+            ResolveAutomationAttentionRequest request,
+            string requestSha256,
+            CancellationToken cancellationToken)
+    {
+        var current = await ReadRunAsync(
+            connection,
+            transaction,
+            request.RunId,
+            cancellationToken);
+        var automationRevision = await ReadAutomationRevisionAsync(
+            connection,
+            transaction,
+            cancellationToken);
+        if (current is null)
+        {
+            return Error<AutomationRunSnapshot>(
+                automationRevision,
+                AutomationErrorCodes.NotFound,
+                "Automation Run was not found.");
+        }
+
+        var now = timeProvider.GetUtcNow();
+        if (current.Summary.Status == AutomationRunStatus.NeedsAttention &&
+            current.Summary.Revision == request.ExpectedRevision)
+        {
+            await ExecuteAsync(
+                connection,
+                transaction,
+                """
+                UPDATE automation_runs
+                SET status = 'running',
+                    attention_kind = NULL,
+                    attention_deadline_utc = NULL,
+                    revision = revision + 1,
+                    updated_utc = $now
+                WHERE automation_run_id = $runId
+                  AND status = 'needsAttention'
+                  AND revision = $expectedRevision;
+                """,
+                cancellationToken,
+                ("$now", Milliseconds(now)),
+                ("$runId", request.RunId.ToString("D")),
+                ("$expectedRevision", request.ExpectedRevision));
+            await IncrementAutomationRevisionAsync(
+                connection,
+                transaction,
+                now,
+                cancellationToken);
+            automationRevision++;
+            current = await ReadRunAsync(
+                connection,
+                transaction,
+                request.RunId,
+                cancellationToken);
+        }
+        else if (current.Summary.Status == AutomationRunStatus.NeedsAttention)
+        {
+            return Error<AutomationRunSnapshot>(
+                automationRevision,
+                AutomationErrorCodes.Conflict,
+                "Automation Run changed.");
+        }
+
+        await InsertReceiptAsync(
+            connection,
+            transaction,
+            request.CommandId,
+            request.Actor,
+            "resolveAttention",
+            request.RunId,
+            requestSha256,
+            current!,
+            automationRevision,
+            now,
+            cancellationToken);
+        return new AutomationResult<AutomationRunSnapshot>(
+            current,
+            automationRevision,
+            null);
+    }
+
+    private Task<AttentionContext?> ReadAttentionContextAsync(
+        Guid runId,
+        CancellationToken cancellationToken) =>
+        store.ReadAsync(
+            async (connection, token) =>
+            {
+                await using var command = connection.CreateCommand();
+                command.CommandText =
+                    """
+                    SELECT r.revision, r.attention_kind, r.thread_id,
+                           t.active_turn_id, p.interaction_id, p.turn_id
+                    FROM automation_runs r
+                    LEFT JOIN threads t ON t.thread_id = r.thread_id
+                    LEFT JOIN pending_interactions p
+                      ON p.thread_id = r.thread_id AND p.status = 'pending'
+                    WHERE r.automation_run_id = $runId
+                      AND r.status = 'needsAttention'
+                    ORDER BY p.created_utc DESC, p.interaction_id DESC
+                    LIMIT 1;
+                    """;
+                Add(command, "$runId", runId.ToString("D"));
+                await using var reader = await command.ExecuteReaderAsync(token);
+                if (!await reader.ReadAsync(token))
+                {
+                    return null;
+                }
+
+                var kind = AttentionKind(reader.GetString(1));
+                var interactionId = GuidOrNull(reader, 4);
+                return new AttentionContext(
+                    reader.GetInt64(0),
+                    kind,
+                    kind == AutomationAttentionKind.OutcomeUnknown
+                        ? DerivedId(runId, 0xa8)
+                        : interactionId ?? Guid.Empty,
+                    GuidOrNull(reader, 2),
+                    GuidOrNull(reader, 5) ?? GuidOrNull(reader, 3));
+            },
+            cancellationToken).AsTask();
+
+    private async Task CancelSessionTurnAsync(
+        AutomationRunSnapshot run,
+        Guid commandId,
+        CancellationToken cancellationToken)
+    {
+        if (sessions is null || run.ThreadId is null)
+        {
+            return;
+        }
+
+        var thread = await sessions.GetThreadAsync(run.ThreadId.Value, cancellationToken);
+        if (thread.Value?.ActiveTurnId is not { } turnId)
+        {
+            return;
+        }
+
+        _ = await sessions.CancelTurnAsync(
+            new CancelTurnRequest(
+                run.ThreadId.Value,
+                turnId,
+                DerivedId(commandId, 0xc1),
+                thread.Value.CurrentSequence),
+            cancellationToken);
+    }
+
+    private async Task ReleaseWriterLeaseAsync(
+        Guid runId,
+        CancellationToken cancellationToken)
+    {
+        if (writerLeases is null)
+        {
+            return;
+        }
+
+        var leaseId = await store.ReadAsync<Guid?>(
+            async (connection, token) =>
+            {
+                await using var command = connection.CreateCommand();
+                command.CommandText =
+                    """
+                    SELECT project_writer_lease_id
+                    FROM automation_runs
+                    WHERE automation_run_id = $runId;
+                    """;
+                Add(command, "$runId", runId.ToString("D"));
+                var value = await command.ExecuteScalarAsync(token);
+                return value is null or DBNull ? null : Guid.Parse((string)value);
+            },
+            cancellationToken);
+        if (leaseId is null)
+        {
+            return;
+        }
+
+        _ = await writerLeases.ReleaseAsync(
+            new ProjectWriterLeaseOwner(
+                ProjectWriterLeaseOwnerKind.AutomationRun,
+                runId),
+            leaseId.Value,
+            cancellationToken);
+        await store.WriteAsync(
+            async (connection, transaction, token) =>
+            {
+                await ExecuteAsync(
+                    connection,
+                    transaction,
+                    """
+                    UPDATE automation_runs
+                    SET project_writer_lease_id = NULL,
+                        project_writer_lease_expires_utc = NULL
+                    WHERE automation_run_id = $runId
+                      AND project_writer_lease_id = $leaseId;
+                    """,
+                    token,
+                    ("$runId", runId.ToString("D")),
+                    ("$leaseId", leaseId.Value.ToString("D")));
+                return 0;
+            },
+            cancellationToken);
+    }
+
+    private static bool TryCreateInteractionResponse(
+        AutomationAttentionKind kind,
+        AutomationAttentionResolution resolution,
+        out SessionItemContent? response)
+    {
+        response = (kind, resolution.Kind) switch
+        {
+            (AutomationAttentionKind.ApprovalRequired,
+                AutomationAttentionResolutionKind.Approve) =>
+                new ApprovalResponseContent(true, resolution.Text),
+            (AutomationAttentionKind.ApprovalRequired,
+                AutomationAttentionResolutionKind.Reject) =>
+                new ApprovalResponseContent(false, resolution.Text),
+            (AutomationAttentionKind.UserInputRequired,
+                AutomationAttentionResolutionKind.ProvideInput)
+                when !string.IsNullOrWhiteSpace(resolution.Text) =>
+                new UserInputResponseContent(resolution.Text),
+            _ => null,
+        };
+        return response is not null;
+    }
+
+    private async Task<long> CurrentRevisionAsync(
+        CancellationToken cancellationToken) =>
+        await store.ReadAsync(
+            (connection, token) => ReadAutomationRevisionAsync(
+                connection,
+                transaction: null,
+                token),
+            cancellationToken);
+
+    private static async ValueTask IncrementAutomationRevisionAsync(
+        DbConnection connection,
+        DbTransaction transaction,
+        DateTimeOffset now,
+        CancellationToken cancellationToken) =>
+        await ExecuteAsync(
+            connection,
+            transaction,
+            """
+            UPDATE automation_state
+            SET automation_revision = automation_revision + 1,
+                updated_utc = $now
+            WHERE id = 1;
+            """,
+            cancellationToken,
+            ("$now", Milliseconds(now)));
+
+    private static ValueTask InsertReceiptAsync(
+        DbConnection connection,
+        DbTransaction transaction,
+        Guid commandId,
+        AutomationActorContext actor,
+        string commandKind,
+        Guid runId,
+        string requestSha256,
+        AutomationRunSnapshot snapshot,
+        long revision,
+        DateTimeOffset now,
+        CancellationToken cancellationToken) =>
+        ExecuteAsync(
+            connection,
+            transaction,
+            """
+            INSERT INTO automation_command_receipts (
+                command_id, actor_kind, actor_id, command_kind, target_id,
+                request_sha256, result_json, revision, created_utc)
+            VALUES (
+                $commandId, 'host', $actorId, $commandKind, $targetId,
+                $requestSha, $result, $revision, $now);
+            """,
+            cancellationToken,
+            ("$commandId", commandId.ToString("D")),
+            ("$actorId", actor.PrincipalId),
+            ("$commandKind", commandKind),
+            ("$targetId", runId.ToString("D")),
+            ("$requestSha", requestSha256),
+            ("$result", JsonSerializer.Serialize(snapshot, JsonOptions)),
+            ("$revision", revision),
+            ("$now", Milliseconds(now)));
+
     private Task<Receipt?> ReadReceiptAsync(
         Guid commandId,
         CancellationToken cancellationToken) =>
@@ -1018,7 +1603,15 @@ internal sealed class AutomationService(
                    attention_kind, created_utc, started_utc, completed_utc, revision,
                    safe_summary, error_code, diagnostic, thread_id, worktree_id,
                    run_deadline_utc, attention_deadline_utc, provider_id, model_id,
-                   permission_snapshot_json, capability_snapshot_json
+                   permission_snapshot_json, capability_snapshot_json,
+                   (
+                       SELECT interaction_id
+                       FROM pending_interactions
+                       WHERE thread_id = automation_runs.thread_id
+                         AND status = 'pending'
+                       ORDER BY created_utc DESC, interaction_id DESC
+                       LIMIT 1
+                   )
             FROM automation_runs
             WHERE automation_run_id = $runId;
             """;
@@ -1043,6 +1636,11 @@ internal sealed class AutomationService(
                            ?? throw new InvalidDataException(
                                "Automation capability snapshot is invalid.");
         var errorCode = reader.IsDBNull(10) ? null : reader.GetString(10);
+        Guid? attentionId = summary.AttentionKind == AutomationAttentionKind.OutcomeUnknown
+            ? DerivedId(summary.RunId, 0xa8)
+            : reader.IsDBNull(20)
+                ? null
+                : Guid.Parse(reader.GetString(20));
         return new AutomationRunSnapshot(
             summary,
             reader.IsDBNull(9) ? null : reader.GetString(9),
@@ -1066,7 +1664,8 @@ internal sealed class AutomationService(
             reader.GetString(16),
             reader.GetString(17),
             permissions,
-            capabilities);
+            capabilities,
+            attentionId);
     }
 
     private static AutomationRunSummary ReadRunSummary(DbDataReader reader) =>
@@ -1261,10 +1860,26 @@ internal sealed class AutomationService(
             $"{request.AutomationId}\n{request.ExpectedRevision}\n{inputSha}");
     }
 
+    private static string RequestSha256(CancelAutomationRunRequest request) =>
+        Hash(
+            $"{request.Actor.Kind}\n{request.Actor.PrincipalId}\n" +
+            $"{request.RunId:D}\n{request.ExpectedRevision}\ncancel");
+
+    private static string RequestSha256(
+        ResolveAutomationAttentionRequest request) =>
+        Hash(
+            $"{request.Actor.Kind}\n{request.Actor.PrincipalId}\n" +
+            $"{request.RunId:D}\n{request.AttentionId:D}\n" +
+            $"{request.Resolution.Kind}\n{Hash(request.Resolution.Text ?? string.Empty)}\n" +
+            $"{request.ExpectedRevision}");
+
     private static bool ValidActor(AutomationActorContext? actor) =>
         actor is not null &&
         Enum.IsDefined(actor.Kind) &&
         !string.IsNullOrWhiteSpace(actor.PrincipalId);
+
+    private static bool ValidHost(AutomationActorContext? actor) =>
+        ValidActor(actor) && actor!.Kind == AutomationActorKind.Host;
 
     private static async ValueTask<long> ReadAutomationRevisionAsync(
         DbConnection connection,
@@ -1450,6 +2065,13 @@ internal sealed class AutomationService(
         DateTimeOffset? ScheduledForUtc,
         DateTimeOffset? ExpectedNextOccurrenceUtc,
         DateTimeOffset? NextOccurrenceUtc);
+
+    private sealed record AttentionContext(
+        long Revision,
+        AutomationAttentionKind Kind,
+        Guid AttentionId,
+        Guid? ThreadId,
+        Guid? TurnId);
 
     private sealed record DefinitionProjection(
         string AutomationId,

@@ -168,6 +168,104 @@ public sealed class AutomationDispatchTests
     }
 
     [Fact]
+    public async Task AutomationRetentionTests_clean_worktree_cleanup_replays_after_archive_crash()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        var run = await fixture.SeedRunAsync(
+            AutomationWorkspaceMode.Worktree,
+            workspaceWrite: true,
+            allowDirtyOrigin: true);
+        var worktrees = new RecordingWorktrees(
+            fixture.Descriptor.WorktreesRoot,
+            new string('c', 40),
+            isDirty: false);
+        var clock = new DispatchTimeProvider(DateTimeOffset.UtcNow);
+        var dispatcher = fixture.CreateDispatcher(worktrees, clock);
+        for (var step = 0; step < 3; step++)
+        {
+            Assert.True(await dispatcher.DispatchNextAsync(
+                run.RunId,
+                "retention",
+                TestContext.Current.CancellationToken));
+        }
+
+        await fixture.SeedRetentionIntentAsync(run.RunId);
+        var crashed = fixture.CreateDispatcher(
+            worktrees,
+            clock,
+            point =>
+            {
+                if (point == AutomationDispatchFaultPoint.AfterThreadArchived)
+                {
+                    throw new InjectedCrash();
+                }
+            });
+        await Assert.ThrowsAsync<InjectedCrash>(() => crashed.DispatchNextAsync(
+            run.RunId,
+            "retention-crash",
+            TestContext.Current.CancellationToken));
+
+        clock.Advance(TimeSpan.FromMinutes(3));
+        Assert.True(await dispatcher.DispatchNextAsync(
+            run.RunId,
+            "retention-replay",
+            TestContext.Current.CancellationToken));
+        Assert.True(await dispatcher.DispatchNextAsync(
+            run.RunId,
+            "retention-replay",
+            TestContext.Current.CancellationToken));
+
+        var state = await fixture.ReadRunAsync(run.RunId);
+        var thread = await fixture.Sessions.GetThreadAsync(
+            state.ThreadId!.Value,
+            TestContext.Current.CancellationToken);
+        Assert.Equal(ThreadStatus.Archived, thread.Value!.Status);
+        Assert.Null(state.WorktreeId);
+        Assert.Equal(1, worktrees.RemoveCount);
+    }
+
+    [Fact]
+    public async Task AutomationRetentionTests_dirty_worktree_is_preserved()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        var run = await fixture.SeedRunAsync(
+            AutomationWorkspaceMode.Worktree,
+            workspaceWrite: true,
+            allowDirtyOrigin: true);
+        var worktrees = new RecordingWorktrees(
+            fixture.Descriptor.WorktreesRoot,
+            new string('d', 40),
+            isDirty: false,
+            retainOnRemove: true);
+        var dispatcher = fixture.CreateDispatcher(worktrees);
+        for (var step = 0; step < 3; step++)
+        {
+            Assert.True(await dispatcher.DispatchNextAsync(
+                run.RunId,
+                "retention-dirty",
+                TestContext.Current.CancellationToken));
+        }
+
+        await fixture.SeedRetentionIntentAsync(run.RunId);
+        Assert.True(await dispatcher.DispatchNextAsync(
+            run.RunId,
+            "retention-dirty",
+            TestContext.Current.CancellationToken));
+        Assert.True(await dispatcher.DispatchNextAsync(
+            run.RunId,
+            "retention-dirty",
+            TestContext.Current.CancellationToken));
+
+        var state = await fixture.ReadRunAsync(run.RunId);
+        Assert.NotNull(state.WorktreeId);
+        Assert.Equal(
+            CoWorkWorktreeStatus.RetainedDirty,
+            (await worktrees.GetAsync(
+                state.WorktreeId.Value,
+                TestContext.Current.CancellationToken))!.Status);
+    }
+
+    [Fact]
     public async Task Dirty_origin_fails_closed_before_worktree_creation()
     {
         await using var fixture = await Fixture.CreateAsync();
@@ -637,6 +735,57 @@ public sealed class AutomationDispatchTests
                 "SELECT count(*) FROM turns WHERE thread_id = $id;",
                 threadId);
 
+        public async Task SeedRetentionIntentAsync(Guid runId)
+        {
+            var run = await ReadRunAsync(runId);
+            for (var attempt = 0; attempt < 100; attempt++)
+            {
+                var thread = await Sessions.GetThreadAsync(
+                    run.ThreadId!.Value,
+                    TestContext.Current.CancellationToken);
+                if (thread.Value!.ActiveTurnId is null)
+                {
+                    break;
+                }
+
+                await Task.Delay(10, TestContext.Current.CancellationToken);
+            }
+
+            await Workspace.Store.WriteAsync(
+                async (connection, transaction, cancellationToken) =>
+                {
+                    var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                    await ExecuteAsync(
+                        connection,
+                        transaction,
+                        """
+                        UPDATE automation_runs
+                        SET status = 'completed',
+                            completed_utc = $now,
+                            updated_utc = $now,
+                            revision = revision + 1
+                        WHERE automation_run_id = $runId;
+                        INSERT INTO automation_dispatch_intents (
+                            intent_id, idempotency_key, dispatch_kind,
+                            entity_kind, entity_id, status, attempt_count,
+                            lease_owner, lease_expires_utc, error_code, diagnostic,
+                            created_utc, updated_utc)
+                        VALUES (
+                            $intentId, $key, 'archiveThread',
+                            'automationRun', $runId, 'pending', 0,
+                            NULL, NULL, NULL, NULL,
+                            $now, $now);
+                        """,
+                        cancellationToken,
+                        ("$runId", runId.ToString("D")),
+                        ("$intentId", Guid.CreateVersion7().ToString("D")),
+                        ("$key", $"automation-run:{runId:D}:archiveThread"),
+                        ("$now", now));
+                    return 0;
+                },
+                TestContext.Current.CancellationToken);
+        }
+
         public async ValueTask DisposeAsync() => await Workspace.DisposeAsync();
 
         private Task<long> ScalarAsync(string sql, Guid id) =>
@@ -681,11 +830,14 @@ public sealed class AutomationDispatchTests
         string worktreesRoot,
         string baseCommitSha,
         bool isDirty,
-        bool escapeRoot = false) : IManagedWorktreeService
+        bool escapeRoot = false,
+        bool retainOnRemove = false) : IManagedWorktreeService
     {
         private readonly Dictionary<Guid, ManagedWorktreeDescriptor> _items = [];
 
         public List<ManagedWorktreeCreateRequest> Requests { get; } = [];
+
+        public int RemoveCount { get; private set; }
 
         public ValueTask<ManagedWorktreeOriginSnapshot> InspectOriginAsync(
             CancellationToken cancellationToken = default) =>
@@ -737,11 +889,19 @@ public sealed class AutomationDispatchTests
 
         public ValueTask<ManagedWorktreeDescriptor> RemoveAsync(
             Guid worktreeId,
-            CancellationToken cancellationToken = default) =>
-            ValueTask.FromResult(_items[worktreeId] with
+            CancellationToken cancellationToken = default)
+        {
+            RemoveCount++;
+            var result = _items[worktreeId] with
             {
-                Status = CoWorkWorktreeStatus.Removed,
-            });
+                Status = retainOnRemove
+                    ? CoWorkWorktreeStatus.RetainedDirty
+                    : CoWorkWorktreeStatus.Removed,
+                IsDirty = retainOnRemove,
+            };
+            _items[worktreeId] = result;
+            return ValueTask.FromResult(result);
+        }
     }
 
     private sealed class DispatchTimeProvider(DateTimeOffset now) : TimeProvider

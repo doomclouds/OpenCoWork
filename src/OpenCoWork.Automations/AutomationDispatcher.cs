@@ -15,6 +15,10 @@ public enum AutomationDispatchFaultPoint
     AfterThreadCreated,
     BeforeTurnSubmitted,
     AfterTurnSubmitted,
+    BeforeThreadArchived,
+    AfterThreadArchived,
+    BeforeWorktreeRemoved,
+    AfterWorktreeRemoved,
 }
 
 public sealed class AutomationDispatcher(
@@ -62,6 +66,12 @@ public sealed class AutomationDispatcher(
                     break;
                 case "submitTurn":
                     await SubmitTurnAsync(intent, cancellationToken);
+                    break;
+                case "archiveThread":
+                    await ArchiveThreadAsync(intent, cancellationToken);
+                    break;
+                case "cleanupWorktree":
+                    await CleanupWorktreeAsync(intent, cancellationToken);
                     break;
                 default:
                     await FailAsync(
@@ -311,6 +321,129 @@ public sealed class AutomationDispatcher(
             CancellationToken.None);
     }
 
+    private async Task ArchiveThreadAsync(
+        ClaimedIntent intent,
+        CancellationToken cancellationToken)
+    {
+        await RenewClaimAsync(intent, cancellationToken);
+        var run = await ReadRetentionRunAsync(intent.RunId, cancellationToken);
+        if (run.ThreadId is { } threadId)
+        {
+            var thread = await sessions.GetThreadAsync(threadId, cancellationToken);
+            if (thread.Value is null)
+            {
+                throw SessionFailure(thread.Error);
+            }
+
+            if (thread.Value.Status != ThreadStatus.Archived)
+            {
+                faultInjector?.Invoke(
+                    AutomationDispatchFaultPoint.BeforeThreadArchived);
+                var archived = await sessions.ArchiveThreadAsync(
+                    new ThreadMutationRequest(
+                        threadId,
+                        intent.IntentId,
+                        thread.Value.CurrentSequence),
+                    cancellationToken);
+                if (archived.Value is null)
+                {
+                    throw SessionFailure(archived.Error);
+                }
+
+                faultInjector?.Invoke(
+                    AutomationDispatchFaultPoint.AfterThreadArchived);
+            }
+        }
+
+        await CompleteAsync(
+            intent,
+            nextKind: "cleanupWorktree",
+            runUpdateSql: string.Empty,
+            [],
+            cancellationToken);
+    }
+
+    private async Task CleanupWorktreeAsync(
+        ClaimedIntent intent,
+        CancellationToken cancellationToken)
+    {
+        await RenewClaimAsync(intent, cancellationToken);
+        var run = await ReadRetentionRunAsync(intent.RunId, cancellationToken);
+        if (run.WorktreeId is not { } worktreeId)
+        {
+            await CompleteFinalAsync(intent, clearWorktree: false, cancellationToken);
+            return;
+        }
+
+        var worktree = await worktrees.GetAsync(worktreeId, cancellationToken);
+        if (worktree is null)
+        {
+            var expectedRoot = Path.Combine(
+                workspace.WorktreesRoot,
+                intent.RunId.ToString("D"));
+            if (!Directory.Exists(expectedRoot))
+            {
+                await CompleteFinalAsync(
+                    intent,
+                    clearWorktree: true,
+                    cancellationToken);
+                return;
+            }
+
+            if (run.BaseCommitSha is null)
+            {
+                await CompleteFinalAsync(
+                    intent,
+                    clearWorktree: false,
+                    cancellationToken);
+                return;
+            }
+
+            try
+            {
+                worktree = await worktrees.CreateAsync(
+                    new ManagedWorktreeCreateRequest(
+                        intent.RunId,
+                        run.BaseCommitSha,
+                        AllowDirtyOrigin: true),
+                    cancellationToken);
+            }
+            catch (InvalidOperationException)
+            {
+                await CompleteFinalAsync(
+                    intent,
+                    clearWorktree: false,
+                    cancellationToken);
+                return;
+            }
+        }
+
+        if (worktree.Status == CoWorkWorktreeStatus.Removed)
+        {
+            await CompleteFinalAsync(intent, clearWorktree: true, cancellationToken);
+            return;
+        }
+
+        ManagedWorktreeDescriptor result;
+        try
+        {
+            faultInjector?.Invoke(
+                AutomationDispatchFaultPoint.BeforeWorktreeRemoved);
+            result = await worktrees.RemoveAsync(worktreeId, cancellationToken);
+            faultInjector?.Invoke(
+                AutomationDispatchFaultPoint.AfterWorktreeRemoved);
+        }
+        catch (InvalidOperationException exception)
+        {
+            throw Retryable(AutomationErrorCodes.Unavailable, exception.Message);
+        }
+
+        await CompleteFinalAsync(
+            intent,
+            clearWorktree: result.Status == CoWorkWorktreeStatus.Removed,
+            cancellationToken);
+    }
+
     private async Task<ClaimedIntent?> ClaimAsync(
         Guid runId,
         string leaseOwner,
@@ -492,6 +625,36 @@ public sealed class AutomationDispatcher(
         return run ?? throw Terminal(
             AutomationErrorCodes.InvalidState,
             "Automation Run is not dispatchable.");
+    }
+
+    private async Task<RetentionRun> ReadRetentionRunAsync(
+        Guid runId,
+        CancellationToken cancellationToken)
+    {
+        var run = await store.ReadAsync(
+            async (connection, token) =>
+            {
+                await using var command = connection.CreateCommand();
+                command.CommandText =
+                    """
+                    SELECT thread_id, worktree_id, base_commit_sha
+                    FROM automation_runs
+                    WHERE automation_run_id = $runId
+                      AND status IN ('completed', 'failed', 'cancelled', 'timedOut');
+                    """;
+                Add(command, "$runId", runId.ToString("D"));
+                await using var reader = await command.ExecuteReaderAsync(token);
+                return await reader.ReadAsync(token)
+                    ? new RetentionRun(
+                        reader.IsDBNull(0) ? null : Guid.Parse(reader.GetString(0)),
+                        reader.IsDBNull(1) ? null : Guid.Parse(reader.GetString(1)),
+                        reader.IsDBNull(2) ? null : reader.GetString(2))
+                    : null;
+            },
+            cancellationToken);
+        return run ?? throw Terminal(
+            AutomationErrorCodes.InvalidState,
+            "Automation Run is not ready for retention.");
     }
 
     private async Task<ProjectWriterLease?> EnsureWriterLeaseAsync(
@@ -748,12 +911,77 @@ public sealed class AutomationDispatcher(
                             ("$now", Milliseconds(now)),
                             ("$nextIntentId", DerivedId(
                                 intent.RunId,
-                                nextKind == "createThread" ? (byte)0x31 : (byte)0x32)
+                                nextKind switch
+                                {
+                                    "createThread" => (byte)0x31,
+                                    "submitTurn" => (byte)0x32,
+                                    "cleanupWorktree" => (byte)0x34,
+                                    _ => throw new InvalidOperationException(
+                                        "Automation dispatch chain is invalid."),
+                                })
                                 .ToString("D")),
                             ("$nextKey", $"automation-run:{intent.RunId:D}:{nextKind}"),
                             ("$nextKind", nextKind),
                         ])
                         .ToArray());
+                return 0;
+            },
+            cancellationToken).AsTask();
+
+    private Task CompleteFinalAsync(
+        ClaimedIntent intent,
+        bool clearWorktree,
+        CancellationToken cancellationToken) =>
+        store.WriteAsync(
+            async (connection, transaction, token) =>
+            {
+                var now = timeProvider.GetUtcNow();
+                await using (var complete = connection.CreateCommand())
+                {
+                    complete.Transaction = transaction;
+                    complete.CommandText =
+                        """
+                        UPDATE automation_dispatch_intents
+                        SET status = 'completed',
+                            lease_owner = NULL,
+                            lease_expires_utc = NULL,
+                            error_code = NULL,
+                            updated_utc = $now
+                        WHERE intent_id = $intentId
+                          AND status = 'leased'
+                          AND lease_owner = $owner;
+                        """;
+                    Add(complete, "$intentId", intent.IntentId.ToString("D"));
+                    Add(complete, "$owner", intent.LeaseOwner);
+                    Add(complete, "$now", Milliseconds(now));
+                    if (await complete.ExecuteNonQueryAsync(token) != 1)
+                    {
+                        throw new InvalidOperationException(
+                            "Automation dispatch lease was lost.");
+                    }
+                }
+
+                if (clearWorktree)
+                {
+                    await ExecuteAsync(
+                        connection,
+                        transaction,
+                        """
+                        UPDATE automation_runs
+                        SET worktree_id = NULL,
+                            revision = revision + 1,
+                            updated_utc = $now
+                        WHERE automation_run_id = $runId;
+                        UPDATE automation_state
+                        SET automation_revision = automation_revision + 1,
+                            updated_utc = $now
+                        WHERE id = 1;
+                        """,
+                        token,
+                        ("$runId", intent.RunId.ToString("D")),
+                        ("$now", Milliseconds(now)));
+                }
+
                 return 0;
             },
             cancellationToken).AsTask();
@@ -874,7 +1102,8 @@ public sealed class AutomationDispatcher(
                                revision = revision + 1,
                                updated_utc = $now,
                                completed_utc = $now
-                           WHERE automation_run_id = $runId;
+                           WHERE automation_run_id = $runId
+                             AND status IN ('pending', 'running', 'needsAttention');
                            UPDATE automation_state
                            SET automation_revision = automation_revision + 1,
                                updated_utc = $now
@@ -975,6 +1204,11 @@ public sealed class AutomationDispatcher(
         string Kind,
         int AttemptCount,
         string LeaseOwner);
+
+    private sealed record RetentionRun(
+        Guid? ThreadId,
+        Guid? WorktreeId,
+        string? BaseCommitSha);
 
     private sealed record RunRow(
         Guid RunId,

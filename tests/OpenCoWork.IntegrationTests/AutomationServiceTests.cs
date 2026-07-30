@@ -1,7 +1,9 @@
 using System.Text.Json;
 using OpenCoWork.Abstractions;
 using OpenCoWork.Automations;
+using OpenCoWork.Core.Configuration;
 using OpenCoWork.Core.Sessions;
+using OpenCoWork.Core.State;
 using OpenCoWork.Core.Tools;
 using OpenCoWork.Core.Workspaces;
 using Xunit;
@@ -367,13 +369,19 @@ public sealed class AutomationServiceTests
             MutableRuntimeSnapshotProvider runtime,
             AutomationsConfig config,
             PreparedAutomationTurnStore prepared,
-            AutomationService service)
+            AutomationService service,
+            SessionService sessions,
+            ProjectWriterLeaseService writerLeases,
+            WorkspaceRuntimeDescriptor descriptor)
         {
             Workspace = workspace;
             Runtime = runtime;
             Config = config;
             Prepared = prepared;
             Service = service;
+            Sessions = sessions;
+            WriterLeases = writerLeases;
+            Descriptor = descriptor;
         }
 
         public AutomationSourceTestWorkspace Workspace { get; }
@@ -386,10 +394,17 @@ public sealed class AutomationServiceTests
 
         public AutomationService Service { get; }
 
+        public SessionService Sessions { get; }
+
+        public ProjectWriterLeaseService WriterLeases { get; }
+
+        public WorkspaceRuntimeDescriptor Descriptor { get; }
+
         public static async Task<Fixture> CreateAsync(
             string? secret = null,
             bool enabled = true,
-            int maxConcurrentRuns = AutomationRuntimeLimits.DefaultMaxConcurrentRuns)
+            int maxConcurrentRuns = AutomationRuntimeLimits.DefaultMaxConcurrentRuns,
+            ISessionExecutor? executor = null)
         {
             var workspace = await AutomationSourceTestWorkspace.CreateAsync();
             ISensitiveDataService sensitive = secret is null
@@ -402,7 +417,26 @@ public sealed class AutomationServiceTests
                 MaxConcurrentRuns = maxConcurrentRuns,
             };
             var paths = new OpenCoWorkPaths(workspace.Root);
+            var descriptor = new WorkspaceRuntimeDescriptor(
+                paths.WorkspaceRoot,
+                paths.OpenCoWorkDirectory,
+                paths.RuntimeDirectory,
+                paths.TeamsRuntimeDirectory,
+                paths.MissionsDirectory,
+                paths.SubAgentsDirectory,
+                paths.WorktreesDirectory);
             var prepared = new PreparedAutomationTurnStore(paths, sensitive);
+            var sessions = new SessionService(
+                workspace.Store,
+                new ThreadJournal(paths),
+                new SessionProjection(workspace.Store),
+                new SessionConfig(),
+                executor: executor,
+                executorKind: executor?.GetType().FullName,
+                paths: paths);
+            var writerLeases = new ProjectWriterLeaseService(
+                workspace.Store,
+                TimeProvider.System);
             var renderer = new AutomationTemplateRenderer(
                 new JsonSchemaValidationService(),
                 sensitive,
@@ -422,7 +456,12 @@ public sealed class AutomationServiceTests
                     prepared,
                     runtime,
                     config,
-                    TimeProvider.System));
+                    TimeProvider.System,
+                    sessions: sessions,
+                    writerLeases: writerLeases),
+                sessions,
+                writerLeases,
+                descriptor);
         }
 
         public Guid PreparedId(Guid commandId) =>
@@ -432,11 +471,22 @@ public sealed class AutomationServiceTests
             string id,
             bool enabled,
             bool scheduled,
-            string? displayName = null) =>
+            string? displayName = null,
+            AutomationWorkspaceMode workspaceMode = AutomationWorkspaceMode.Worktree) =>
             File.WriteAllTextAsync(
                 Workspace.DefinitionPath(id),
-                Definition(id, enabled, scheduled, displayName),
+                Definition(id, enabled, scheduled, displayName, workspaceMode),
                 TestContext.Current.CancellationToken);
+
+        public AutomationDispatcher CreateDispatcher() =>
+            new(
+                Workspace.Store,
+                Prepared,
+                Sessions,
+                new ManagedWorktreeService(new OpenCoWorkPaths(Workspace.Root)),
+                WriterLeases,
+                Descriptor,
+                TimeProvider.System);
 
         public Task ScanAsync() =>
             Workspace.Source.ScanAsync(TestContext.Current.CancellationToken).AsTask();
@@ -500,14 +550,18 @@ public sealed class AutomationServiceTests
                 },
                 TestContext.Current.CancellationToken).AsTask();
 
-        public async ValueTask DisposeAsync() =>
+        public async ValueTask DisposeAsync()
+        {
+            await Sessions.StopRuntimeAsync(CancellationToken.None);
             await Workspace.DisposeAsync();
+        }
 
         private static string Definition(
             string id,
             bool enabled,
             bool scheduled,
-            string? displayName) =>
+            string? displayName,
+            AutomationWorkspaceMode workspaceMode) =>
             $$"""
             schemaVersion: 1
             id: {{id}}
@@ -519,7 +573,7 @@ public sealed class AutomationServiceTests
               timeZone: UTC
             """ : string.Empty)}}
             workspace:
-              mode: worktree
+              mode: {{(workspaceMode == AutomationWorkspaceMode.Project ? "project" : "worktree")}}
               allowDirtyOrigin: false
             prompt: {{"Run {{ run.id }} do {{ inputs.task }}"}}
             inputSchema:

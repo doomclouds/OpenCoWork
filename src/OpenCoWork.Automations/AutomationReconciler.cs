@@ -19,6 +19,7 @@ internal sealed class AutomationReconciler : IAsyncDisposable
     private readonly AutomationSourceRuntime? _source;
     private readonly AutomationControlPlane? _controlPlane;
     private readonly IModuleHealthReporter? _health;
+    private readonly ISessionService? _sessions;
     private readonly Channel<bool> _wake = Channel.CreateBounded<bool>(
         new BoundedChannelOptions(1)
         {
@@ -40,6 +41,7 @@ internal sealed class AutomationReconciler : IAsyncDisposable
         IProjectWriterLeaseService writerLeases,
         AutomationSourceRuntime source,
         AutomationControlPlane controlPlane,
+        ISessionService sessions,
         IModuleHealthReporter? health = null)
         : this(
             store,
@@ -50,7 +52,8 @@ internal sealed class AutomationReconciler : IAsyncDisposable
             writerLeases,
             source,
             controlPlane,
-            health)
+            health,
+            sessions)
     {
     }
 
@@ -63,7 +66,8 @@ internal sealed class AutomationReconciler : IAsyncDisposable
         IProjectWriterLeaseService? writerLeases = null,
         AutomationSourceRuntime? source = null,
         AutomationControlPlane? controlPlane = null,
-        IModuleHealthReporter? health = null)
+        IModuleHealthReporter? health = null,
+        ISessionService? sessions = null)
     {
         _store = store ?? throw new ArgumentNullException(nameof(store));
         _service = service ?? throw new ArgumentNullException(nameof(service));
@@ -74,6 +78,7 @@ internal sealed class AutomationReconciler : IAsyncDisposable
         _source = source;
         _controlPlane = controlPlane;
         _health = health;
+        _sessions = sessions;
     }
 
     public async ValueTask StartAsync(CancellationToken cancellationToken)
@@ -148,8 +153,13 @@ internal sealed class AutomationReconciler : IAsyncDisposable
         await _reconcileGate.WaitAsync(cancellationToken);
         try
         {
+            await ApplyDeadlinesAsync(cancellationToken);
             await RecoverSessionFactsAsync(cancellationToken);
+            await AcquireMissingWriterLeasesAsync(cancellationToken);
             await RenewWriterLeasesAsync(cancellationToken);
+            await CancelTerminalTurnsAsync(cancellationToken);
+            await ReleaseTerminalWriterLeasesAsync(cancellationToken);
+            await EnsureTerminalIntentsAsync(cancellationToken);
             await ClaimDueSchedulesAsync(cancellationToken);
             var pending = await ReadPendingRunsAsync(cancellationToken);
             foreach (var runId in pending)
@@ -286,13 +296,20 @@ internal sealed class AutomationReconciler : IAsyncDisposable
                 await using var command = connection.CreateCommand();
                 command.CommandText =
                     """
-                    SELECT automation_run_id
-                    FROM automation_runs
-                    WHERE status = 'pending'
-                    ORDER BY created_utc, automation_run_id
+                    SELECT entity_id
+                    FROM automation_dispatch_intents
+                    WHERE entity_kind = 'automationRun'
+                      AND attempt_count < 5
+                      AND (
+                          status = 'pending' OR
+                          (status = 'leased' AND lease_expires_utc <= $now)
+                      )
+                    GROUP BY entity_id
+                    ORDER BY min(created_utc), entity_id
                     LIMIT $limit;
                     """;
                 Add(command, "$limit", _config.MaxConcurrentRuns);
+                Add(command, "$now", Milliseconds(_timeProvider.GetUtcNow()));
                 await using var reader = await command.ExecuteReaderAsync(token);
                 var result = new List<Guid>();
                 while (await reader.ReadAsync(token))
@@ -304,6 +321,97 @@ internal sealed class AutomationReconciler : IAsyncDisposable
             },
             cancellationToken);
 
+    private Task EnsureTerminalIntentsAsync(
+        CancellationToken cancellationToken) =>
+        _store.WriteAsync(
+            async (connection, transaction, token) =>
+            {
+                await using var select = connection.CreateCommand();
+                select.Transaction = transaction;
+                select.CommandText =
+                    """
+                    SELECT r.automation_run_id
+                    FROM automation_runs r
+                    WHERE r.status IN ('completed', 'failed', 'cancelled', 'timedOut')
+                      AND NOT EXISTS (
+                          SELECT 1
+                          FROM automation_dispatch_intents i
+                          WHERE i.entity_kind = 'automationRun'
+                            AND i.entity_id = r.automation_run_id
+                            AND i.dispatch_kind = 'archiveThread'
+                      )
+                    ORDER BY r.completed_utc, r.automation_run_id;
+                    """;
+                var runIds = new List<Guid>();
+                await using (var reader = await select.ExecuteReaderAsync(token))
+                {
+                    while (await reader.ReadAsync(token))
+                    {
+                        runIds.Add(Guid.Parse(reader.GetString(0)));
+                    }
+                }
+
+                var now = Milliseconds(_timeProvider.GetUtcNow());
+                foreach (var runId in runIds)
+                {
+                    await ExecuteAsync(
+                        connection,
+                        transaction,
+                        """
+                        INSERT INTO automation_dispatch_intents (
+                            intent_id, idempotency_key, dispatch_kind,
+                            entity_kind, entity_id, status, attempt_count,
+                            lease_owner, lease_expires_utc, error_code, diagnostic,
+                            created_utc, updated_utc)
+                        VALUES (
+                            $intentId, $key, 'archiveThread',
+                            'automationRun', $runId, 'pending', 0,
+                            NULL, NULL, NULL, NULL,
+                            $now, $now)
+                        ON CONFLICT(idempotency_key) DO NOTHING;
+                        """,
+                        token,
+                        ("$intentId", DerivedId(runId, 0x33).ToString("D")),
+                        ("$key", $"automation-run:{runId:D}:archiveThread"),
+                        ("$runId", runId.ToString("D")),
+                        ("$now", now));
+                }
+
+                return 0;
+            },
+            cancellationToken).AsTask();
+
+    private Task ApplyDeadlinesAsync(CancellationToken cancellationToken) =>
+        _store.WriteAsync(
+            async (connection, transaction, token) =>
+            {
+                var now = Milliseconds(_timeProvider.GetUtcNow());
+                await ExecuteAsync(
+                    connection,
+                    transaction,
+                    """
+                    UPDATE automation_runs
+                    SET status = 'timedOut',
+                        attention_kind = NULL,
+                        diagnostic = 'Automation deadline elapsed.',
+                        completed_utc = $now,
+                        revision = revision + 1,
+                        updated_utc = $now
+                    WHERE (status = 'running' AND run_deadline_utc <= $now)
+                       OR (status = 'needsAttention' AND
+                           attention_deadline_utc IS NOT NULL AND
+                           attention_deadline_utc <= $now);
+                    UPDATE automation_state
+                    SET automation_revision = automation_revision + 1,
+                        updated_utc = $now
+                    WHERE id = 1 AND changes() > 0;
+                    """,
+                    token,
+                    ("$now", now));
+                return 0;
+            },
+            cancellationToken).AsTask();
+
     private async Task RecoverSessionFactsAsync(CancellationToken cancellationToken)
     {
         var facts = await _store.ReadAsync(
@@ -314,10 +422,38 @@ internal sealed class AutomationReconciler : IAsyncDisposable
                     """
                     SELECT r.automation_run_id, t.status,
                            t.error_code, t.error_message,
-                           r.project_writer_lease_id
+                           r.project_writer_lease_id,
+                           EXISTS (
+                               SELECT 1
+                               FROM tool_invocations ti
+                               WHERE ti.thread_id = r.thread_id
+                                 AND ti.turn_id = t.turn_id
+                                 AND ti.status = 'outcomeUnknown'
+                           ),
+                           (
+                               SELECT p.timeout_utc
+                               FROM pending_interactions p
+                               WHERE p.thread_id = r.thread_id
+                                 AND p.turn_id = t.turn_id
+                                 AND p.status = 'pending'
+                               ORDER BY p.created_utc DESC, p.interaction_id DESC
+                               LIMIT 1
+                           ),
+                           json_extract(
+                               r.definition_snapshot_json,
+                               '$.attentionTimeoutMilliseconds')
                     FROM automation_runs r
                     JOIN turns t ON t.thread_id = r.thread_id
-                    WHERE r.status IN ('running', 'needsAttention')
+                    WHERE (
+                              r.status IN ('running', 'needsAttention') OR
+                              EXISTS (
+                                  SELECT 1
+                                  FROM tool_invocations ti
+                                  WHERE ti.thread_id = r.thread_id
+                                    AND ti.turn_id = t.turn_id
+                                    AND ti.status = 'outcomeUnknown'
+                              )
+                          )
                       AND t.turn_id = (
                           SELECT t2.turn_id
                           FROM turns t2
@@ -335,7 +471,13 @@ internal sealed class AutomationReconciler : IAsyncDisposable
                         reader.GetString(1),
                         reader.IsDBNull(2) ? null : reader.GetString(2),
                         reader.IsDBNull(3) ? null : reader.GetString(3),
-                        reader.IsDBNull(4) ? null : Guid.Parse(reader.GetString(4))));
+                        reader.IsDBNull(4) ? null : Guid.Parse(reader.GetString(4)),
+                        reader.GetInt64(5) != 0,
+                        reader.IsDBNull(6)
+                            ? null
+                            : DateTimeOffset.FromUnixTimeMilliseconds(
+                                reader.GetInt64(6)),
+                        reader.GetInt64(7)));
                 }
 
                 return result;
@@ -351,7 +493,9 @@ internal sealed class AutomationReconciler : IAsyncDisposable
         SessionFact fact,
         CancellationToken cancellationToken)
     {
-        var target = fact.Status switch
+        var target = fact.HasOutcomeUnknown
+            ? "needsAttention"
+            : fact.Status switch
         {
             "running" => "running",
             "waitingApproval" => "needsAttention",
@@ -366,13 +510,33 @@ internal sealed class AutomationReconciler : IAsyncDisposable
             return;
         }
 
-        var attention = fact.Status switch
+        var attention = fact.HasOutcomeUnknown
+            ? "outcomeUnknown"
+            : fact.Status switch
         {
             "waitingApproval" => "approvalRequired",
             "waitingInput" => "userInputRequired",
             _ => null,
         };
         var terminal = target is "completed" or "failed" or "cancelled";
+        var configuredDeadline =
+            _timeProvider.GetUtcNow() +
+            TimeSpan.FromMilliseconds(
+                Math.Min(
+                    fact.AttentionTimeoutMilliseconds,
+                    (long)_config.MaximumAttentionTimeout.TotalMilliseconds));
+        var attentionDeadline = attention is null
+            ? (DateTimeOffset?)null
+            : fact.InteractionTimeoutUtc is { } interactionTimeout &&
+              interactionTimeout < configuredDeadline
+                ? interactionTimeout
+                : configuredDeadline;
+        var errorCode = fact.HasOutcomeUnknown
+            ? AutomationErrorCodes.OutcomeUnknown
+            : fact.ErrorCode;
+        var diagnostic = fact.ErrorMessage is { Length: > 4096 } message
+            ? message[..4096]
+            : fact.ErrorMessage;
         await _store.WriteAsync(
             async (connection, transaction, token) =>
             {
@@ -384,6 +548,10 @@ internal sealed class AutomationReconciler : IAsyncDisposable
                     UPDATE automation_runs
                     SET status = $status,
                         attention_kind = $attention,
+                        attention_deadline_utc = CASE
+                            WHEN $attention IS NULL THEN NULL
+                            ELSE COALESCE(attention_deadline_utc, $attentionDeadline)
+                        END,
                         error_code = $errorCode,
                         diagnostic = $diagnostic,
                         project_writer_lease_id = CASE WHEN $terminal = 1
@@ -394,22 +562,39 @@ internal sealed class AutomationReconciler : IAsyncDisposable
                                                                 ELSE project_writer_lease_expires_utc END,
                         completed_utc = CASE WHEN $terminal = 1 THEN $now
                                              ELSE completed_utc END,
-                        revision = revision + CASE
-                            WHEN status <> $status OR
-                                 COALESCE(attention_kind, '') <> COALESCE($attention, '')
-                            THEN 1 ELSE 0 END,
-                        updated_utc = CASE
-                            WHEN status <> $status OR
-                                 COALESCE(attention_kind, '') <> COALESCE($attention, '')
-                            THEN $now ELSE updated_utc END
+                        revision = revision + 1,
+                        updated_utc = $now
                     WHERE automation_run_id = $runId
-                      AND status IN ('running', 'needsAttention');
+                      AND (
+                          status IN ('running', 'needsAttention') OR
+                          ($outcomeUnknown = 1 AND
+                           status IN ('failed', 'cancelled', 'timedOut'))
+                      )
+                      AND (
+                          status <> $status OR
+                          COALESCE(attention_kind, '') <>
+                              COALESCE($attention, '') OR
+                          ($attention IS NOT NULL AND
+                           attention_deadline_utc IS NULL) OR
+                          COALESCE(error_code, '') <>
+                              COALESCE($errorCode, '') OR
+                          COALESCE(diagnostic, '') <>
+                              COALESCE($diagnostic, '')
+                      );
+                    UPDATE automation_state
+                    SET automation_revision = automation_revision + 1,
+                        updated_utc = $now
+                    WHERE id = 1 AND changes() > 0;
                     """,
                     token,
                     ("$status", target),
                     ("$attention", attention),
-                    ("$errorCode", fact.ErrorCode),
-                    ("$diagnostic", fact.ErrorMessage),
+                    ("$attentionDeadline", attentionDeadline is null
+                        ? null
+                        : Milliseconds(attentionDeadline.Value)),
+                    ("$errorCode", errorCode),
+                    ("$diagnostic", diagnostic),
+                    ("$outcomeUnknown", fact.HasOutcomeUnknown ? 1 : 0),
                     ("$terminal", terminal ? 1 : 0),
                     ("$now", Milliseconds(now)),
                     ("$runId", fact.RunId.ToString("D")));
@@ -424,6 +609,65 @@ internal sealed class AutomationReconciler : IAsyncDisposable
                     ProjectWriterLeaseOwnerKind.AutomationRun,
                     fact.RunId),
                 leaseId,
+                cancellationToken);
+        }
+    }
+
+    private async Task CancelTerminalTurnsAsync(
+        CancellationToken cancellationToken)
+    {
+        if (_sessions is null)
+        {
+            return;
+        }
+
+        var runs = await _store.ReadAsync(
+            async (connection, token) =>
+            {
+                await using var command = connection.CreateCommand();
+                command.CommandText =
+                    """
+                    SELECT r.automation_run_id, r.thread_id
+                    FROM automation_runs r
+                    JOIN threads t ON t.thread_id = r.thread_id
+                    WHERE (
+                              r.status IN ('cancelled', 'timedOut') OR
+                              (r.status = 'failed' AND
+                               r.error_code = $leaseLost)
+                          )
+                      AND r.attention_kind IS NULL
+                      AND t.active_turn_id IS NOT NULL
+                    ORDER BY r.automation_run_id;
+                    """;
+                Add(command, "$leaseLost", AutomationErrorCodes.LeaseLost);
+                await using var reader = await command.ExecuteReaderAsync(token);
+                var result = new List<(Guid RunId, Guid ThreadId)>();
+                while (await reader.ReadAsync(token))
+                {
+                    result.Add((
+                        Guid.Parse(reader.GetString(0)),
+                        Guid.Parse(reader.GetString(1))));
+                }
+
+                return result;
+            },
+            cancellationToken);
+        foreach (var run in runs)
+        {
+            var thread = await _sessions.GetThreadAsync(
+                run.ThreadId,
+                cancellationToken);
+            if (thread.Value?.ActiveTurnId is not { } turnId)
+            {
+                continue;
+            }
+
+            _ = await _sessions.CancelTurnAsync(
+                new CancelTurnRequest(
+                    run.ThreadId,
+                    turnId,
+                    DerivedId(run.RunId, 0xc2),
+                    thread.Value.CurrentSequence),
                 cancellationToken);
         }
     }
@@ -477,6 +721,114 @@ internal sealed class AutomationReconciler : IAsyncDisposable
         }
     }
 
+    private async Task AcquireMissingWriterLeasesAsync(
+        CancellationToken cancellationToken)
+    {
+        if (_writerLeases is null)
+        {
+            return;
+        }
+
+        var runIds = await _store.ReadAsync(
+            async (connection, token) =>
+            {
+                await using var command = connection.CreateCommand();
+                command.CommandText =
+                    """
+                    SELECT automation_run_id
+                    FROM automation_runs
+                    WHERE status IN ('running', 'needsAttention')
+                      AND workspace_mode = 'project'
+                      AND workspace_access = 'readWrite'
+                      AND project_writer_lease_id IS NULL
+                    ORDER BY automation_run_id;
+                    """;
+                await using var reader = await command.ExecuteReaderAsync(token);
+                var result = new List<Guid>();
+                while (await reader.ReadAsync(token))
+                {
+                    result.Add(Guid.Parse(reader.GetString(0)));
+                }
+
+                return result;
+            },
+            cancellationToken);
+        foreach (var runId in runIds)
+        {
+            var lease = await _writerLeases.TryAcquireAsync(
+                new ProjectWriterLeaseOwner(
+                    ProjectWriterLeaseOwnerKind.AutomationRun,
+                    runId),
+                cancellationToken);
+            if (lease is not null)
+            {
+                await PersistWriterLeaseAsync(runId, lease, cancellationToken);
+            }
+        }
+    }
+
+    private async Task ReleaseTerminalWriterLeasesAsync(
+        CancellationToken cancellationToken)
+    {
+        if (_writerLeases is null)
+        {
+            return;
+        }
+
+        var leases = await _store.ReadAsync(
+            async (connection, token) =>
+            {
+                await using var command = connection.CreateCommand();
+                command.CommandText =
+                    """
+                    SELECT automation_run_id, project_writer_lease_id
+                    FROM automation_runs
+                    WHERE status IN ('completed', 'failed', 'cancelled', 'timedOut')
+                      AND project_writer_lease_id IS NOT NULL
+                    ORDER BY automation_run_id;
+                    """;
+                await using var reader = await command.ExecuteReaderAsync(token);
+                var result = new List<(Guid RunId, Guid LeaseId)>();
+                while (await reader.ReadAsync(token))
+                {
+                    result.Add((
+                        Guid.Parse(reader.GetString(0)),
+                        Guid.Parse(reader.GetString(1))));
+                }
+
+                return result;
+            },
+            cancellationToken);
+        foreach (var lease in leases)
+        {
+            _ = await _writerLeases.ReleaseAsync(
+                new ProjectWriterLeaseOwner(
+                    ProjectWriterLeaseOwnerKind.AutomationRun,
+                    lease.RunId),
+                lease.LeaseId,
+                cancellationToken);
+            await _store.WriteAsync(
+                async (connection, transaction, token) =>
+                {
+                    await ExecuteAsync(
+                        connection,
+                        transaction,
+                        """
+                        UPDATE automation_runs
+                        SET project_writer_lease_id = NULL,
+                            project_writer_lease_expires_utc = NULL
+                        WHERE automation_run_id = $runId
+                          AND project_writer_lease_id = $leaseId;
+                        """,
+                        token,
+                        ("$runId", lease.RunId.ToString("D")),
+                        ("$leaseId", lease.LeaseId.ToString("D")));
+                    return 0;
+                },
+                cancellationToken);
+        }
+    }
+
     private Task PersistWriterLeaseAsync(
         Guid runId,
         ProjectWriterLease? lease,
@@ -490,17 +842,47 @@ internal sealed class AutomationReconciler : IAsyncDisposable
                     transaction,
                     """
                     UPDATE automation_runs
-                    SET status = CASE WHEN $leaseId IS NULL THEN 'failed' ELSE status END,
+                    SET status = CASE
+                            WHEN $leaseId IS NULL AND
+                                 COALESCE(attention_kind, '') <> 'outcomeUnknown'
+                            THEN 'failed'
+                            ELSE status
+                        END,
                         project_writer_lease_id = $leaseId,
                         project_writer_lease_expires_utc = $expires,
-                        error_code = CASE WHEN $leaseId IS NULL THEN $leaseLost
-                                          ELSE error_code END,
+                        attention_kind = CASE
+                            WHEN $leaseId IS NULL AND
+                                 COALESCE(attention_kind, '') <> 'outcomeUnknown'
+                            THEN NULL
+                            ELSE attention_kind
+                        END,
+                        attention_deadline_utc = CASE
+                            WHEN $leaseId IS NULL AND
+                                 COALESCE(attention_kind, '') <> 'outcomeUnknown'
+                            THEN NULL
+                            ELSE attention_deadline_utc
+                        END,
+                        error_code = CASE
+                            WHEN $leaseId IS NULL AND
+                                 COALESCE(attention_kind, '') <> 'outcomeUnknown'
+                            THEN $leaseLost
+                            ELSE error_code
+                        END,
                         diagnostic = CASE WHEN $leaseId IS NULL
                                           THEN 'Project writer lease was lost.'
                                           ELSE diagnostic END,
-                        completed_utc = CASE WHEN $leaseId IS NULL THEN $now
-                                             ELSE completed_utc END,
-                        revision = revision + 1,
+                        completed_utc = CASE
+                            WHEN $leaseId IS NULL AND
+                                 COALESCE(attention_kind, '') <> 'outcomeUnknown'
+                            THEN $now
+                            ELSE completed_utc
+                        END,
+                        revision = revision + CASE
+                            WHEN $leaseId IS NULL AND
+                                 COALESCE(attention_kind, '') <> 'outcomeUnknown'
+                            THEN 1
+                            ELSE 0
+                        END,
                         updated_utc = $now
                     WHERE automation_run_id = $runId
                       AND status IN ('running', 'needsAttention');
@@ -573,14 +955,11 @@ internal sealed class AutomationReconciler : IAsyncDisposable
                     """
                     UPDATE automation_runs
                     SET project_writer_lease_id = NULL,
-                        project_writer_lease_expires_utc = NULL,
-                        revision = revision + 1,
-                        updated_utc = $now
+                        project_writer_lease_expires_utc = NULL
                     WHERE automation_run_id = $runId
                       AND status IN ('pending', 'running', 'needsAttention');
                     """,
                     token,
-                    ("$now", Milliseconds(_timeProvider.GetUtcNow())),
                     ("$runId", runId.ToString("D")));
                 return 0;
             },
@@ -592,6 +971,13 @@ internal sealed class AutomationReconciler : IAsyncDisposable
 
     private static long Milliseconds(DateTimeOffset value) =>
         value.ToUnixTimeMilliseconds();
+
+    private static Guid DerivedId(Guid source, byte marker)
+    {
+        var bytes = source.ToByteArray();
+        bytes[^1] ^= marker;
+        return new Guid(bytes);
+    }
 
     private static async ValueTask ExecuteAsync(
         DbConnection connection,
@@ -624,5 +1010,8 @@ internal sealed class AutomationReconciler : IAsyncDisposable
         string Status,
         string? ErrorCode,
         string? ErrorMessage,
-        Guid? ProjectWriterLeaseId);
+        Guid? ProjectWriterLeaseId,
+        bool HasOutcomeUnknown,
+        DateTimeOffset? InteractionTimeoutUtc,
+        long AttentionTimeoutMilliseconds);
 }

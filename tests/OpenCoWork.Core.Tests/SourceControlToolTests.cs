@@ -116,6 +116,27 @@ public sealed class SourceControlToolTests
             ["restore", "--", "tracked.txt"],
             cancellationToken,
             created.WorktreeRoot);
+        await File.AppendAllTextAsync(
+            Path.Combine(created.WorktreeRoot, "tracked.txt"),
+            "committed drift\n",
+            cancellationToken);
+        await workspace.RunGitAsync(
+            ["add", "--", "tracked.txt"],
+            cancellationToken,
+            created.WorktreeRoot);
+        await workspace.RunGitAsync(
+            ["commit", "-m", "worktree drift"],
+            cancellationToken,
+            created.WorktreeRoot);
+        var drifted = await service.RemoveAsync(created.WorktreeId, cancellationToken);
+        Assert.Equal(CoWorkWorktreeStatus.RetainedDirty, drifted.Status);
+        Assert.True(drifted.IsDirty);
+        Assert.True(Directory.Exists(created.WorktreeRoot));
+
+        await workspace.RunGitAsync(
+            ["reset", "--hard", baseSha],
+            cancellationToken,
+            created.WorktreeRoot);
         var removed = await service.RemoveAsync(created.WorktreeId, cancellationToken);
         Assert.Equal(CoWorkWorktreeStatus.Removed, removed.Status);
         Assert.False(Directory.Exists(created.WorktreeRoot));

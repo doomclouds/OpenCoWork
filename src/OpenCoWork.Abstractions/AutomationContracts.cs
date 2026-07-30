@@ -220,7 +220,8 @@ public sealed record AutomationRunSnapshot(
     string ProviderId,
     string ModelId,
     AutomationPermissionSnapshot Permissions,
-    IReadOnlyList<AutomationCapabilitySnapshot> Capabilities);
+    IReadOnlyList<AutomationCapabilitySnapshot> Capabilities,
+    Guid? AttentionId = null);
 
 public sealed record AutomationWorkspaceTrustSnapshot(
     bool IsTrusted,
