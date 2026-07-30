@@ -29,7 +29,6 @@ internal sealed class CoreSourceControlTool
         "AUTHORIZATION",
         "ASKPASS",
     ];
-    private readonly string _anchor;
     private readonly CapabilityFileStore _files;
     private readonly OpenCoWorkPaths _paths;
     private readonly SecretRedactor _redactor;
@@ -42,7 +41,6 @@ internal sealed class CoreSourceControlTool
         _paths = paths ?? throw new ArgumentNullException(nameof(paths));
         _files = files ?? throw new ArgumentNullException(nameof(files));
         _redactor = redactor ?? throw new ArgumentNullException(nameof(redactor));
-        _anchor = Path.Combine(_paths.WorkspaceRoot, ".opencowork-source-control-anchor");
     }
 
     public async Task<GitExecutableIdentity> InspectAsync(
@@ -85,6 +83,38 @@ internal sealed class CoreSourceControlTool
             sha256);
     }
 
+    internal async Task<GitExecutableIdentity> RequireTrustedIdentityAsync(
+        CancellationToken cancellationToken = default)
+    {
+        var identity = await InspectAsync(cancellationToken);
+        var trust = await _files.LoadTrustDecisionsAsync(cancellationToken);
+        var trusted = trust.Decisions.Any(decision =>
+            decision.Matches(
+                _paths.WorkspaceRoot,
+                CapabilitySourceKind.Workspace,
+                identity.SourceId,
+                identity.Version,
+                identity.Sha256) &&
+            decision.AllowedScopes.Contains(CapabilityTrustScope.OutOfProcess) &&
+            !decision.DeniedScopes.Contains(CapabilityTrustScope.OutOfProcess));
+        if (!trusted)
+        {
+            throw new SourceControlException(
+                ToolErrorCodes.TrustRequired,
+                "Git executable requires trust.");
+        }
+
+        var revalidated = await InspectAsync(cancellationToken);
+        if (revalidated != identity)
+        {
+            throw new SourceControlException(
+                ToolErrorCodes.TrustRequired,
+                "Git executable changed after trust validation.");
+        }
+
+        return identity;
+    }
+
     public ValueTask<ToolBindingResult> StatusAsync(
         JsonElement arguments,
         CancellationToken cancellationToken) =>
@@ -92,6 +122,19 @@ internal sealed class CoreSourceControlTool
             "status",
             arguments,
             BuildStatus,
+            _paths.WorkspaceRoot,
+            cancellationToken);
+
+    public ValueTask<ToolBindingResult> StatusAsync(
+        ToolInvocationContext context,
+        CancellationToken cancellationToken) =>
+        ExecuteAsync(
+            "status",
+            context.Arguments,
+            BuildStatus,
+            WorkspacePathGuard.ResolveExecutionRoot(
+                context.ExecutionWorkspace,
+                _paths.WorkspaceRoot),
             cancellationToken);
 
     public ValueTask<ToolBindingResult> DiffAsync(
@@ -101,6 +144,19 @@ internal sealed class CoreSourceControlTool
             "diff",
             arguments,
             BuildDiff,
+            _paths.WorkspaceRoot,
+            cancellationToken);
+
+    public ValueTask<ToolBindingResult> DiffAsync(
+        ToolInvocationContext context,
+        CancellationToken cancellationToken) =>
+        ExecuteAsync(
+            "diff",
+            context.Arguments,
+            BuildDiff,
+            WorkspacePathGuard.ResolveExecutionRoot(
+                context.ExecutionWorkspace,
+                _paths.WorkspaceRoot),
             cancellationToken);
 
     public ValueTask<ToolBindingResult> LogAsync(
@@ -110,6 +166,19 @@ internal sealed class CoreSourceControlTool
             "log",
             arguments,
             BuildLog,
+            _paths.WorkspaceRoot,
+            cancellationToken);
+
+    public ValueTask<ToolBindingResult> LogAsync(
+        ToolInvocationContext context,
+        CancellationToken cancellationToken) =>
+        ExecuteAsync(
+            "log",
+            context.Arguments,
+            BuildLog,
+            WorkspacePathGuard.ResolveExecutionRoot(
+                context.ExecutionWorkspace,
+                _paths.WorkspaceRoot),
             cancellationToken);
 
     public ValueTask<ToolBindingResult> ShowAsync(
@@ -119,46 +188,36 @@ internal sealed class CoreSourceControlTool
             "show",
             arguments,
             BuildShow,
+            _paths.WorkspaceRoot,
+            cancellationToken);
+
+    public ValueTask<ToolBindingResult> ShowAsync(
+        ToolInvocationContext context,
+        CancellationToken cancellationToken) =>
+        ExecuteAsync(
+            "show",
+            context.Arguments,
+            BuildShow,
+            WorkspacePathGuard.ResolveExecutionRoot(
+                context.ExecutionWorkspace,
+                _paths.WorkspaceRoot),
             cancellationToken);
 
     private async ValueTask<ToolBindingResult> ExecuteAsync(
         string operation,
         JsonElement arguments,
-        Func<JsonElement, IReadOnlyList<string>> buildArguments,
+        Func<JsonElement, string, IReadOnlyList<string>> buildArguments,
+        string root,
         CancellationToken cancellationToken)
     {
         Process? process = null;
         try
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var identity = await InspectAsync(cancellationToken);
-            var trust = await _files.LoadTrustDecisionsAsync(cancellationToken);
-            var trusted = trust.Decisions.Any(decision =>
-                decision.Matches(
-                    _paths.WorkspaceRoot,
-                    CapabilitySourceKind.Workspace,
-                    identity.SourceId,
-                    identity.Version,
-                    identity.Sha256) &&
-                decision.AllowedScopes.Contains(CapabilityTrustScope.OutOfProcess) &&
-                !decision.DeniedScopes.Contains(CapabilityTrustScope.OutOfProcess));
-            if (!trusted)
-            {
-                return Failure(
-                    ToolErrorCodes.TrustRequired,
-                    "Git executable requires trust.");
-            }
+            var identity = await RequireTrustedIdentityAsync(cancellationToken);
 
-            var revalidatedIdentity = await InspectAsync(cancellationToken);
-            if (revalidatedIdentity != identity)
-            {
-                return Failure(
-                    ToolErrorCodes.TrustRequired,
-                    "Git executable changed after trust validation.");
-            }
-
-            if (!Directory.Exists(Path.Combine(_paths.WorkspaceRoot, ".git")) &&
-                !File.Exists(Path.Combine(_paths.WorkspaceRoot, ".git")))
+            if (!Directory.Exists(Path.Combine(root, ".git")) &&
+                !File.Exists(Path.Combine(root, ".git")))
             {
                 return Failure(
                     ToolErrorCodes.PreconditionFailed,
@@ -168,7 +227,7 @@ internal sealed class CoreSourceControlTool
             var startInfo = new ProcessStartInfo
             {
                 FileName = identity.ExecutablePath,
-                WorkingDirectory = _paths.WorkspaceRoot,
+                WorkingDirectory = root,
                 UseShellExecute = false,
                 RedirectStandardInput = true,
                 RedirectStandardOutput = true,
@@ -177,7 +236,7 @@ internal sealed class CoreSourceControlTool
                 StandardOutputEncoding = StrictUtf8,
                 StandardErrorEncoding = StrictUtf8,
             };
-            foreach (var argument in buildArguments(arguments))
+            foreach (var argument in buildArguments(arguments, root))
             {
                 startInfo.ArgumentList.Add(argument);
             }
@@ -309,27 +368,33 @@ internal sealed class CoreSourceControlTool
         }
     }
 
-    private IReadOnlyList<string> BuildStatus(JsonElement arguments)
+    private IReadOnlyList<string> BuildStatus(
+        JsonElement arguments,
+        string root)
     {
         RequireProperties(arguments, ["path"]);
         var result = GlobalArguments("status");
         result.Add("--porcelain=v1");
         result.Add("--untracked-files=all");
-        AddPath(result, arguments);
+        AddPath(result, arguments, root);
         return result;
     }
 
-    private IReadOnlyList<string> BuildDiff(JsonElement arguments)
+    private IReadOnlyList<string> BuildDiff(
+        JsonElement arguments,
+        string root)
     {
         RequireProperties(arguments, ["path"]);
         var result = GlobalArguments("diff");
         result.Add("--no-ext-diff");
         result.Add("--no-textconv");
-        AddPath(result, arguments);
+        AddPath(result, arguments, root);
         return result;
     }
 
-    private IReadOnlyList<string> BuildLog(JsonElement arguments)
+    private IReadOnlyList<string> BuildLog(
+        JsonElement arguments,
+        string root)
     {
         RequireProperties(arguments, ["path", "maxCount"]);
         var maxCount = 20;
@@ -346,11 +411,13 @@ internal sealed class CoreSourceControlTool
         result.Add("--pretty=format:%H%x09%ct%x09%an%x09%s");
         result.Add("-n");
         result.Add(maxCount.ToString(System.Globalization.CultureInfo.InvariantCulture));
-        AddPath(result, arguments);
+        AddPath(result, arguments, root);
         return result;
     }
 
-    private IReadOnlyList<string> BuildShow(JsonElement arguments)
+    private IReadOnlyList<string> BuildShow(
+        JsonElement arguments,
+        string root)
     {
         RequireProperties(arguments, ["revision", "path"]);
         var revision = RequiredString(arguments, "revision");
@@ -368,7 +435,7 @@ internal sealed class CoreSourceControlTool
         result.Add("--format=fuller");
         result.Add("--stat");
         result.Add(revision);
-        AddPath(result, arguments);
+        AddPath(result, arguments, root);
         return result;
     }
 
@@ -382,7 +449,10 @@ internal sealed class CoreSourceControlTool
         operation,
     ];
 
-    private void AddPath(List<string> arguments, JsonElement value)
+    private static void AddPath(
+        List<string> arguments,
+        JsonElement value,
+        string root)
     {
         arguments.Add("--");
         if (!value.TryGetProperty("path", out var configured))
@@ -400,8 +470,8 @@ internal sealed class CoreSourceControlTool
         try
         {
             var resolved = WorkspacePathGuard.ResolveContained(
-                _paths.WorkspaceRoot,
-                _anchor,
+                root,
+                Path.Combine(root, ".opencowork-source-control-anchor"),
                 configured.GetString()!);
             arguments.Add(Path.GetRelativePath(
                 resolved.PhysicalRoot,

@@ -303,7 +303,9 @@ public sealed record ToolInvocationContext(
     ToolResultSnapshot? ReplayResult = null,
     bool ProviderCallIdConflict = false,
     EffectiveSkillSnapshot? Skills = null,
-    IReadOnlyList<ToolDefinitionId>? ActivatedDeferredTools = null);
+    IReadOnlyList<ToolDefinitionId>? ActivatedDeferredTools = null,
+    ExecutionWorkspaceDescriptor? ExecutionWorkspace = null,
+    CoWorkThreadProvenance? CoWorkProvenance = null);
 
 public sealed class ToolBindingResult
 {

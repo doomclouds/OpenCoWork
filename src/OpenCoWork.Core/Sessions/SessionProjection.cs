@@ -984,6 +984,13 @@ internal sealed class SessionProjection
             ("$modelId", fact.ModelId),
             ("$agentMode", Wire(fact.AgentMode)),
             ("$timestamp", UnixMilliseconds(entry.Timestamp)));
+        await UpdateThreadExecutionContextAsync(
+            connection,
+            transaction,
+            entry.ThreadId,
+            fact.ExecutionWorkspace,
+            fact.CoWorkProvenance,
+            cancellationToken);
     }
 
     private static Task ApplyThreadStatusAsync(
@@ -1124,6 +1131,13 @@ internal sealed class SessionProjection
             ("$modelId", fact.ModelId),
             ("$agentMode", Wire(fact.AgentMode)),
             ("$timestamp", UnixMilliseconds(entry.Timestamp)));
+        await UpdateThreadExecutionContextAsync(
+            connection,
+            transaction,
+            entry.ThreadId,
+            fact.ExecutionWorkspace,
+            fact.CoWorkProvenance,
+            cancellationToken);
         await InsertHistoryCheckpointAsync(
             connection,
             transaction,
@@ -3116,15 +3130,28 @@ internal sealed class SessionProjection
     {
         await using var command = connection.CreateCommand();
         command.Transaction = transaction;
-        command.CommandText =
-            """
-            SELECT display_name, status, availability, history_mode,
-                   current_sequence, active_turn_id,
-                   created_utc, updated_utc, diagnostic,
-                   provider_id, model_id, agent_mode
-            FROM threads
-            WHERE thread_id = $threadId;
-            """;
+        var hasExecutionContext = await HasThreadExecutionContextAsync(
+            connection,
+            transaction,
+            cancellationToken);
+        command.CommandText = hasExecutionContext
+            ? """
+              SELECT display_name, status, availability, history_mode,
+                     current_sequence, active_turn_id,
+                     created_utc, updated_utc, diagnostic,
+                     provider_id, model_id, agent_mode,
+                     execution_workspace_json, cowork_provenance_json
+              FROM threads
+              WHERE thread_id = $threadId;
+              """
+            : """
+              SELECT display_name, status, availability, history_mode,
+                     current_sequence, active_turn_id,
+                     created_utc, updated_utc, diagnostic,
+                     provider_id, model_id, agent_mode
+              FROM threads
+              WHERE thread_id = $threadId;
+              """;
         command.Parameters.AddWithValue("$threadId", Wire(threadId));
         string displayName;
         ThreadStatus status;
@@ -3138,6 +3165,8 @@ internal sealed class SessionProjection
         string? providerId;
         string? modelId;
         AgentMode agentMode;
+        ExecutionWorkspaceDescriptor? executionWorkspace;
+        CoWorkThreadProvenance? coWorkProvenance;
         await using (var reader = await command.ExecuteReaderAsync(cancellationToken))
         {
             if (!await reader.ReadAsync(cancellationToken))
@@ -3159,6 +3188,16 @@ internal sealed class SessionProjection
             providerId = reader.IsDBNull(9) ? null : reader.GetString(9);
             modelId = reader.IsDBNull(10) ? null : reader.GetString(10);
             agentMode = ParseWire<AgentMode>(reader.GetString(11));
+            executionWorkspace = hasExecutionContext && !reader.IsDBNull(12)
+                ? JsonSerializer.Deserialize<ExecutionWorkspaceDescriptor>(
+                    reader.GetString(12),
+                    JsonOptions)
+                : null;
+            coWorkProvenance = hasExecutionContext && !reader.IsDBNull(13)
+                ? JsonSerializer.Deserialize<CoWorkThreadProvenance>(
+                    reader.GetString(13),
+                    JsonOptions)
+                : null;
         }
 
         await using var queueCommand = connection.CreateCommand();
@@ -3207,7 +3246,62 @@ internal sealed class SessionProjection
             diagnostic,
             providerId,
             modelId,
-            agentMode);
+            agentMode,
+            executionWorkspace,
+            coWorkProvenance);
+    }
+
+    private static async Task UpdateThreadExecutionContextAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        Guid threadId,
+        ExecutionWorkspaceDescriptor? executionWorkspace,
+        CoWorkThreadProvenance? coWorkProvenance,
+        CancellationToken cancellationToken)
+    {
+        if (!await HasThreadExecutionContextAsync(
+                connection,
+                transaction,
+                cancellationToken))
+        {
+            return;
+        }
+
+        await ExecuteRequiredAsync(
+            connection,
+            transaction,
+            """
+            UPDATE threads
+            SET execution_workspace_json = $workspace,
+                cowork_provenance_json = $provenance
+            WHERE thread_id = $threadId;
+            """,
+            cancellationToken,
+            ("$workspace", executionWorkspace is null
+                ? null
+                : JsonSerializer.Serialize(executionWorkspace, JsonOptions)),
+            ("$provenance", coWorkProvenance is null
+                ? null
+                : JsonSerializer.Serialize(coWorkProvenance, JsonOptions)),
+            ("$threadId", Wire(threadId)));
+    }
+
+    private static async Task<bool> HasThreadExecutionContextAsync(
+        SqliteConnection connection,
+        SqliteTransaction? transaction,
+        CancellationToken cancellationToken)
+    {
+        await using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText =
+            """
+            SELECT COUNT(*)
+            FROM pragma_table_info('threads')
+            WHERE name IN ('execution_workspace_json', 'cowork_provenance_json');
+            """;
+        return Convert.ToInt32(
+            await command.ExecuteScalarAsync(cancellationToken),
+            CultureInfo.InvariantCulture) == 2;
     }
 
     private static async Task<IReadOnlyList<string>> ReadStringsAsync(

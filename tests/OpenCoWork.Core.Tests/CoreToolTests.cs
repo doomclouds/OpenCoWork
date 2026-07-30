@@ -3,6 +3,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using OpenCoWork.Abstractions;
+using OpenCoWork.Core.Configuration;
 using OpenCoWork.Core.Tools;
 using OpenCoWork.Core.Workspaces;
 using Xunit;
@@ -11,6 +12,88 @@ namespace OpenCoWork.Core.Tests;
 
 public sealed partial class CoreToolTests
 {
+    [Fact]
+    public async Task File_tools_use_the_calling_thread_workspace_and_private_scratchpad()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var origin = CreateWorkspace();
+        var worker = CreateWorkspace();
+        var scratchpad = CreateWorkspace();
+        try
+        {
+            await File.WriteAllTextAsync(
+                Path.Combine(origin, "origin.txt"),
+                "origin",
+                cancellationToken);
+            await File.WriteAllTextAsync(
+                Path.Combine(worker, "worker.txt"),
+                "worker",
+                cancellationToken);
+            await File.WriteAllTextAsync(
+                Path.Combine(scratchpad, "notes.txt"),
+                "notes",
+                cancellationToken);
+            var runtime = new ToolRuntime(new OpenCoWorkPaths(origin));
+            Assert.True(runtime.TryResolveBinding(
+                new RuntimeBindingId("core.file.read.v1"),
+                out var binding));
+            var workspace = new ExecutionWorkspaceDescriptor(
+                CoWorkWorkspaceMode.Project,
+                worker,
+                scratchpad,
+                WorktreeId: null,
+                WorktreeRoot: null,
+                BaseCommitSha: null);
+            var provenance = new CoWorkThreadProvenance(
+                Guid.CreateVersion7(),
+                CoWorkAgentRunKind.Direct);
+
+            var read = await binding!.ContextualExecutor!(
+                ContextualInvocation(
+                    runtime,
+                    new { path = "worker.txt" },
+                    workspace,
+                    provenance),
+                cancellationToken);
+            var scratch = await binding.ContextualExecutor(
+                ContextualInvocation(
+                    runtime,
+                    new { path = "notes.txt", area = "scratchpad" },
+                    workspace,
+                    provenance),
+                cancellationToken);
+            var escape = await binding.ContextualExecutor(
+                ContextualInvocation(
+                    runtime,
+                    new { path = "../origin.txt" },
+                    workspace,
+                    provenance),
+                cancellationToken);
+            var unauthorizedArea = await binding.ContextualExecutor(
+                ContextualInvocation(
+                    runtime,
+                    new { path = "notes.txt", area = "scratchpad" },
+                    workspace,
+                    provenance: null),
+                cancellationToken);
+
+            Assert.Equal(
+                "worker",
+                read.Output!.Value.GetProperty("content").GetString());
+            Assert.Equal(
+                "notes",
+                scratch.Output!.Value.GetProperty("content").GetString());
+            Assert.Equal(ToolErrorCodes.PathDenied, escape.Error!.Code);
+            Assert.Equal(ToolErrorCodes.PathDenied, unauthorizedArea.Error!.Code);
+        }
+        finally
+        {
+            Directory.Delete(origin, recursive: true);
+            Directory.Delete(worker, recursive: true);
+            Directory.Delete(scratchpad, recursive: true);
+        }
+    }
+
     [Fact]
     public async Task List_hides_blacklisted_entries_and_read_returns_a_line_window()
     {
@@ -496,6 +579,29 @@ public sealed partial class CoreToolTests
         return binding!.Executor(
             JsonSerializer.SerializeToElement(arguments),
             cancellationToken);
+    }
+
+    private static ToolInvocationContext ContextualInvocation(
+        ToolRuntime runtime,
+        object arguments,
+        ExecutionWorkspaceDescriptor workspace,
+        CoWorkThreadProvenance? provenance)
+    {
+        var element = JsonSerializer.SerializeToElement(arguments);
+        return new ToolInvocationContext(
+            Guid.CreateVersion7(),
+            Guid.CreateVersion7(),
+            Guid.CreateVersion7(),
+            Guid.CreateVersion7(),
+            CallIndex: 0,
+            "call-contextual",
+            "file__read",
+            element,
+            new string('a', 64),
+            SensitiveInputDetected: false,
+            runtime.BuildSnapshot(AgentMode.Agent, new ToolsConfig()),
+            ExecutionWorkspace: workspace,
+            CoWorkProvenance: provenance);
     }
 
     private static string Sha256(byte[] bytes) =>

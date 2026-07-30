@@ -319,7 +319,9 @@ public sealed record ThreadSnapshot
         string? diagnostic,
         string? providerId = null,
         string? modelId = null,
-        AgentMode agentMode = AgentMode.Agent)
+        AgentMode agentMode = AgentMode.Agent,
+        ExecutionWorkspaceDescriptor? executionWorkspace = null,
+        CoWorkThreadProvenance? coWorkProvenance = null)
     {
         ArgumentNullException.ThrowIfNull(displayName);
         ArgumentNullException.ThrowIfNull(queue);
@@ -338,6 +340,8 @@ public sealed record ThreadSnapshot
         ProviderId = providerId;
         ModelId = modelId;
         AgentMode = agentMode;
+        ExecutionWorkspace = executionWorkspace;
+        CoWorkProvenance = coWorkProvenance;
     }
 
     public Guid ThreadId { get; }
@@ -369,6 +373,10 @@ public sealed record ThreadSnapshot
     public string? ModelId { get; }
 
     public AgentMode AgentMode { get; }
+
+    public ExecutionWorkspaceDescriptor? ExecutionWorkspace { get; }
+
+    public CoWorkThreadProvenance? CoWorkProvenance { get; }
 }
 
 public sealed record SessionStatistics(
@@ -436,7 +444,9 @@ public sealed record CreateThreadRequest(
     HistoryMode HistoryMode = HistoryMode.Server,
     string? ProviderId = null,
     string? ModelId = null,
-    AgentMode AgentMode = AgentMode.Agent);
+    AgentMode AgentMode = AgentMode.Agent,
+    ExecutionWorkspaceDescriptor? ExecutionWorkspace = null,
+    CoWorkThreadProvenance? CoWorkProvenance = null);
 
 public sealed record SetThreadModelRequest(
     Guid ThreadId,

@@ -17,11 +17,34 @@ internal sealed class CoreFileTools
     private readonly string _root;
 
     public CoreFileTools(OpenCoWorkPaths paths)
+        : this(paths?.WorkspaceRoot ??
+               throw new ArgumentNullException(nameof(paths)))
     {
-        ArgumentNullException.ThrowIfNull(paths);
-        _root = paths.WorkspaceRoot;
+    }
+
+    private CoreFileTools(string root)
+    {
+        _root = Path.GetFullPath(root);
         _anchor = Path.Combine(_root, ".opencowork-anchor");
     }
+
+    public ValueTask<ToolBindingResult> ListAsync(
+        ToolInvocationContext context,
+        CancellationToken cancellationToken) =>
+        InvokeContextual(context, static (tool, arguments, token) =>
+            tool.ListAsync(arguments, token), cancellationToken);
+
+    public ValueTask<ToolBindingResult> ReadAsync(
+        ToolInvocationContext context,
+        CancellationToken cancellationToken) =>
+        InvokeContextual(context, static (tool, arguments, token) =>
+            tool.ReadAsync(arguments, token), cancellationToken);
+
+    public ValueTask<ToolBindingResult> WriteAsync(
+        ToolInvocationContext context,
+        CancellationToken cancellationToken) =>
+        InvokeContextual(context, static (tool, arguments, token) =>
+            tool.WriteAsync(arguments, token), cancellationToken);
 
     public ValueTask<ToolBindingResult> ListAsync(
         JsonElement arguments,
@@ -477,6 +500,46 @@ internal sealed class CoreFileTools
                 ArgumentException or NotSupportedException)
         {
             throw Denied();
+        }
+    }
+
+    private ValueTask<ToolBindingResult> InvokeContextual(
+        ToolInvocationContext context,
+        Func<CoreFileTools, JsonElement, CancellationToken,
+            ValueTask<ToolBindingResult>> invoke,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var hasArea = context.Arguments.TryGetProperty("area", out var configured);
+            if (hasArea && context.CoWorkProvenance is null)
+            {
+                throw Denied();
+            }
+
+            var area = hasArea ? configured.GetString() : "workspace";
+            var root = area switch
+            {
+                "workspace" => WorkspacePathGuard.ResolveExecutionRoot(
+                    context.ExecutionWorkspace,
+                    _root),
+                "scratchpad" when context.ExecutionWorkspace is not null &&
+                                   context.CoWorkProvenance is not null =>
+                    Path.GetFullPath(context.ExecutionWorkspace.ScratchpadRoot),
+                _ => throw Denied(),
+            };
+            return invoke(
+                new CoreFileTools(root),
+                context.Arguments,
+                cancellationToken);
+        }
+        catch (Exception exception) when (
+            exception is CoreFileException or InvalidOperationException or
+                ArgumentException or NotSupportedException)
+        {
+            return ValueTask.FromResult(Failure(
+                ToolErrorCodes.PathDenied,
+                "Workspace path is denied."));
         }
     }
 

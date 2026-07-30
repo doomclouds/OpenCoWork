@@ -47,6 +47,10 @@ public static class OpenCoWorkSessionExtensions
                 paths.SubAgentsDirectory,
                 paths.WorktreesDirectory);
         });
+        services.TryAddSingleton<IManagedWorktreeService>(serviceProvider =>
+            new ManagedWorktreeService(
+                serviceProvider.GetRequiredService<OpenCoWorkPaths>(),
+                serviceProvider.GetService<CoreSourceControlTool>()));
         services.TryAddSingleton(serviceProvider =>
             new BackgroundTerminalRuntime(
                 serviceProvider.GetRequiredService<OpenCoWorkPaths>(),
@@ -90,7 +94,8 @@ public static class OpenCoWorkSessionExtensions
                 executor,
                 executor?.GetType().FullName,
                 providerModelValidator: validateProviderModel,
-                terminal: serviceProvider.GetService<BackgroundTerminalRuntime>());
+                terminal: serviceProvider.GetService<BackgroundTerminalRuntime>(),
+                paths: serviceProvider.GetRequiredService<OpenCoWorkPaths>());
         });
         services.TryAddSingleton<ISessionService>(serviceProvider =>
             serviceProvider.GetRequiredService<SessionService>());

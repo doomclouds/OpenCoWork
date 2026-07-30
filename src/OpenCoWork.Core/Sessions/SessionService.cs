@@ -10,6 +10,7 @@ using OpenCoWork.Abstractions;
 using OpenCoWork.Core.Configuration;
 using OpenCoWork.Core.State;
 using OpenCoWork.Core.Tools;
+using OpenCoWork.Core.Workspaces;
 
 namespace OpenCoWork.Core.Sessions;
 
@@ -28,6 +29,7 @@ internal sealed partial class SessionService : ISessionService
     private readonly TimeProvider _timeProvider;
     private readonly Func<string, string, SessionError?>? _providerModelValidator;
     private readonly BackgroundTerminalRuntime? _terminal;
+    private readonly OpenCoWorkPaths? _paths;
     private readonly ConcurrentDictionary<Guid, ThreadSnapshot> _snapshots = [];
     private readonly ConcurrentDictionary<Guid, SemaphoreSlim> _threadGates = [];
     private readonly ConcurrentDictionary<Guid, SemaphoreSlim> _idempotencyGates = [];
@@ -49,7 +51,8 @@ internal sealed partial class SessionService : ISessionService
         Action<SessionExecutionFaultPoint>? executionFaultInjector = null,
         Action<SessionRecoveryFaultPoint>? recoveryFaultInjector = null,
         Func<string, string, SessionError?>? providerModelValidator = null,
-        BackgroundTerminalRuntime? terminal = null)
+        BackgroundTerminalRuntime? terminal = null,
+        OpenCoWorkPaths? paths = null)
     {
         ArgumentNullException.ThrowIfNull(stateRuntime);
         ArgumentNullException.ThrowIfNull(journal);
@@ -67,6 +70,7 @@ internal sealed partial class SessionService : ISessionService
         _recoveryFaultInjector = recoveryFaultInjector;
         _providerModelValidator = providerModelValidator;
         _terminal = terminal;
+        _paths = paths;
     }
 
     public async Task<SessionCommandResult<ThreadSnapshot>> CreateThreadAsync(
@@ -102,6 +106,8 @@ internal sealed partial class SessionService : ISessionService
                 request.ProviderId,
                 request.ModelId,
                 request.AgentMode,
+                request.ExecutionWorkspace,
+                request.CoWorkProvenance,
             });
         var keyGate = GetIdempotencyGate(request.IdempotencyKey);
         await keyGate.WaitAsync(cancellationToken);
@@ -151,6 +157,8 @@ internal sealed partial class SessionService : ISessionService
             try
             {
                 var timestamp = _timeProvider.GetUtcNow();
+                var executionWorkspace = request.ExecutionWorkspace ??
+                                         CreateProjectWorkspace(threadId);
                 var snapshot = new ThreadSnapshot(
                     threadId,
                     displayName,
@@ -166,7 +174,9 @@ internal sealed partial class SessionService : ISessionService
                     diagnostic: null,
                     request.ProviderId,
                     request.ModelId,
-                    request.AgentMode);
+                    request.AgentMode,
+                    executionWorkspace,
+                    request.CoWorkProvenance);
                 return await CommitAsync(
                     request.IdempotencyKey,
                     operation,
@@ -179,7 +189,9 @@ internal sealed partial class SessionService : ISessionService
                         requestSha256,
                         request.ProviderId,
                         request.ModelId,
-                        request.AgentMode),
+                        request.AgentMode,
+                        executionWorkspace,
+                        request.CoWorkProvenance),
                     SessionEventType.ThreadCreated,
                     cancellationToken);
             }
@@ -1116,7 +1128,9 @@ internal sealed partial class SessionService : ISessionService
             diagnostic ?? "Thread journal requires recovery.",
             snapshot.ProviderId,
             snapshot.ModelId,
-            snapshot.AgentMode);
+            snapshot.AgentMode,
+            snapshot.ExecutionWorkspace,
+            snapshot.CoWorkProvenance);
     }
 
     private SemaphoreSlim GetThreadGate(Guid threadId) =>
@@ -1151,7 +1165,9 @@ internal sealed partial class SessionService : ISessionService
             snapshot.Diagnostic,
             providerId ?? snapshot.ProviderId,
             modelId ?? snapshot.ModelId,
-            agentMode ?? snapshot.AgentMode);
+            agentMode ?? snapshot.AgentMode,
+            snapshot.ExecutionWorkspace,
+            snapshot.CoWorkProvenance);
 
     private static ThreadSnapshot WithProjectionState(
         ThreadSnapshot snapshot,
@@ -1171,7 +1187,28 @@ internal sealed partial class SessionService : ISessionService
             snapshot.Diagnostic,
             snapshot.ProviderId,
             snapshot.ModelId,
-            snapshot.AgentMode);
+            snapshot.AgentMode,
+            snapshot.ExecutionWorkspace,
+            snapshot.CoWorkProvenance);
+
+    private ExecutionWorkspaceDescriptor CreateProjectWorkspace(Guid threadId)
+    {
+        var root = _paths?.WorkspaceRoot ?? Directory.GetCurrentDirectory();
+        var scratchpad = _paths is null
+            ? Path.Combine(root, ".opencowork", "runtime", "teams", "subagents",
+                threadId.ToString("D"), "scratchpad")
+            : Path.Combine(
+                _paths.SubAgentsDirectory,
+                threadId.ToString("D"),
+                "scratchpad");
+        return new ExecutionWorkspaceDescriptor(
+            CoWorkWorkspaceMode.Project,
+            root,
+            scratchpad,
+            WorktreeId: null,
+            WorktreeRoot: null,
+            BaseCommitSha: null);
+    }
 
     private static bool TryBuildHistoryEvents(
         IReadOnlyList<ThreadJournalEntry> entries,

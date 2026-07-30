@@ -5,12 +5,72 @@ using OpenCoWork.Core.Configuration;
 using OpenCoWork.Core.Sessions;
 using OpenCoWork.Core.State;
 using OpenCoWork.Core.Workspaces;
+using OpenCoWork.Teams;
 using Xunit;
 
 namespace OpenCoWork.Core.Tests;
 
 public sealed class SessionRecoveryTests
 {
+    [Fact]
+    public async Task Execution_workspace_and_provenance_survive_projection_restart()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        using var files = new TempWorkspace();
+        var runtime = new StateRuntime(
+            files.Paths,
+            TimeSpan.FromSeconds(2),
+            TeamsStateMigrationContributors.Create());
+        await runtime.InitializeAsync(cancellationToken);
+        var journal = new ThreadJournal(files.Paths);
+        var service = new SessionService(
+            runtime,
+            journal,
+            new SessionProjection(runtime),
+            new SessionConfig(),
+            paths: files.Paths);
+        var runId = Guid.CreateVersion7();
+        var workspace = new ExecutionWorkspaceDescriptor(
+            CoWorkWorkspaceMode.Project,
+            files.Root,
+            Path.Combine(files.Root, "scratchpad"),
+            WorktreeId: null,
+            WorktreeRoot: null,
+            BaseCommitSha: null);
+        var provenance = new CoWorkThreadProvenance(
+            runId,
+            CoWorkAgentRunKind.Direct,
+            ParentThreadId: Guid.CreateVersion7());
+        var created = Assert.IsType<ThreadSnapshot>(
+            (await service.CreateThreadAsync(
+                new CreateThreadRequest(
+                    Guid.CreateVersion7(),
+                    ExpectedSequence: 0,
+                    DisplayName: "worker",
+                    ExecutionWorkspace: workspace,
+                    CoWorkProvenance: provenance),
+                cancellationToken)).Value);
+        await service.RenameThreadAsync(
+            new RenameThreadRequest(
+                created.ThreadId,
+                Guid.CreateVersion7(),
+                created.CurrentSequence,
+                "renamed"),
+            cancellationToken);
+
+        var restarted = new SessionService(
+            runtime,
+            journal,
+            new SessionProjection(runtime),
+            new SessionConfig(),
+            paths: files.Paths);
+        Assert.Empty(await restarted.RecoverSessionStateAsync(cancellationToken));
+        var recovered = Assert.IsType<ThreadSnapshot>(
+            (await restarted.GetThreadAsync(created.ThreadId, cancellationToken)).Value);
+        Assert.Equal(workspace, recovered.ExecutionWorkspace);
+        Assert.Equal(provenance, recovered.CoWorkProvenance);
+    }
+
     [Theory]
     [InlineData((int)SessionRecoveryFaultPoint.AfterFactFlushed)]
     [InlineData((int)SessionRecoveryFaultPoint.AfterJournalMoved)]

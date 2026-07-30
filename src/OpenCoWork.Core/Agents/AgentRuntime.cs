@@ -1131,7 +1131,10 @@ internal sealed class AgentRuntimeExecutor : ISessionExecutor
         PendingToolFrame? pendingToolFrame;
         try
         {
-            instructions = WorkspaceInstructionDocument.Read(_paths);
+            instructions = WorkspaceInstructionDocument.Read(new OpenCoWorkPaths(
+                WorkspacePathGuard.ResolveExecutionRoot(
+                    context.Thread.ExecutionWorkspace,
+                    _paths.WorkspaceRoot)));
             var execution = _factory.CreateForExecution(
                 context,
                 context.Invocation?.InvocationId ??
@@ -1501,7 +1504,11 @@ internal sealed class AgentRuntimeExecutor : ISessionExecutor
                                         known is not null && !sameCall,
                                         Skills: draft.Snapshot.Skills,
                                         ActivatedDeferredTools:
-                                        activatedDeferredTools.ToArray()),
+                                        activatedDeferredTools.ToArray(),
+                                        ExecutionWorkspace:
+                                        context.Thread.ExecutionWorkspace,
+                                        CoWorkProvenance:
+                                        context.Thread.CoWorkProvenance),
                                     sink,
                                     invocationToken);
                                 ActivateDeferredTools(
@@ -1924,7 +1931,11 @@ internal sealed class AgentRuntimeExecutor : ISessionExecutor
                     ProviderCallIdConflict: known is not null && !sameCall,
                     Skills: draft.Snapshot.Skills,
                     ActivatedDeferredTools:
-                    activatedDeferredTools.ToArray()),
+                    activatedDeferredTools.ToArray(),
+                    ExecutionWorkspace:
+                    session.Thread.ExecutionWorkspace,
+                    CoWorkProvenance:
+                    session.Thread.CoWorkProvenance),
                 sink,
                 cancellationToken);
             ActivateDeferredTools(

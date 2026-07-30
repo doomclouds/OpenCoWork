@@ -15,6 +15,64 @@ namespace OpenCoWork.Core.Tests;
 public sealed partial class CoreToolTests
 {
     [Fact]
+    public async Task Shell_uses_the_calling_thread_execution_root()
+    {
+        if (!OperatingSystem.IsMacOS() && !OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        var origin = CreateWorkspace();
+        var worker = CreateWorkspace();
+        try
+        {
+            var tool = new CoreShellTool(new OpenCoWorkPaths(origin), []);
+            var workspace = new ExecutionWorkspaceDescriptor(
+                CoWorkWorkspaceMode.Project,
+                worker,
+                Path.Combine(worker, "scratchpad"),
+                WorktreeId: null,
+                WorktreeRoot: null,
+                BaseCommitSha: null);
+            var command = OperatingSystem.IsWindows()
+                ? "[Console]::Out.Write((Get-Location).Path)"
+                : "pwd";
+            var element = JsonSerializer.SerializeToElement(new { command });
+            var context = new ToolInvocationContext(
+                Guid.CreateVersion7(),
+                Guid.CreateVersion7(),
+                Guid.CreateVersion7(),
+                Guid.CreateVersion7(),
+                0,
+                "call-shell-root",
+                "shell__run",
+                element,
+                new string('a', 64),
+                SensitiveInputDetected: false,
+                new ToolRuntime().BuildSnapshot(AgentMode.Agent, new ToolsConfig()),
+                ExecutionWorkspace: workspace);
+
+            var result = await tool.RunAsync(
+                context,
+                TestContext.Current.CancellationToken);
+
+            Assert.True(result.IsSuccess, result.Error?.ToString());
+            Assert.Equal(
+                WorkspacePathGuard.ResolveContained(
+                    worker,
+                    Path.Combine(worker, ".anchor"),
+                    ".").PhysicalPath,
+                Path.GetFullPath(
+                    result.Output!.Value.GetProperty("stdout").GetString()!.Trim()));
+        }
+        finally
+        {
+            Directory.Delete(origin, recursive: true);
+            Directory.Delete(worker, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task Shell_records_process_result_and_removes_sensitive_environment()
     {
         if (!OperatingSystem.IsMacOS() && !OperatingSystem.IsWindows())

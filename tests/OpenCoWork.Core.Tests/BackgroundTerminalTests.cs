@@ -12,6 +12,55 @@ namespace OpenCoWork.Core.Tests;
 public sealed class BackgroundTerminalTests
 {
     [Fact]
+    public async Task Start_uses_the_calling_thread_execution_root()
+    {
+        await using var fixture = await TerminalFixture.CreateAsync();
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var worker = Path.Combine(fixture.Workspace.Root, "worker");
+        Directory.CreateDirectory(worker);
+        var command = OperatingSystem.IsWindows() ? "cmd.exe" : "/bin/sh";
+        var arguments = OperatingSystem.IsWindows()
+            ? new[] { "/d", "/s", "/c", "echo worker>marker.txt" }
+            : ["-c", "printf worker > marker.txt"];
+        var sessionId = Guid.CreateVersion7();
+        var workspace = new ExecutionWorkspaceDescriptor(
+            CoWorkWorkspaceMode.Project,
+            worker,
+            Path.Combine(worker, "scratchpad"),
+            WorktreeId: null,
+            WorktreeRoot: null,
+            BaseCommitSha: null);
+
+        var result = await fixture.Runtime.StartAsync(
+            Context(
+                fixture.ThreadId,
+                new
+                {
+                    sessionId,
+                    command,
+                    arguments,
+                    maxDurationSeconds = 60,
+                },
+                workspace),
+            cancellationToken);
+        var marker = Path.Combine(worker, "marker.txt");
+        for (var attempt = 0; attempt < 100 && !File.Exists(marker); attempt++)
+        {
+            await Task.Delay(10, cancellationToken);
+        }
+
+        Assert.True(result.IsSuccess, result.Error?.ToString());
+        Assert.True(File.Exists(marker));
+        Assert.False(File.Exists(Path.Combine(fixture.Workspace.Root, "marker.txt")));
+        await fixture.Runtime.StopAsync(
+            Context(fixture.ThreadId, new { sessionId }),
+            cancellationToken);
+        await fixture.Runtime.ReleaseAsync(
+            Context(fixture.ThreadId, new { sessionId }),
+            cancellationToken);
+    }
+
+    [Fact]
     public async Task Session_is_idempotent_bounded_readable_and_releasable()
     {
         await using var fixture = await TerminalFixture.CreateAsync();
@@ -237,7 +286,10 @@ public sealed class BackgroundTerminalTests
                     item.Definition.Effects.HasFlag(ToolEffect.ExternalMutation));
     }
 
-    private static ToolInvocationContext Context(Guid threadId, object arguments)
+    private static ToolInvocationContext Context(
+        Guid threadId,
+        object arguments,
+        ExecutionWorkspaceDescriptor? workspace = null)
     {
         var element = arguments is JsonElement json
             ? json
@@ -256,7 +308,8 @@ public sealed class BackgroundTerminalTests
             element,
             new string('0', 64),
             SensitiveInputDetected: false,
-            snapshot);
+            snapshot,
+            ExecutionWorkspace: workspace);
     }
 
     private static (string Command, string[] Arguments) LongRunningCommand() =>

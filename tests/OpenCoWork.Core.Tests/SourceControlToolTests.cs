@@ -12,6 +12,118 @@ namespace OpenCoWork.Core.Tests;
 public sealed class SourceControlToolTests
 {
     [Fact]
+    public async Task Contextual_git_reads_only_the_calling_thread_worktree()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        using var workspace = new GitWorkspace();
+        await workspace.InitializeAsync(cancellationToken);
+        var worker = Path.Combine(workspace.Root, ".opencowork", "worker");
+        await workspace.RunGitAsync(
+            ["worktree", "add", "--detach", worker, "HEAD"],
+            cancellationToken);
+        var (tool, files) = CreateTool(workspace);
+        await TrustAsync(tool, files, workspace.Root, cancellationToken);
+        await File.WriteAllTextAsync(
+            Path.Combine(worker, "worker-only.txt"),
+            "worker",
+            cancellationToken);
+        var context = SourceControlContext(
+            new { },
+            new ExecutionWorkspaceDescriptor(
+                CoWorkWorkspaceMode.Worktree,
+                workspace.Root,
+                Path.Combine(worker, "scratchpad"),
+                Guid.CreateVersion7(),
+                worker,
+                await workspace.HeadAsync(cancellationToken)));
+
+        var status = await tool.StatusAsync(context, cancellationToken);
+        var escape = await tool.DiffAsync(
+            context with
+            {
+                Arguments = JsonSerializer.SerializeToElement(
+                    new { path = "../tracked.txt" }),
+            },
+            cancellationToken);
+
+        Assert.True(status.IsSuccess, status.Error?.ToString());
+        Assert.Contains("worker-only.txt", Output(status));
+        Assert.Equal(ToolErrorCodes.PathDenied, escape.Error!.Code);
+
+        File.Delete(Path.Combine(worker, "worker-only.txt"));
+        await workspace.RunGitAsync(
+            ["worktree", "remove", worker],
+            cancellationToken);
+    }
+
+    [Fact]
+    public async Task Managed_worktree_is_detached_base_fixed_and_retains_dirty_content()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        using var workspace = new GitWorkspace();
+        await workspace.InitializeAsync(cancellationToken);
+        var (tool, files) = CreateTool(workspace);
+        await TrustAsync(tool, files, workspace.Root, cancellationToken);
+        var service = new ManagedWorktreeService(
+            new OpenCoWorkPaths(workspace.Root),
+            tool);
+        var baseSha = await workspace.HeadAsync(cancellationToken);
+
+        var created = await service.CreateAsync(
+            new ManagedWorktreeCreateRequest(Guid.CreateVersion7(), baseSha),
+            cancellationToken);
+        await File.AppendAllTextAsync(
+            Path.Combine(workspace.Root, "tracked.txt"),
+            "origin-next\n",
+            cancellationToken);
+        await workspace.RunGitAsync(["add", "--", "tracked.txt"], cancellationToken);
+        await workspace.RunGitAsync(["commit", "-m", "origin next"], cancellationToken);
+
+        Assert.Equal(CoWorkWorktreeStatus.Ready, created.Status);
+        Assert.Equal(
+            baseSha,
+            (await workspace.RunGitAsync(
+                ["rev-parse", "HEAD"],
+                cancellationToken,
+                created.WorktreeRoot)).Trim());
+        Assert.Equal(
+            "HEAD",
+            (await workspace.RunGitAsync(
+                ["rev-parse", "--abbrev-ref", "HEAD"],
+                cancellationToken,
+                created.WorktreeRoot)).Trim());
+
+        await File.AppendAllTextAsync(
+            Path.Combine(created.WorktreeRoot, "tracked.txt"),
+            "dirty\n",
+            cancellationToken);
+        var retained = await service.RemoveAsync(
+            created.WorktreeId,
+            cancellationToken);
+        Assert.Equal(CoWorkWorktreeStatus.RetainedDirty, retained.Status);
+        Assert.True(retained.IsDirty);
+        Assert.True(Directory.Exists(created.WorktreeRoot));
+
+        await workspace.RunGitAsync(
+            ["restore", "--", "tracked.txt"],
+            cancellationToken,
+            created.WorktreeRoot);
+        var removed = await service.RemoveAsync(created.WorktreeId, cancellationToken);
+        Assert.Equal(CoWorkWorktreeStatus.Removed, removed.Status);
+        Assert.False(Directory.Exists(created.WorktreeRoot));
+
+        await File.WriteAllTextAsync(
+            Path.Combine(workspace.Root, "dirty-origin.txt"),
+            "dirty",
+            cancellationToken);
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => service.CreateAsync(
+                    new ManagedWorktreeCreateRequest(Guid.CreateVersion7(), baseSha),
+                    cancellationToken)
+                .AsTask());
+    }
+
+    [Fact]
     public async Task Untrusted_git_requires_trust()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
@@ -131,6 +243,28 @@ public sealed class SourceControlToolTests
     private static string Output(ToolBindingResult result) =>
         result.Output!.Value.GetProperty("stdout").GetString()!;
 
+    private static ToolInvocationContext SourceControlContext(
+        object arguments,
+        ExecutionWorkspaceDescriptor workspace)
+    {
+        var element = JsonSerializer.SerializeToElement(arguments);
+        return new ToolInvocationContext(
+            Guid.CreateVersion7(),
+            Guid.CreateVersion7(),
+            Guid.CreateVersion7(),
+            Guid.CreateVersion7(),
+            0,
+            "call-source-control",
+            "source_control__status",
+            element,
+            new string('a', 64),
+            SensitiveInputDetected: false,
+            new ToolRuntime().BuildSnapshot(
+                AgentMode.Agent,
+                new OpenCoWork.Core.Configuration.ToolsConfig()),
+            ExecutionWorkspace: workspace);
+    }
+
     private static (CoreSourceControlTool Tool, CapabilityFileStore Files) CreateTool(
         GitWorkspace workspace)
     {
@@ -192,9 +326,18 @@ public sealed class SourceControlToolTests
                 Path.Combine(Root, "tracked.txt"),
                 "clean\n",
                 cancellationToken);
-            await RunGitAsync(["add", "--", "tracked.txt"], cancellationToken);
+            await File.WriteAllTextAsync(
+                Path.Combine(Root, ".gitignore"),
+                ".opencowork/\n",
+                cancellationToken);
+            await RunGitAsync(
+                ["add", "--", "tracked.txt", ".gitignore"],
+                cancellationToken);
             await RunGitAsync(["commit", "-m", "initial"], cancellationToken);
         }
+
+        public async Task<string> HeadAsync(CancellationToken cancellationToken) =>
+            (await RunGitAsync(["rev-parse", "HEAD"], cancellationToken)).Trim();
 
         public void Dispose()
         {
@@ -209,14 +352,15 @@ public sealed class SourceControlToolTests
             Directory.Delete(Root, recursive: true);
         }
 
-        private async Task RunGitAsync(
+        public async Task<string> RunGitAsync(
             IReadOnlyList<string> arguments,
-            CancellationToken cancellationToken)
+            CancellationToken cancellationToken,
+            string? workingDirectory = null)
         {
             var startInfo = new ProcessStartInfo
             {
                 FileName = "git",
-                WorkingDirectory = Root,
+                WorkingDirectory = workingDirectory ?? Root,
                 UseShellExecute = false,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
@@ -237,6 +381,8 @@ public sealed class SourceControlToolTests
                 throw new InvalidOperationException(
                     $"{await stdout}\n{await stderr}");
             }
+
+            return await stdout;
         }
     }
 }

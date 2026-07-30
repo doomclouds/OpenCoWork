@@ -47,6 +47,12 @@ public sealed class SessionContractTests
         Assert.Equal(
             AgentMode.Agent,
             new CreateThreadRequest(id, ExpectedSequence: 0).AgentMode);
+        Assert.Contains(
+            nameof(ThreadSnapshot.ExecutionWorkspace),
+            typeof(ThreadSnapshot).GetProperties().Select(property => property.Name));
+        Assert.Contains(
+            nameof(ThreadSnapshot.CoWorkProvenance),
+            typeof(ThreadSnapshot).GetProperties().Select(property => property.Name));
     }
 
     [Fact]

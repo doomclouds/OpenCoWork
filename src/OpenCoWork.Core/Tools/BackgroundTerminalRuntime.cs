@@ -116,7 +116,11 @@ internal sealed class BackgroundTerminalRuntime
 
                 process = new Process
                 {
-                    StartInfo = CreateStartInfo(request),
+                    StartInfo = CreateStartInfo(
+                        request,
+                        WorkspacePathGuard.ResolveExecutionRoot(
+                            context.ExecutionWorkspace,
+                            _paths.WorkspaceRoot)),
                     EnableRaisingEvents = true,
                 };
                 if (!process.Start())
@@ -676,17 +680,19 @@ internal sealed class BackgroundTerminalRuntime
             reader.GetInt32(1));
     }
 
-    private ProcessStartInfo CreateStartInfo(StartRequest request)
+    private ProcessStartInfo CreateStartInfo(
+        StartRequest request,
+        string root)
     {
         string workingDirectory;
         try
         {
             workingDirectory = request.WorkingDirectory is null
-                ? _paths.WorkspaceRoot
+                ? root
                 : WorkspacePathGuard.ResolveContained(
-                    _paths.WorkspaceRoot,
+                    root,
                     Path.Combine(
-                        _paths.WorkspaceRoot,
+                        root,
                         ".opencowork-terminal-anchor"),
                     request.WorkingDirectory).PhysicalPath;
         }

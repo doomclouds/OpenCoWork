@@ -1,3 +1,5 @@
+using OpenCoWork.Abstractions;
+
 namespace OpenCoWork.Core.Workspaces;
 
 public sealed class OpenCoWorkPaths
@@ -233,6 +235,30 @@ public sealed class WorkspacePathEscapeException : IOException
 
 public static class WorkspacePathGuard
 {
+    public static string ResolveExecutionRoot(
+        ExecutionWorkspaceDescriptor? workspace,
+        string fallbackRoot)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(fallbackRoot);
+        if (workspace is null)
+        {
+            return Path.GetFullPath(fallbackRoot);
+        }
+
+        var root = workspace.Mode switch
+        {
+            CoWorkWorkspaceMode.Project => workspace.WorkspaceRoot,
+            CoWorkWorkspaceMode.Worktree
+                when workspace.WorktreeId is not null &&
+                     !string.IsNullOrWhiteSpace(workspace.WorktreeRoot) &&
+                     !string.IsNullOrWhiteSpace(workspace.BaseCommitSha) =>
+                workspace.WorktreeRoot,
+            _ => throw new InvalidOperationException(
+                "Execution Workspace descriptor is invalid."),
+        };
+        return Path.GetFullPath(root!);
+    }
+
     public static ResolvedWorkspacePath ResolveContained(
         string allowedRoot,
         string declaringFile,

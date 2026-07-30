@@ -1029,7 +1029,10 @@ internal sealed partial class ToolRuntime
               "$schema":"https://json-schema.org/draft/2020-12/schema",
               "$defs":{"path":{"type":"string","minLength":1}},
               "type":"object",
-              "properties":{"path":{"$ref":"#/$defs/path"}},
+              "properties":{
+                "path":{"$ref":"#/$defs/path"},
+                "area":{"type":"string","enum":["workspace","scratchpad"]}
+              },
               "required":["path"],
               "additionalProperties":false
             }
@@ -1039,7 +1042,8 @@ internal sealed partial class ToolRuntime
             TimeSpan.FromSeconds(30),
             fileTools is null
                 ? PlaceholderExecutor
-                : fileTools.ListAsync);
+                : fileTools.ListAsync,
+            fileTools is null ? null : fileTools.ListAsync);
         Add(
             "file.read",
             new ToolName("file", "read"),
@@ -1051,6 +1055,7 @@ internal sealed partial class ToolRuntime
               "type":"object",
               "properties":{
                 "path":{"$ref":"#/$defs/path"},
+                "area":{"type":"string","enum":["workspace","scratchpad"]},
                 "startLine":{"type":"integer","minimum":1},
                 "lineCount":{"type":"integer","minimum":1}
               },
@@ -1063,7 +1068,8 @@ internal sealed partial class ToolRuntime
             TimeSpan.FromSeconds(30),
             fileTools is null
                 ? PlaceholderExecutor
-                : fileTools.ReadAsync);
+                : fileTools.ReadAsync,
+            fileTools is null ? null : fileTools.ReadAsync);
         Add(
             "file.write",
             new ToolName("file", "write"),
@@ -1075,6 +1081,7 @@ internal sealed partial class ToolRuntime
               "type":"object",
               "properties":{
                 "path":{"$ref":"#/$defs/path"},
+                "area":{"type":"string","enum":["workspace","scratchpad"]},
                 "content":{"type":"string"},
                 "expectedSha256":{"type":"string","pattern":"^[0-9a-f]{64}$"}
               },
@@ -1087,7 +1094,8 @@ internal sealed partial class ToolRuntime
             TimeSpan.FromSeconds(30),
             fileTools is null
                 ? PlaceholderExecutor
-                : fileTools.WriteAsync);
+                : fileTools.WriteAsync,
+            fileTools is null ? null : fileTools.WriteAsync);
         Add(
             "shell.run",
             new ToolName("shell", "run"),
@@ -1113,7 +1121,8 @@ internal sealed partial class ToolRuntime
             TimeSpan.FromMinutes(10),
             shellTool is null
                 ? PlaceholderExecutor
-                : shellTool.RunAsync);
+                : shellTool.RunAsync,
+            shellTool is null ? null : shellTool.RunAsync);
         Add(
             "skill.load",
             new ToolName("skill", "load"),
@@ -1309,6 +1318,7 @@ internal sealed partial class ToolRuntime
             sourceControl is null
                 ? PlaceholderExecutor
                 : sourceControl.StatusAsync,
+            sourceControl is null ? null : sourceControl.StatusAsync,
             audience: ToolInvocationAudience.Model | ToolInvocationAudience.Host);
         Add(
             "source_control.diff",
@@ -1328,6 +1338,7 @@ internal sealed partial class ToolRuntime
             sourceControl is null
                 ? PlaceholderExecutor
                 : sourceControl.DiffAsync,
+            sourceControl is null ? null : sourceControl.DiffAsync,
             audience: ToolInvocationAudience.Model | ToolInvocationAudience.Host);
         Add(
             "source_control.log",
@@ -1350,6 +1361,7 @@ internal sealed partial class ToolRuntime
             sourceControl is null
                 ? PlaceholderExecutor
                 : sourceControl.LogAsync,
+            sourceControl is null ? null : sourceControl.LogAsync,
             audience: ToolInvocationAudience.Model | ToolInvocationAudience.Host);
         Add(
             "source_control.show",
@@ -1373,6 +1385,7 @@ internal sealed partial class ToolRuntime
             sourceControl is null
                 ? PlaceholderExecutor
                 : sourceControl.ShowAsync,
+            sourceControl is null ? null : sourceControl.ShowAsync,
             audience: ToolInvocationAudience.Model | ToolInvocationAudience.Host);
         Add(
             "terminal.start",

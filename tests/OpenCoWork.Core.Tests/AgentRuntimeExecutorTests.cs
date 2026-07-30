@@ -1,4 +1,6 @@
 using System.Runtime.CompilerServices;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
 using OpenCoWork.Abstractions;
@@ -13,6 +15,54 @@ namespace OpenCoWork.Core.Tests;
 
 public sealed class AgentRuntimeExecutorTests
 {
+    [Fact]
+    public async Task Workspace_instructions_come_from_the_calling_thread_execution_root()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var origin = Path.Combine(
+            Path.GetTempPath(),
+            $"opencowork-instructions-origin-{Guid.NewGuid():N}");
+        var worker = Path.Combine(
+            Path.GetTempPath(),
+            $"opencowork-instructions-worker-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(origin);
+        Directory.CreateDirectory(worker);
+        try
+        {
+            await File.WriteAllTextAsync(
+                Path.Combine(origin, "AGENTS.md"),
+                "origin\n",
+                cancellationToken);
+            await File.WriteAllTextAsync(
+                Path.Combine(worker, "AGENTS.md"),
+                "worker\n",
+                cancellationToken);
+            var workspace = new ExecutionWorkspaceDescriptor(
+                CoWorkWorkspaceMode.Project,
+                worker,
+                Path.Combine(worker, "scratchpad"),
+                WorktreeId: null,
+                WorktreeRoot: null,
+                BaseCommitSha: null);
+            var sink = new RecordingSink();
+
+            await Executor(origin, "secret", _ => new ScriptedClient())
+                .ExecuteAsync(Session(workspace), sink, cancellationToken);
+
+            var snapshot = Assert.Single(
+                sink.Intents.OfType<RecordAgentInvocationSnapshotIntent>()).Snapshot;
+            Assert.Equal(
+                Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes("worker\n")))
+                    .ToLowerInvariant(),
+                snapshot.WorkspaceInstructions!.ContentSha256);
+        }
+        finally
+        {
+            Directory.Delete(origin, recursive: true);
+            Directory.Delete(worker, recursive: true);
+        }
+    }
+
     [Fact]
     public async Task Commits_snapshot_first_flushes_first_visible_delta_and_finishes_once()
     {
@@ -711,7 +761,8 @@ public sealed class AgentRuntimeExecutorTests
             },
         };
 
-    private static AgentSession Session()
+    private static AgentSession Session(
+        ExecutionWorkspaceDescriptor? executionWorkspace = null)
     {
         var threadId =
             Guid.Parse("019f2fb7-f514-7389-a79b-8af5d3f2c827");
@@ -741,7 +792,8 @@ public sealed class AgentRuntimeExecutorTests
                 diagnostic: null,
                 "token-plan",
                 "qwen3.8-max-preview",
-                AgentMode.Agent),
+                AgentMode.Agent,
+                executionWorkspace),
             new TurnSnapshot(
                 turnId,
                 threadId,

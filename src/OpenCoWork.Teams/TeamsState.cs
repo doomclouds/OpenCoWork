@@ -120,6 +120,7 @@ internal sealed class TeamsStateMigrationContributor
 
     private static readonly (string Table, string[] Columns)[] RequiredColumns =
     [
+        ("threads", ["execution_workspace_json", "cowork_provenance_json"]),
         ("agent_profiles", ["description"]),
         ("mission_members", ["description"]),
         ("mission_tasks", ["objective", "instructions"]),
@@ -127,6 +128,13 @@ internal sealed class TeamsStateMigrationContributor
 
     private const string Sql =
         """
+        ALTER TABLE threads
+            ADD COLUMN execution_workspace_json TEXT NULL CHECK (
+                execution_workspace_json IS NULL OR json_valid(execution_workspace_json));
+        ALTER TABLE threads
+            ADD COLUMN cowork_provenance_json TEXT NULL CHECK (
+                cowork_provenance_json IS NULL OR json_valid(cowork_provenance_json));
+
         CREATE TABLE cowork_state (
             id INTEGER NOT NULL PRIMARY KEY CHECK (id = 1),
             current_revision INTEGER NOT NULL DEFAULT 0 CHECK (current_revision >= 0),

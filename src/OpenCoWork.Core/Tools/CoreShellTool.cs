@@ -19,7 +19,6 @@ internal sealed class CoreShellTool
     ];
     private static readonly UTF8Encoding StrictUtf8 =
         new(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
-    private readonly string _anchor;
     private readonly HashSet<string> _credentialEnvironmentNames;
     private readonly string _root;
 
@@ -30,7 +29,6 @@ internal sealed class CoreShellTool
         ArgumentNullException.ThrowIfNull(paths);
         ArgumentNullException.ThrowIfNull(credentialEnvironmentNames);
         _root = paths.WorkspaceRoot;
-        _anchor = Path.Combine(_root, ".opencowork-anchor");
         _credentialEnvironmentNames = credentialEnvironmentNames.ToHashSet(
             OperatingSystem.IsWindows()
                 ? StringComparer.OrdinalIgnoreCase
@@ -39,6 +37,22 @@ internal sealed class CoreShellTool
 
     public async ValueTask<ToolBindingResult> RunAsync(
         JsonElement arguments,
+        CancellationToken cancellationToken) =>
+        await RunAsync(arguments, _root, cancellationToken);
+
+    public async ValueTask<ToolBindingResult> RunAsync(
+        ToolInvocationContext context,
+        CancellationToken cancellationToken) =>
+        await RunAsync(
+            context.Arguments,
+            WorkspacePathGuard.ResolveExecutionRoot(
+                context.ExecutionWorkspace,
+                _root),
+            cancellationToken);
+
+    private async ValueTask<ToolBindingResult> RunAsync(
+        JsonElement arguments,
+        string root,
         CancellationToken cancellationToken)
     {
         Process? process = null;
@@ -54,7 +68,7 @@ internal sealed class CoreShellTool
                     "Shell command is invalid.");
             }
 
-            var workingDirectory = ResolveWorkingDirectory(arguments);
+            var workingDirectory = ResolveWorkingDirectory(arguments, root);
             var host = CreateHost(command);
             if (host is null)
             {
@@ -225,13 +239,15 @@ internal sealed class CoreShellTool
         }
     }
 
-    private string ResolveWorkingDirectory(JsonElement arguments)
+    private static string ResolveWorkingDirectory(
+        JsonElement arguments,
+        string root)
     {
         if (!arguments.TryGetProperty(
                 "workingDirectory",
                 out var configured))
         {
-            return _root;
+            return root;
         }
 
         if (configured.ValueKind != JsonValueKind.String ||
@@ -246,8 +262,8 @@ internal sealed class CoreShellTool
         try
         {
             var path = WorkspacePathGuard.ResolveContained(
-                _root,
-                _anchor,
+                root,
+                Path.Combine(root, ".opencowork-anchor"),
                 configured.GetString()!);
             if (!Directory.Exists(path.PhysicalPath))
             {

@@ -10,7 +10,9 @@ internal sealed record ThreadCreatedFact(
     string RequestSha256,
     string? ProviderId = null,
     string? ModelId = null,
-    AgentMode AgentMode = AgentMode.Agent);
+    AgentMode AgentMode = AgentMode.Agent,
+    ExecutionWorkspaceDescriptor? ExecutionWorkspace = null,
+    CoWorkThreadProvenance? CoWorkProvenance = null);
 
 internal sealed record ThreadRenamedFact(
     string DisplayName,
@@ -63,7 +65,9 @@ internal sealed record ThreadForkedFact(
     string RequestSha256,
     string? ProviderId = null,
     string? ModelId = null,
-    AgentMode AgentMode = AgentMode.Agent);
+    AgentMode AgentMode = AgentMode.Agent,
+    ExecutionWorkspaceDescriptor? ExecutionWorkspace = null,
+    CoWorkThreadProvenance? CoWorkProvenance = null);
 
 internal sealed record ThreadRolledBackFact(
     long TargetSequence,

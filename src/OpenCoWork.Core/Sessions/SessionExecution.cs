@@ -4088,7 +4088,9 @@ internal sealed partial class SessionService
             thread.Diagnostic,
             thread.ProviderId,
             thread.ModelId,
-            thread.AgentMode);
+            thread.AgentMode,
+            thread.ExecutionWorkspace,
+            thread.CoWorkProvenance);
 
     private InternalOperation InternalRequestHash(
         SessionEventType eventType,

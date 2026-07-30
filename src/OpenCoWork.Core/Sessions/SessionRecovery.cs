@@ -423,6 +423,7 @@ internal sealed partial class SessionService
                 targetThreadId,
                 remapIds: true);
             var timestamp = _timeProvider.GetUtcNow();
+            var executionWorkspace = CreateProjectWorkspace(targetThreadId);
             var target = new ThreadSnapshot(
                 targetThreadId,
                 string.IsNullOrWhiteSpace(request.DisplayName)
@@ -440,7 +441,9 @@ internal sealed partial class SessionService
                 diagnostic: null,
                 source.ProviderId,
                 source.ModelId,
-                source.AgentMode);
+                source.AgentMode,
+                executionWorkspace,
+                coWorkProvenance: null);
             var targetGate = GetThreadGate(targetThreadId);
             await targetGate.WaitAsync(cancellationToken);
             try
@@ -459,7 +462,9 @@ internal sealed partial class SessionService
                         requestSha256,
                         source.ProviderId,
                         source.ModelId,
-                        source.AgentMode),
+                        source.AgentMode,
+                        executionWorkspace,
+                        CoWorkProvenance: null),
                     SessionEventType.ThreadForked,
                     cancellationToken);
                 if (result.Status != SessionCommandStatus.Rejected)

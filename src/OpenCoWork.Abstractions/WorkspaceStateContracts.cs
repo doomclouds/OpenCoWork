@@ -19,6 +19,15 @@ public sealed record ExecutionWorkspaceDescriptor(
     string? WorktreeRoot,
     string? BaseCommitSha);
 
+public sealed record CoWorkThreadProvenance(
+    Guid AgentRunId,
+    CoWorkAgentRunKind RunKind,
+    Guid? MissionId = null,
+    Guid? MissionTaskId = null,
+    Guid? MemberId = null,
+    Guid? ParentAgentRunId = null,
+    Guid? ParentThreadId = null);
+
 public interface IWorkspaceStateStore
 {
     ValueTask<T> ReadAsync<T>(

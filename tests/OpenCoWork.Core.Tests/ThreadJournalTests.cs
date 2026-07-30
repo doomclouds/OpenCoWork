@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using OpenCoWork.Abstractions;
 using OpenCoWork.Core.Sessions;
 using OpenCoWork.Core.Workspaces;
@@ -11,6 +12,58 @@ namespace OpenCoWork.Core.Tests;
 
 public sealed class ThreadJournalTests
 {
+    [Fact]
+    public async Task Thread_created_fact_replays_frozen_workspace_and_cowork_provenance()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        using var files = new TempWorkspace();
+        var journal = new ThreadJournal(files.Paths);
+        var threadId = Guid.CreateVersion7();
+        var runId = Guid.CreateVersion7();
+        var workspace = new ExecutionWorkspaceDescriptor(
+            CoWorkWorkspaceMode.Worktree,
+            files.Root,
+            Path.Combine(files.Root, "scratchpad"),
+            Guid.CreateVersion7(),
+            Path.Combine(files.Root, "worktree"),
+            new string('a', 40));
+        var provenance = new CoWorkThreadProvenance(
+            runId,
+            CoWorkAgentRunKind.MissionTask,
+            MissionId: Guid.CreateVersion7(),
+            MissionTaskId: Guid.CreateVersion7());
+
+        await journal.AppendAsync(
+            ThreadJournalLocation.Active,
+            Draft(
+                threadId,
+                sequence: 1,
+                new ThreadCreatedFact(
+                    "worker",
+                    HistoryMode.Server,
+                    FirstUserMessage: null,
+                    new string('b', 64),
+                    ExecutionWorkspace: workspace,
+                    CoWorkProvenance: provenance)),
+            cancellationToken);
+
+        var replay = await journal.ReplayAsync(
+            ThreadJournalLocation.Active,
+            threadId,
+            cancellationToken);
+        var fact = Assert.Single(replay.Entries).Payload.Deserialize<ThreadCreatedFact>(
+            new JsonSerializerOptions
+            {
+                PropertyNameCaseInsensitive = true,
+                Converters =
+                {
+                    new JsonStringEnumConverter(JsonNamingPolicy.CamelCase),
+                },
+            });
+        Assert.Equal(workspace, fact!.ExecutionWorkspace);
+        Assert.Equal(provenance, fact.CoWorkProvenance);
+    }
+
     [Fact]
     public async Task Append_and_replay_use_the_canonical_jsonl_contract()
     {
