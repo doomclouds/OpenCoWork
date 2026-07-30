@@ -200,15 +200,15 @@ M10 仍须在最终发布候选上重跑完整双平台验收。
 
 | AcceptanceId | Requirement | CapabilityIds | EvidenceType | Platforms | ExpectedEvidence | Status | SupersededBy |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| M8-ACC-001 | YAML Automation 定义通过 Schema 验证并生成稳定定义版本。 | CAP-061 | ContractSnapshot | All | Valid/Invalid Corpus 与版本摘要快照。 | Planned | — |
-| M8-ACC-002 | Fluid 模板在受限上下文执行，失败不创建半成品 Run 或泄漏 Secret。 | CAP-062 | SecurityTest | All | 模板沙箱与 Secret Canary。 | Planned | — |
-| M8-ACC-003 | Manual/Cron、时区、DST 和 next-run 计算确定，重启不重复派发。 | CAP-063 | AutomatedTest | DualPlatform | 时区/DST Corpus 与双平台时钟测试。 | Planned | — |
-| M8-ACC-004 | Run 冻结定义、权限、Plugin、Skill 和 Tool Snapshot，热更新只影响后续 Run。 | CAP-064 | AutomatedTest | All | 运行中修改定义/插件的对照测试。 | Planned | — |
-| M8-ACC-005 | 最大并发、单任务互斥、Lease 和 Worktree 分配在竞态下正确。 | CAP-065 | PerformanceTest | All | 并发压力与唯一 Lease 报告。 | Planned | — |
-| M8-ACC-006 | 结果不明的非幂等工具使 Run 进入 NeedsAttention，不自动重试。 | CAP-035, CAP-066 | FaultInjection | All | 外部副作用提交窗口故障测试。 | Planned | — |
-| M8-ACC-007 | 无人值守权限不扩大，Approval 不能通过 Console 自动放行。 | CAP-066 | SecurityTest | All | 权限交集与无人终端测试。 | Planned | — |
-| M8-ACC-008 | Running/Pending/Lease 各状态崩溃后恢复且不重复创建 Turn 或 Worktree。 | CAP-065 | FaultInjection | DualPlatform | 进程终止矩阵和 Reconciler 证据。 | Planned | — |
-| M8-ACC-009 | NeedsAttention 可由协议恢复，也能按策略取消或超时并重排下一周期。 | CAP-066 | AutomatedTest | All | Wire 恢复、过期与重排场景。 | Planned | — |
+| M8-ACC-001 | YAML Automation 定义通过 Schema 验证并生成稳定定义版本。 | CAP-061 | ContractSnapshot | All | `AutomationDefinitionTests`、`AutomationSourceTests` 与 1,000 Definition Corpus。 | Passed | — |
+| M8-ACC-002 | Fluid 模板在受限上下文执行，失败不创建半成品 Run 或泄漏 Secret。 | CAP-062 | SecurityTest | All | `AutomationTemplateTests`、`AutomationServiceTests` 与 Secret Canary。 | Passed | — |
+| M8-ACC-003 | Manual/Cron、时区、DST 和 next-run 计算确定，重启不重复派发。 | CAP-063 | AutomatedTest | DualPlatform | macOS Cron/DST、去重与发布目录已通过；Windows 真机待验。 | Planned | — |
+| M8-ACC-004 | Run 冻结定义、权限、Plugin、Skill 和 Tool Snapshot，热更新只影响后续 Run。 | CAP-064 | AutomatedTest | All | `AutomationRuntimeSnapshotTests`、`AutomationServiceTests` 与发布目录热更新。 | Passed | — |
+| M8-ACC-005 | 最大并发、单任务互斥、Lease 和 Worktree 分配在竞态下正确。 | CAP-065 | PerformanceTest | All | 64 Start/16 上限、10,000 Run 分页、Lease/Worktree 竞态，SQLite Busy 为 0。 | Passed | — |
+| M8-ACC-006 | 结果不明的非幂等工具使 Run 进入 NeedsAttention，不自动重试。 | CAP-035, CAP-066 | FaultInjection | All | `AutomationDispatchTests`、`AutomationInteractionTests` 全副作用窗口。 | Passed | — |
+| M8-ACC-007 | 无人值守权限不扩大，Approval 不能通过 Console 自动放行。 | CAP-066 | SecurityTest | All | 权限交集、Approval/UserInput 与无人终端安全测试。 | Passed | — |
+| M8-ACC-008 | Running/Pending/Lease 各状态崩溃后恢复且不重复创建 Turn 或 Worktree。 | CAP-065 | FaultInjection | DualPlatform | macOS Dispatch/Reconciler/路径恢复已通过；Windows 强杀与 Reparse/Junction 真机待验。 | Planned | — |
+| M8-ACC-009 | NeedsAttention 可由协议恢复，也能按策略取消或超时并重排下一周期。 | CAP-066 | AutomatedTest | All | `AutomationInteractionTests`、`AutomationReconcilerTests` 与 Wire 1.3。 | Passed | — |
 
 ## 11. M9 - Gateway and Operations（10）
 
@@ -254,10 +254,10 @@ M10 仍须在最终发布候选上重跑完整双平台验收。
 | M5 | 9 | Passed |
 | M6 | 10 | Passed |
 | M7 | 10 | 8 Passed / 2 Planned |
-| M8 | 9 | Planned |
+| M8 | 9 | 7 Passed / 2 Planned |
 | M9 | 10 | Planned |
 | M10 | 12 | Planned |
-| **Total** | **104** | **71 Passed / 33 Planned** |
+| **Total** | **104** | **78 Passed / 26 Planned** |
 
 每个 Slice 标记 Done 前必须：
 

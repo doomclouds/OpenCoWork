@@ -2,14 +2,14 @@
 
 ## 文档状态
 
-- 状态：设计已冻结（修订 1）
+- 状态：设计已冻结，实现已完成；Outcome 10 等待 `win-x64` 真机验收
 - 日期：2026-07-30
 - 所属里程碑：OpenCoWork Runtime 1.0 / M8
 - 已确认决策：29 项
 - 待确认决策：无
 - 对应计划：
   [M8 Automations and Scheduler 实施计划](../plans/2026-07-30-open-cowork-m8-automations-scheduler-implementation-plan.md)
-- 对应归档：尚未实现
+- 对应归档：待双平台真机验收后创建
 - 继续工作前必须先阅读：
   - [OpenCoWork Runtime 1.0 路线规格](2026-07-25-open-cowork-runtime-1-0-roadmap.md)
   - [M0 Contract Freeze](2026-07-25-open-cowork-m0-contract-freeze-design.md)

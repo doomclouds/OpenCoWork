@@ -1,6 +1,7 @@
 # OpenCoWork M8 Automations and Scheduler 实施计划
 
-**Status:** Design + Plan 已冻结（修订 1）；Outcome 1-9 已完成，继续 Outcome 10。
+**Status:** Outcome 1-9 已完成；Outcome 10 的自动化与 `osx-arm64` 已通过，
+`win-x64` 真机验收待执行，M8 未关闭。
 
 **Goal:** 在现有 Workspace、Session、Agent、Tool、Capability、Managed Worktree、
 SQLite State 和 Wire 边界上交付安全、可版本控制、可恢复的无人值守 Automation
@@ -26,11 +27,12 @@ Thread/Turn、跨根写入、无人值守提权或非幂等副作用自动重放
 
 ## 当前实现基线
 
-- `dev` 当前代码基线为 `a7a97d3`；
-- M7 Outcome 1-9 已完成，Workspace State Schema 当前为 v6，Wire 最新版本为 1.2；
+- `dev` 当前代码基线 `a710866` 已完成 Outcome 1-9 与固定性能负载；
+- Workspace State Schema 已原子升级到 v7，OpenCoWork Wire 已支持
+  1.0/1.1/1.2/1.3；
 - M7 的 `win-x64` 真机验收仍待执行，M8 不得关闭或替代该证据；
-- `src/OpenCoWork.Automations/` 当前只有 M0 冻结的占位工程，没有运行时代码；
-- `OpenCoWork.Automations` 已由 App 引用，并保持
+- `OpenCoWork.Automations` 已交付定义、模板、Schedule、Run、Intent、Lease、
+  Reconciler、Attention、Retention 与 Wire 1.3，并保持
   Automations → Abstractions/Protocol、Automations ↛ Core/Teams 的项目边界；
 - State 继续由 `StateRuntime`、`StateWriteCoordinator` 和
   `IWorkspaceStateMigrationContributor` 统一迁移和串行写入；
@@ -40,6 +42,8 @@ Thread/Turn、跨根写入、无人值守提权或非幂等副作用自动重放
   `ToolInvocationPipeline`；
 - 模块生命周期继续复用 `OpenCoWorkModule`、`WorkspaceRuntime`、
   `ReportDegraded` / `ClearDegraded`，不注册独立 `IHostedService`；
+- 2026-07-30 的 `osx-arm64` Release、专项/全量回归与发布目录 TestClient 已通过；
+  `win-x64` App/TestClient 仅完成交叉发布，不能替代 Windows 真机证据；
 - M0 已冻结测试项目集合；M8 测试进入现有 Architecture、Core、Integration、
   Protocol Tests 和 Protocol TestClient，不创建新测试程序集；
 - M8 不增加真实 Provider 声明，调度、恢复和发布验收使用确定性 Fake Agent/Tool。
