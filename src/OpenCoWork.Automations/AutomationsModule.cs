@@ -51,6 +51,8 @@ public sealed class AutomationsModule : IOpenCoWorkModule
             services.AddSingleton(contributor);
         }
 
+        services.TryAddSingleton<AutomationDefinitionLoader>();
+        services.TryAddSingleton<AutomationTemplateRenderer>();
         services.TryAddSingleton<AutomationsModuleRuntime>();
     }
 

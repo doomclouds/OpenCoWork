@@ -38,6 +38,9 @@ public static class OpenCoWorkSessionExtensions
         services.TryAddSingleton<ProjectWriterLeaseService>();
         services.TryAddSingleton<IProjectWriterLeaseService>(serviceProvider =>
             serviceProvider.GetRequiredService<ProjectWriterLeaseService>());
+        services.TryAddSingleton<JsonSchemaValidationService>();
+        services.TryAddSingleton<IJsonSchemaValidationService>(serviceProvider =>
+            serviceProvider.GetRequiredService<JsonSchemaValidationService>());
         services.TryAddSingleton(serviceProvider =>
         {
             var paths = serviceProvider.GetRequiredService<OpenCoWorkPaths>();
