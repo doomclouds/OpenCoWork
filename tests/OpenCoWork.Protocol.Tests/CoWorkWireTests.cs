@@ -15,7 +15,7 @@ public sealed class CoWorkWireTests
             .GetMethods(BindingFlags.Instance | BindingFlags.Public)
             .Select(method => method
                 .GetCustomAttribute<OpenCoWorkWireMethodAttribute>())
-            .Where(attribute => attribute?.Since == OpenCoWorkWire.LatestVersion)
+            .Where(attribute => attribute?.Since == OpenCoWorkWire.CoWorkVersion)
             .Cast<OpenCoWorkWireMethodAttribute>()
             .ToArray();
         var methods = declarations.Select(attribute => attribute.Method).ToArray();

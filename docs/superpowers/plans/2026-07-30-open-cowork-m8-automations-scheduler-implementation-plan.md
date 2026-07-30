@@ -1,6 +1,6 @@
 # OpenCoWork M8 Automations and Scheduler 实施计划
 
-**Status:** Design + Plan 已冻结（修订 1）；Outcome 1-8 已完成，继续 Outcome 9。
+**Status:** Design + Plan 已冻结（修订 1）；Outcome 1-9 已完成，继续 Outcome 10。
 
 **Goal:** 在现有 Workspace、Session、Agent、Tool、Capability、Managed Worktree、
 SQLite State 和 Wire 边界上交付安全、可版本控制、可恢复的无人值守 Automation

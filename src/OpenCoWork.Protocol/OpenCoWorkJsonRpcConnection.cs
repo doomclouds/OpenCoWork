@@ -57,6 +57,7 @@ public sealed partial class OpenCoWorkJsonRpcConnection : IAsyncDisposable
     private readonly ISessionService _sessions;
     private readonly ICapabilityService? _capabilities;
     private readonly ICoWorkService? _coWork;
+    private readonly IAutomationService? _automations;
     private readonly string _workspacePath;
     private readonly string _transport;
     private readonly Func<ReadOnlyMemory<byte>, CancellationToken, ValueTask> _send;
@@ -69,6 +70,7 @@ public sealed partial class OpenCoWorkJsonRpcConnection : IAsyncDisposable
     private long _nextClientRequestId;
     private string _wireVersion = OpenCoWorkWire.Version;
     private int _capabilitySubscribed;
+    private int _automationSubscribed;
     private int _initialized;
     private int _disposed;
 
@@ -81,6 +83,7 @@ public sealed partial class OpenCoWorkJsonRpcConnection : IAsyncDisposable
             sessions,
             capabilities: null,
             coWork: null,
+            automations: null,
             workspacePath,
             transport,
             send)
@@ -93,7 +96,14 @@ public sealed partial class OpenCoWorkJsonRpcConnection : IAsyncDisposable
         string workspacePath,
         string transport,
         Func<ReadOnlyMemory<byte>, CancellationToken, ValueTask> send)
-        : this(sessions, capabilities, coWork: null, workspacePath, transport, send)
+        : this(
+            sessions,
+            capabilities,
+            coWork: null,
+            automations: null,
+            workspacePath,
+            transport,
+            send)
     {
     }
 
@@ -101,6 +111,25 @@ public sealed partial class OpenCoWorkJsonRpcConnection : IAsyncDisposable
         ISessionService sessions,
         ICapabilityService? capabilities,
         ICoWorkService? coWork,
+        string workspacePath,
+        string transport,
+        Func<ReadOnlyMemory<byte>, CancellationToken, ValueTask> send)
+        : this(
+            sessions,
+            capabilities,
+            coWork,
+            automations: null,
+            workspacePath,
+            transport,
+            send)
+    {
+    }
+
+    public OpenCoWorkJsonRpcConnection(
+        ISessionService sessions,
+        ICapabilityService? capabilities,
+        ICoWorkService? coWork,
+        IAutomationService? automations,
         string workspacePath,
         string transport,
         Func<ReadOnlyMemory<byte>, CancellationToken, ValueTask> send)
@@ -112,6 +141,7 @@ public sealed partial class OpenCoWorkJsonRpcConnection : IAsyncDisposable
         _sessions = sessions;
         _capabilities = capabilities;
         _coWork = coWork;
+        _automations = automations;
         _workspacePath = Path.GetFullPath(workspacePath);
         _transport = transport;
         _send = send;
@@ -373,6 +403,10 @@ public sealed partial class OpenCoWorkJsonRpcConnection : IAsyncDisposable
         {
             _capabilities!.CatalogChanged -= OnCapabilityCatalogChanged;
         }
+        if (Interlocked.Exchange(ref _automationSubscribed, 0) != 0)
+        {
+            _automations!.Changed -= OnAutomationChanged;
+        }
 
         foreach (var cancellation in _inFlight.Values)
         {
@@ -401,11 +435,16 @@ public sealed partial class OpenCoWorkJsonRpcConnection : IAsyncDisposable
         ArgumentNullException.ThrowIfNull(request.WireVersions);
         ArgumentException.ThrowIfNullOrWhiteSpace(request.Workspace.Path);
         var wireVersion =
-            _coWork is not null &&
+            _automations is not null &&
             request.WireVersions.Contains(
                 OpenCoWorkWire.LatestVersion,
                 StringComparer.Ordinal)
                 ? OpenCoWorkWire.LatestVersion
+                : _coWork is not null &&
+            request.WireVersions.Contains(
+                OpenCoWorkWire.CoWorkVersion,
+                StringComparer.Ordinal)
+                ? OpenCoWorkWire.CoWorkVersion
                 : _capabilities is not null &&
             request.WireVersions.Contains(
                 OpenCoWorkWire.CapabilityVersion,
@@ -460,6 +499,12 @@ public sealed partial class OpenCoWorkJsonRpcConnection : IAsyncDisposable
         {
             _capabilities!.CatalogChanged += OnCapabilityCatalogChanged;
         }
+        if (wireVersion == OpenCoWorkWire.AutomationVersion &&
+            _automations is not null &&
+            Interlocked.CompareExchange(ref _automationSubscribed, 1, 0) == 0)
+        {
+            _automations.Changed += OnAutomationChanged;
+        }
 
         var serverCapabilities = new List<string>
         {
@@ -478,10 +523,17 @@ public sealed partial class OpenCoWorkJsonRpcConnection : IAsyncDisposable
             }
         }
 
-        if (wireVersion == OpenCoWorkWire.LatestVersion)
+        if (VersionRank(wireVersion) >= VersionRank(OpenCoWorkWire.CoWorkVersion) &&
+            _coWork is not null)
         {
             serverCapabilities.Add("coWorkManagement");
             serverCapabilities.Add("coWorkNotifications");
+        }
+
+        if (wireVersion == OpenCoWorkWire.AutomationVersion)
+        {
+            serverCapabilities.Add("automationManagement");
+            serverCapabilities.Add("automationNotifications");
         }
 
         return new WireInitializeResponse(
@@ -513,7 +565,8 @@ public sealed partial class OpenCoWorkJsonRpcConnection : IAsyncDisposable
     {
         OpenCoWorkWire.Version => 0,
         OpenCoWorkWire.CapabilityVersion => 1,
-        OpenCoWorkWire.LatestVersion => 2,
+        OpenCoWorkWire.CoWorkVersion => 2,
+        OpenCoWorkWire.AutomationVersion => 3,
         _ => -1,
     };
 
@@ -858,6 +911,34 @@ public sealed partial class OpenCoWorkJsonRpcConnection : IAsyncDisposable
             "worktree/remove" => await RemoveWorktreeAsync(
                 Deserialize<WireWorktreeCommandRequest>(parameters),
                 cancellationToken),
+            "automation/list" => await ListAutomationsAsync(
+                Deserialize<WireListAutomationDefinitionsRequest>(parameters),
+                cancellationToken),
+            "automation/get" => await GetAutomationAsync(
+                Deserialize<WireGetAutomationDefinitionRequest>(parameters),
+                cancellationToken),
+            "schedule/list" => await ListAutomationSchedulesAsync(
+                Deserialize<WireListAutomationSchedulesRequest>(parameters),
+                cancellationToken),
+            "schedule/get" => await GetAutomationScheduleAsync(
+                Deserialize<WireGetAutomationScheduleRequest>(parameters),
+                cancellationToken),
+            "automationRun/start" => await StartAutomationRunAsync(
+                Deserialize<WireStartAutomationRunRequest>(parameters),
+                cancellationToken),
+            "automationRun/list" => await ListAutomationRunsAsync(
+                Deserialize<WireListAutomationRunsRequest>(parameters),
+                cancellationToken),
+            "automationRun/get" => await GetAutomationRunAsync(
+                Deserialize<WireGetAutomationRunRequest>(parameters),
+                cancellationToken),
+            "automationRun/cancel" => await CancelAutomationRunAsync(
+                Deserialize<WireCancelAutomationRunRequest>(parameters),
+                cancellationToken),
+            "automationRun/resolveAttention" =>
+                await ResolveAutomationAttentionAsync(
+                    Deserialize<WireResolveAutomationAttentionRequest>(parameters),
+                    cancellationToken),
             _ => throw new WireMethodNotFoundException(),
         };
 
@@ -2270,19 +2351,26 @@ public sealed partial class OpenCoWorkJsonRpcConnection : IAsyncDisposable
             SessionErrorCodes.SequenceConflict or
             SessionErrorCodes.IdempotencyConflict or
             SessionErrorCodes.ThreadBusy or
-            SessionErrorCodes.InteractionAlreadyResolved => ConflictError,
+            SessionErrorCodes.InteractionAlreadyResolved or
+            AutomationErrorCodes.Conflict or
+            AutomationErrorCodes.RunConflict => ConflictError,
             SessionErrorCodes.NotFound or
-            SessionErrorCodes.QueueItemNotFound => NotFoundError,
+            SessionErrorCodes.QueueItemNotFound or
+            AutomationErrorCodes.NotFound => NotFoundError,
             SessionErrorCodes.InvalidState or
             SessionErrorCodes.InvalidCursor or
             SessionErrorCodes.DeleteTokenInvalid or
             SessionErrorCodes.DeleteTokenExpired or
-            SessionErrorCodes.UnsupportedHistoryMode => InvalidStateError,
+            SessionErrorCodes.UnsupportedHistoryMode or
+            AutomationErrorCodes.InvalidState or
+            AutomationErrorCodes.InvalidCursor => InvalidStateError,
             SessionErrorCodes.ProjectionUnavailable or
             SessionErrorCodes.RecoveryRequired or
             SessionErrorCodes.RuntimeExecutorUnavailable or
             SessionErrorCodes.RuntimeShuttingDown or
-            SessionErrorCodes.SubscriberLagged => UnavailableError,
+            SessionErrorCodes.SubscriberLagged or
+            AutomationErrorCodes.Unavailable or
+            AutomationErrorCodes.CapabilityUnavailable => UnavailableError,
             _ => BusinessError,
         };
 

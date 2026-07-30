@@ -136,6 +136,12 @@ public sealed record AutomationResult<T>(
     public bool IsSuccess => Error is null;
 }
 
+public sealed record AutomationChangedEvent(
+    long AutomationRevision,
+    string EntityKind,
+    string ChangeKind,
+    string EntityId);
+
 public sealed record AutomationPage<T>(
     IReadOnlyList<T> Items,
     string? NextCursor);
@@ -342,6 +348,8 @@ public sealed record ResolveAutomationAttentionRequest(
 
 public interface IAutomationService
 {
+    event EventHandler<AutomationChangedEvent>? Changed;
+
     Task<AutomationResult<AutomationPage<AutomationDefinitionSummary>>>
         ListDefinitionsAsync(
             ListAutomationDefinitionsRequest request,

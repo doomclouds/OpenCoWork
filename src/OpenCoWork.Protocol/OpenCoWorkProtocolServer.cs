@@ -64,6 +64,25 @@ public static class OpenCoWorkProtocolServer
         string workspacePath,
         Stream input,
         Stream output,
+        CancellationToken cancellationToken = default) =>
+        RunStdioAsync(
+            sessions,
+            capabilities,
+            coWork,
+            automations: null,
+            workspacePath,
+            input,
+            output,
+            cancellationToken);
+
+    public static Task RunStdioAsync(
+        ISessionService sessions,
+        ICapabilityService? capabilities,
+        ICoWorkService? coWork,
+        IAutomationService? automations,
+        string workspacePath,
+        Stream input,
+        Stream output,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(input);
@@ -80,6 +99,7 @@ public static class OpenCoWorkProtocolServer
                 sessions,
                 capabilities,
                 coWork,
+                automations,
                 workspacePath,
                 "stdio",
                 send),
@@ -126,6 +146,25 @@ public static class OpenCoWorkProtocolServer
         string workspacePath,
         TextReader input,
         TextWriter output,
+        CancellationToken cancellationToken = default) =>
+        RunJsonLinesAsync(
+            sessions,
+            capabilities,
+            coWork,
+            automations: null,
+            workspacePath,
+            input,
+            output,
+            cancellationToken);
+
+    public static Task RunJsonLinesAsync(
+        ISessionService sessions,
+        ICapabilityService? capabilities,
+        ICoWorkService? coWork,
+        IAutomationService? automations,
+        string workspacePath,
+        TextReader input,
+        TextWriter output,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(input);
@@ -142,6 +181,7 @@ public static class OpenCoWorkProtocolServer
                 sessions,
                 capabilities,
                 coWork,
+                automations,
                 workspacePath,
                 "stdio",
                 send),
@@ -248,6 +288,25 @@ public static class OpenCoWorkProtocolServer
         string workspacePath,
         int port,
         string bearerToken,
+        CancellationToken cancellationToken = default) =>
+        await RunWebSocketAsync(
+            sessions,
+            capabilities,
+            coWork,
+            automations: null,
+            workspacePath,
+            port,
+            bearerToken,
+            cancellationToken);
+
+    public static async Task RunWebSocketAsync(
+        ISessionService sessions,
+        ICapabilityService? capabilities,
+        ICoWorkService? coWork,
+        IAutomationService? automations,
+        string workspacePath,
+        int port,
+        string bearerToken,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(sessions);
@@ -302,6 +361,7 @@ public static class OpenCoWorkProtocolServer
                             sessions,
                             capabilities,
                             coWork,
+                            automations,
                             workspacePath,
                             "websocket",
                             send),

@@ -119,6 +119,7 @@ public sealed class AutomationContractTests
             ],
             typeof(IAutomationService)
                 .GetMethods()
+                .Where(method => !method.IsSpecialName)
                 .Select(method => method.Name)
                 .Order()
                 .ToArray());

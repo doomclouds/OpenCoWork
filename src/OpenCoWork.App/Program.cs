@@ -641,6 +641,8 @@ namespace OpenCoWork.App
                     var capabilities =
                         host.Services.GetRequiredService<ICapabilityService>();
                     var coWork = host.Services.GetService<ICoWorkService>();
+                    var automations =
+                        host.Services.GetService<IAutomationService>();
                     if (acp)
                     {
                         var models = snapshot.GetRequiredSection<ModelsConfig>();
@@ -673,6 +675,7 @@ namespace OpenCoWork.App
                             sessions,
                             capabilities,
                             coWork,
+                            automations,
                             paths.WorkspaceRoot,
                             port!.Value,
                             token!,
@@ -684,6 +687,7 @@ namespace OpenCoWork.App
                             sessions,
                             capabilities,
                             coWork,
+                            automations,
                             paths.WorkspaceRoot,
                             protocolInput,
                             protocolOutput,
@@ -695,6 +699,7 @@ namespace OpenCoWork.App
                             sessions,
                             capabilities,
                             coWork,
+                            automations,
                             paths.WorkspaceRoot,
                             input,
                             output,
@@ -748,6 +753,7 @@ namespace OpenCoWork.App
             services.AddSingleton(snapshot.GetRequiredSection<ModelsConfig>());
             services.AddSingleton(snapshot.GetRequiredSection<ToolsConfig>());
             services.AddSingleton(snapshot.GetRequiredSection<CoWorkConfig>());
+            services.AddSingleton(snapshot.GetRequiredSection<AutomationsConfig>());
             configureServices?.Invoke(services);
         }
 

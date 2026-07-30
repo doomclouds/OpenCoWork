@@ -40,6 +40,7 @@ internal static class ProtocolTestClient
             await InitializeWorkspaceAsync(server, workspace, transcript);
             await WriteCapabilitySkillAsync(workspace);
             await WriteCapabilityAuthAsync(workspace);
+            await WriteAutomationDefinitionAsync(workspace);
             await InitializeGitAsync(workspace);
             await using var provider = new HoldingHttpEndpoint();
             await using var dynamicProvider = new DynamicToolHttpEndpoint(secret);
@@ -61,6 +62,12 @@ internal static class ProtocolTestClient
                 transcript);
             stage = "Wire 1.2 CoWork";
             var cowork = await RunCoWorkWireAsync(
+                server,
+                workspace,
+                secret,
+                transcript);
+            stage = "Wire 1.3 Automations";
+            var automations = await RunAutomationWireAsync(
                 server,
                 workspace,
                 secret,
@@ -92,6 +99,7 @@ internal static class ProtocolTestClient
                     wire,
                     capabilities,
                     cowork,
+                    automations,
                     acp,
                     websocket,
                     "secret-canary",
@@ -113,6 +121,82 @@ internal static class ProtocolTestClient
         {
             TryDelete(workspace);
         }
+    }
+
+    private static async Task<string> RunAutomationWireAsync(
+        string server,
+        string workspace,
+        string secret,
+        ConcurrentQueue<string> transcript)
+    {
+        await using var client = StartLineClient(
+            server,
+            workspace,
+            secret,
+            transcript,
+            "app-server");
+        var initialized = await InitializeWire13Async(client, workspace);
+        Require(
+            initialized.GetProperty("result").GetProperty("wireVersion")
+                .GetString() == "1.3",
+            "Wire 1.3 negotiation failed.");
+
+        var definitions = await client.RequestAsync(
+            2,
+            "automation/list",
+            new { pageSize = 1 });
+        var definitionPage = definitions.GetProperty("result");
+        Require(
+            definitionPage.GetProperty("automationRevision").GetInt64() > 0 &&
+            definitionPage.GetProperty("value").GetProperty("items")[0]
+                .GetProperty("automationId").GetString() == "wire-smoke",
+            "Automation Definition was not projected.");
+        _ = await client.RequestAsync(
+            3,
+            "automation/get",
+            new { automationId = "wire-smoke" });
+        _ = await client.RequestAsync(
+            4,
+            "schedule/get",
+            new { automationId = "wire-smoke" });
+        var runs = await client.RequestAsync(
+            5,
+            "automationRun/list",
+            new { automationId = "wire-smoke", pageSize = 1 });
+        Require(
+            !runs.GetProperty("result").GetProperty("value")
+                .GetProperty("items").EnumerateArray().Any(),
+            "Fresh Automation Definition unexpectedly has runs.");
+        var definitionPath = Path.Combine(
+            workspace,
+            ".opencowork",
+            "automations",
+            "definitions",
+            "wire-smoke.yaml");
+        var definition = await File.ReadAllTextAsync(definitionPath);
+        await File.WriteAllTextAsync(
+            definitionPath,
+            definition
+                .Replace("displayName: Wire Smoke", "displayName: Wire Smoke Updated")
+                .Replace("cron: \"0 2 * * *\"", "cron: \"5 2 * * *\""));
+        var changed = new HashSet<string>(StringComparer.Ordinal);
+        while (changed.Count != 2)
+        {
+            var message = await client.ReadMessageAsync();
+            if (message.TryGetProperty("method", out var method) &&
+                method.GetString() is "automation/changed" or "schedule/changed")
+            {
+                var parameters = message.GetProperty("params");
+                Require(
+                    parameters.GetProperty("entityId").GetString() == "wire-smoke" &&
+                    parameters.GetProperty("automationRevision").GetInt64() >
+                    definitionPage.GetProperty("automationRevision").GetInt64(),
+                    "Automation Changed notification leaked or lost its revision.");
+                changed.Add(method.GetString()!);
+            }
+        }
+
+        return "wire-13-automation-catalog-schedule-runs-notifications";
     }
 
     private static async Task<string> RunCoWorkWireAsync(
@@ -867,6 +951,19 @@ internal static class ProtocolTestClient
                 workspace = new { path = workspace },
             });
 
+    private static Task<JsonElement> InitializeWire13Async(
+        LineClient client,
+        string workspace) =>
+        client.RequestAsync(
+            1,
+            "initialize",
+            new
+            {
+                client = new { name = "m8-test-client", version = "1" },
+                wireVersions = new[] { "1.3", "1.2", "1.1", "1.0" },
+                workspace = new { path = workspace },
+            });
+
     private static async Task InitializeWorkspaceAsync(
         string server,
         string workspace,
@@ -1096,10 +1193,45 @@ internal static class ProtocolTestClient
                     }
                   }
                 }
+              },
+              "automations": {
+                "enabled": true
               }
             }
             """;
         return File.WriteAllTextAsync(path, content);
+    }
+
+    private static async Task WriteAutomationDefinitionAsync(string workspace)
+    {
+        var directory = Path.Combine(
+            workspace,
+            ".opencowork",
+            "automations",
+            "definitions");
+        Directory.CreateDirectory(directory);
+        await File.WriteAllTextAsync(
+            Path.Combine(directory, "wire-smoke.yaml"),
+            """
+            schemaVersion: 1
+            id: wire-smoke
+            displayName: Wire Smoke
+            enabled: true
+            schedule:
+              cron: "0 2 * * *"
+              timeZone: UTC
+            workspace:
+              mode: project
+            prompt: Inspect the workspace.
+            inputSchema:
+              type: object
+              additionalProperties: false
+            defaults: {}
+            allow:
+              effects: []
+            runTimeout: 30m
+            attentionTimeout: 24h
+            """);
     }
 
     private static Task WriteCapabilityAuthAsync(string workspace) =>

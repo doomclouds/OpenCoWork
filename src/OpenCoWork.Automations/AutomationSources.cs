@@ -126,6 +126,8 @@ internal sealed class AutomationSourceRuntime : IAsyncDisposable
 
     public event Action? Changed;
 
+    internal event Action<long, IReadOnlyList<AutomationSourceChange>>? Projected;
+
     public event Action<Exception>? Faulted;
 
     public async ValueTask StartAsync(CancellationToken cancellationToken)
@@ -203,12 +205,16 @@ internal sealed class AutomationSourceRuntime : IAsyncDisposable
         {
             var candidates = await ReadCandidatesAsync(cancellationToken);
             var now = _timeProvider.GetUtcNow();
-            await _store.WriteAsync(
+            var publication = await _store.WriteAsync(
                 (connection, transaction, token) =>
                     PublishAsync(connection, transaction, candidates, now, token),
                 cancellationToken);
             Volatile.Write(ref _healthy, 1);
             Changed?.Invoke();
+            if (publication.Changes.Count != 0)
+            {
+                Projected?.Invoke(publication.Revision, publication.Changes);
+            }
         }
         finally
         {
@@ -307,7 +313,7 @@ internal sealed class AutomationSourceRuntime : IAsyncDisposable
         }
     }
 
-    private async ValueTask<long> PublishAsync(
+    private async ValueTask<AutomationSourcePublication> PublishAsync(
         DbConnection connection,
         DbTransaction transaction,
         IReadOnlyDictionary<string, Candidate> candidates,
@@ -315,33 +321,49 @@ internal sealed class AutomationSourceRuntime : IAsyncDisposable
         CancellationToken cancellationToken)
     {
         var existingIds = await ReadIdsAsync(connection, transaction, cancellationToken);
-        var changed = false;
+        var changes = new List<AutomationSourceChange>();
         foreach (var candidate in candidates.Values)
         {
-            changed |= await PublishCandidateAsync(
+            if (await PublishCandidateAsync(
                 connection,
                 transaction,
                 candidate,
                 now,
-                cancellationToken);
+                cancellationToken) is { } change)
+            {
+                changes.Add(change);
+            }
         }
 
         foreach (var missingId in existingIds.Except(candidates.Keys, StringComparer.Ordinal))
         {
-            changed |= await PublishMissingAsync(
+            var scheduleChanged = await ReadScheduleRowAsync(
+                connection,
+                transaction,
+                missingId,
+                cancellationToken) is not null;
+            if (await PublishMissingAsync(
                 connection,
                 transaction,
                 missingId,
                 now,
-                cancellationToken);
+                cancellationToken))
+            {
+                changes.Add(new AutomationSourceChange(
+                    missingId,
+                    "removed",
+                    scheduleChanged));
+            }
         }
 
-        if (!changed)
+        if (changes.Count == 0)
         {
-            return await ReadAutomationRevisionAsync(
-                connection,
-                transaction,
-                cancellationToken);
+            return new AutomationSourcePublication(
+                await ReadAutomationRevisionAsync(
+                    connection,
+                    transaction,
+                    cancellationToken),
+                []);
         }
 
         await ExecuteAsync(
@@ -355,13 +377,15 @@ internal sealed class AutomationSourceRuntime : IAsyncDisposable
             """,
             cancellationToken,
             ("$now", Milliseconds(now)));
-        return await ReadAutomationRevisionAsync(
-            connection,
-            transaction,
-            cancellationToken);
+        return new AutomationSourcePublication(
+            await ReadAutomationRevisionAsync(
+                connection,
+                transaction,
+                cancellationToken),
+            changes);
     }
 
-    private async ValueTask<bool> PublishCandidateAsync(
+    private async ValueTask<AutomationSourceChange?> PublishCandidateAsync(
         DbConnection connection,
         DbTransaction transaction,
         Candidate candidate,
@@ -403,9 +427,24 @@ internal sealed class AutomationSourceRuntime : IAsyncDisposable
                     ("$id", candidate.Id));
             }
 
-            return false;
+            return null;
         }
 
+        var existingSchedule = await ReadScheduleRowAsync(
+            connection,
+            transaction,
+            candidate.Id,
+            cancellationToken);
+        var scheduleChanged = definition?.Schedule is { } expectedSchedule
+            ? existingSchedule is null ||
+              existingSchedule.Cron != expectedSchedule.Cron ||
+              existingSchedule.TimeZone != expectedSchedule.TimeZone
+            : existingSchedule is not null;
+        var changeKind = !ready
+            ? "faulted"
+            : existing?.Status is "faulted" or "missing"
+                ? "restored"
+                : "upserted";
         if (existing is null)
         {
             await ExecuteAsync(
@@ -491,7 +530,10 @@ internal sealed class AutomationSourceRuntime : IAsyncDisposable
                 ("$id", candidate.Id));
         }
 
-        return true;
+        return new AutomationSourceChange(
+            candidate.Id,
+            changeKind,
+            scheduleChanged);
     }
 
     private async ValueTask PublishScheduleAsync(
@@ -763,6 +805,15 @@ internal sealed class AutomationSourceRuntime : IAsyncDisposable
         string Id,
         string RelativePath,
         AutomationDefinitionLoadResult Loaded);
+
+    internal sealed record AutomationSourceChange(
+        string AutomationId,
+        string DefinitionChangeKind,
+        bool ScheduleChanged);
+
+    private sealed record AutomationSourcePublication(
+        long Revision,
+        IReadOnlyList<AutomationSourceChange> Changes);
 
     private sealed record DefinitionRow(
         string Status,

@@ -11,6 +11,9 @@ public sealed class ProtocolProcessIntegrationTests
     private const string TestConfig =
         """
         {
+          "automations": {
+            "enabled": true
+          },
           "models": {
             "defaultProvider": "test",
             "defaultModel": "qwen3.8-max-preview",
@@ -33,7 +36,7 @@ public sealed class ProtocolProcessIntegrationTests
         """;
 
     [Fact]
-    public async Task App_server_stdio_exposes_wire_12_cowork()
+    public async Task App_server_stdio_exposes_wire_13_automations_and_wire_12_cowork()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var root = Path.Combine(
@@ -50,6 +53,34 @@ public sealed class ProtocolProcessIntegrationTests
             await File.WriteAllTextAsync(
                 paths.ConfigPath,
                 TestConfig,
+                cancellationToken);
+            var automationsDirectory = Path.Combine(
+                paths.OpenCoWorkDirectory,
+                "automations",
+                "definitions");
+            Directory.CreateDirectory(automationsDirectory);
+            await File.WriteAllTextAsync(
+                Path.Combine(automationsDirectory, "process-smoke.yaml"),
+                """
+                schemaVersion: 1
+                id: process-smoke
+                displayName: Process Smoke
+                enabled: true
+                schedule:
+                  cron: "0 2 * * *"
+                  timeZone: UTC
+                workspace:
+                  mode: project
+                prompt: Inspect the workspace.
+                inputSchema:
+                  type: object
+                  additionalProperties: false
+                defaults: {}
+                allow:
+                  effects: []
+                runTimeout: 30m
+                attentionTimeout: 24h
+                """,
                 cancellationToken);
             var executable = Path.Combine(
                 Path.GetDirectoryName(typeof(OpenCoWorkCli).Assembly.Location)!,
@@ -77,7 +108,7 @@ public sealed class ProtocolProcessIntegrationTests
                     @params = new
                     {
                         client = new { name = "test", version = "1" },
-                        wireVersions = new[] { "1.2", "1.1", "1.0" },
+                        wireVersions = new[] { "1.3", "1.2", "1.1", "1.0" },
                         workspace = new { path = root },
                     },
                 }));
@@ -92,7 +123,7 @@ public sealed class ProtocolProcessIntegrationTests
 
             using var initialized = JsonDocument.Parse(initializeLine);
             Assert.Equal(
-                "1.2",
+                "1.3",
                 initialized.RootElement
                     .GetProperty("result")
                     .GetProperty("wireVersion")
@@ -116,6 +147,20 @@ public sealed class ProtocolProcessIntegrationTests
                     .GetProperty("result")
                     .GetProperty("threads")
                     .EnumerateArray());
+
+            await process.StandardInput.WriteLineAsync(
+                """{"jsonrpc":"2.0","id":20,"method":"automation/list","params":{"pageSize":1}}""");
+            await process.StandardInput.FlushAsync(cancellationToken);
+            var automationMessages = new List<JsonElement>();
+            var automations = await ReadResponseAsync(
+                process,
+                id: 20,
+                cancellationToken,
+                automationMessages);
+            Assert.Equal(
+                "process-smoke",
+                automations.GetProperty("result").GetProperty("value")
+                    .GetProperty("items")[0].GetProperty("automationId").GetString());
 
             var commandId = Guid.CreateVersion7();
             var upsert = new

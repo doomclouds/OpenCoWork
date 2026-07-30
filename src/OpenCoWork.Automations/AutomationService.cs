@@ -22,6 +22,32 @@ internal sealed class AutomationService(
 {
     private static readonly JsonSerializerOptions JsonOptions =
         new(JsonSerializerDefaults.Web);
+    private readonly object _changedGate = new();
+    private EventHandler<AutomationChangedEvent>? _changed;
+    private int _sourceSubscribed;
+
+    public event EventHandler<AutomationChangedEvent>? Changed
+    {
+        add
+        {
+            ArgumentNullException.ThrowIfNull(value);
+            lock (_changedGate)
+            {
+                _changed += value;
+                if (Interlocked.Exchange(ref _sourceSubscribed, 1) == 0)
+                {
+                    source.Projected += OnSourceProjected;
+                }
+            }
+        }
+        remove
+        {
+            lock (_changedGate)
+            {
+                _changed -= value;
+            }
+        }
+    }
 
     public Task<AutomationResult<AutomationPage<AutomationDefinitionSummary>>>
         ListDefinitionsAsync(
@@ -69,6 +95,38 @@ internal sealed class AutomationService(
                     item.AutomationId);
             },
             cancellationToken).AsTask();
+    }
+
+    private void OnSourceProjected(
+        long revision,
+        IReadOnlyList<AutomationSourceRuntime.AutomationSourceChange> changes)
+    {
+        EventHandler<AutomationChangedEvent>? handler;
+        lock (_changedGate)
+        {
+            handler = _changed;
+        }
+
+        foreach (var change in changes)
+        {
+            handler?.Invoke(
+                this,
+                new AutomationChangedEvent(
+                    revision,
+                    "automation",
+                    change.DefinitionChangeKind,
+                    change.AutomationId));
+            if (change.ScheduleChanged)
+            {
+                handler?.Invoke(
+                    this,
+                    new AutomationChangedEvent(
+                        revision,
+                        "schedule",
+                        "changed",
+                        change.AutomationId));
+            }
+        }
     }
 
     public async Task<AutomationResult<AutomationDefinitionSnapshot>>

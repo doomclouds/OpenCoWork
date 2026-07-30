@@ -6,7 +6,9 @@ public static class OpenCoWorkWire
 {
     public const string Version = "1.0";
     public const string CapabilityVersion = "1.1";
-    public const string LatestVersion = "1.2";
+    public const string CoWorkVersion = "1.2";
+    public const string AutomationVersion = "1.3";
+    public const string LatestVersion = AutomationVersion;
     public const string ClientToServer = "clientToServer";
     public const string ServerToClient = "serverToClient";
     public const string SessionOwner = "session";

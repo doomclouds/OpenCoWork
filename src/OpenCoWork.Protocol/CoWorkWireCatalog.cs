@@ -6,7 +6,7 @@ internal static class CoWorkWireCatalog
 {
     [OpenCoWorkWireMethod(
         "agent/changed", OpenCoWorkWire.ServerToClient, "agent",
-        OpenCoWorkWire.LatestVersion, typeof(WireCoWorkChangedNotification),
+        OpenCoWorkWire.CoWorkVersion, typeof(WireCoWorkChangedNotification),
         typeof(WireEmpty), OpenCoWorkWire.ConnectionAuthority, false,
         OpenCoWorkWire.NoIdempotency)]
     private static void AgentChanged()
@@ -15,7 +15,7 @@ internal static class CoWorkWireCatalog
 
     [OpenCoWorkWireMethod(
         "subagent/changed", OpenCoWorkWire.ServerToClient, "subagent",
-        OpenCoWorkWire.LatestVersion, typeof(WireCoWorkChangedNotification),
+        OpenCoWorkWire.CoWorkVersion, typeof(WireCoWorkChangedNotification),
         typeof(WireEmpty), OpenCoWorkWire.ConnectionAuthority, false,
         OpenCoWorkWire.NoIdempotency)]
     private static void SubAgentChanged()
@@ -24,7 +24,7 @@ internal static class CoWorkWireCatalog
 
     [OpenCoWorkWireMethod(
         "team/changed", OpenCoWorkWire.ServerToClient, "team",
-        OpenCoWorkWire.LatestVersion, typeof(WireCoWorkChangedNotification),
+        OpenCoWorkWire.CoWorkVersion, typeof(WireCoWorkChangedNotification),
         typeof(WireEmpty), OpenCoWorkWire.ConnectionAuthority, false,
         OpenCoWorkWire.NoIdempotency)]
     private static void TeamChanged()
@@ -33,7 +33,7 @@ internal static class CoWorkWireCatalog
 
     [OpenCoWorkWireMethod(
         "mission/changed", OpenCoWorkWire.ServerToClient, "mission",
-        OpenCoWorkWire.LatestVersion, typeof(WireCoWorkChangedNotification),
+        OpenCoWorkWire.CoWorkVersion, typeof(WireCoWorkChangedNotification),
         typeof(WireEmpty), OpenCoWorkWire.ConnectionAuthority, false,
         OpenCoWorkWire.NoIdempotency)]
     private static void MissionChanged()
@@ -42,7 +42,7 @@ internal static class CoWorkWireCatalog
 
     [OpenCoWorkWireMethod(
         "mailbox/changed", OpenCoWorkWire.ServerToClient, "mailbox",
-        OpenCoWorkWire.LatestVersion, typeof(WireCoWorkChangedNotification),
+        OpenCoWorkWire.CoWorkVersion, typeof(WireCoWorkChangedNotification),
         typeof(WireEmpty), OpenCoWorkWire.ConnectionAuthority, false,
         OpenCoWorkWire.NoIdempotency)]
     private static void MailboxChanged()
@@ -51,7 +51,7 @@ internal static class CoWorkWireCatalog
 
     [OpenCoWorkWireMethod(
         "artifact/changed", OpenCoWorkWire.ServerToClient, "artifact",
-        OpenCoWorkWire.LatestVersion, typeof(WireCoWorkChangedNotification),
+        OpenCoWorkWire.CoWorkVersion, typeof(WireCoWorkChangedNotification),
         typeof(WireEmpty), OpenCoWorkWire.ConnectionAuthority, false,
         OpenCoWorkWire.NoIdempotency)]
     private static void ArtifactChanged()
@@ -60,7 +60,7 @@ internal static class CoWorkWireCatalog
 
     [OpenCoWorkWireMethod(
         "worktree/changed", OpenCoWorkWire.ServerToClient, "worktree",
-        OpenCoWorkWire.LatestVersion, typeof(WireCoWorkChangedNotification),
+        OpenCoWorkWire.CoWorkVersion, typeof(WireCoWorkChangedNotification),
         typeof(WireEmpty), OpenCoWorkWire.ConnectionAuthority, false,
         OpenCoWorkWire.NoIdempotency)]
     private static void WorktreeChanged()

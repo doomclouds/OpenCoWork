@@ -7,7 +7,7 @@ public sealed partial class OpenCoWorkJsonRpcConnection
 {
     [OpenCoWorkWireMethod(
         "agent/profile/list", OpenCoWorkWire.ClientToServer, "agent",
-        OpenCoWorkWire.LatestVersion, typeof(WireListAgentProfilesRequest),
+        OpenCoWorkWire.CoWorkVersion, typeof(WireListAgentProfilesRequest),
         typeof(WireCoWorkResponse<CoWorkPage<AgentProfileSnapshot>>),
         OpenCoWorkWire.ConnectionAuthority, false, OpenCoWorkWire.NoIdempotency)]
     public async Task<WireCoWorkResponse<CoWorkPage<AgentProfileSnapshot>>>
@@ -23,7 +23,7 @@ public sealed partial class OpenCoWorkJsonRpcConnection
 
     [OpenCoWorkWireMethod(
         "agent/profile/get", OpenCoWorkWire.ClientToServer, "agent",
-        OpenCoWorkWire.LatestVersion, typeof(WireGetAgentProfileRequest),
+        OpenCoWorkWire.CoWorkVersion, typeof(WireGetAgentProfileRequest),
         typeof(WireCoWorkResponse<AgentProfileSnapshot>),
         OpenCoWorkWire.ConnectionAuthority, false, OpenCoWorkWire.NoIdempotency)]
     public async Task<WireCoWorkResponse<AgentProfileSnapshot>> GetAgentProfileAsync(
@@ -35,7 +35,7 @@ public sealed partial class OpenCoWorkJsonRpcConnection
 
     [OpenCoWorkWireMethod(
         "agent/profile/upsert", OpenCoWorkWire.ClientToServer, "agent",
-        OpenCoWorkWire.LatestVersion, typeof(WireUpsertAgentProfileRequest),
+        OpenCoWorkWire.CoWorkVersion, typeof(WireUpsertAgentProfileRequest),
         typeof(WireCoWorkResponse<AgentProfileSnapshot>),
         OpenCoWorkWire.ConnectionAuthority, true,
         OpenCoWorkWire.RequiredIdempotency)]
@@ -62,7 +62,7 @@ public sealed partial class OpenCoWorkJsonRpcConnection
 
     [OpenCoWorkWireMethod(
         "agent/profile/setEnabled", OpenCoWorkWire.ClientToServer, "agent",
-        OpenCoWorkWire.LatestVersion, typeof(WireSetAgentProfileEnabledRequest),
+        OpenCoWorkWire.CoWorkVersion, typeof(WireSetAgentProfileEnabledRequest),
         typeof(WireCoWorkResponse<AgentProfileSnapshot>),
         OpenCoWorkWire.ConnectionAuthority, true,
         OpenCoWorkWire.RequiredIdempotency)]
@@ -83,7 +83,7 @@ public sealed partial class OpenCoWorkJsonRpcConnection
 
     [OpenCoWorkWireMethod(
         "team/list", OpenCoWorkWire.ClientToServer, "team",
-        OpenCoWorkWire.LatestVersion, typeof(WireListTeamsRequest),
+        OpenCoWorkWire.CoWorkVersion, typeof(WireListTeamsRequest),
         typeof(WireCoWorkResponse<CoWorkPage<TeamSnapshot>>),
         OpenCoWorkWire.ConnectionAuthority, false, OpenCoWorkWire.NoIdempotency)]
     public async Task<WireCoWorkResponse<CoWorkPage<TeamSnapshot>>> ListTeamsAsync(
@@ -95,7 +95,7 @@ public sealed partial class OpenCoWorkJsonRpcConnection
 
     [OpenCoWorkWireMethod(
         "team/get", OpenCoWorkWire.ClientToServer, "team",
-        OpenCoWorkWire.LatestVersion, typeof(WireGetTeamRequest),
+        OpenCoWorkWire.CoWorkVersion, typeof(WireGetTeamRequest),
         typeof(WireCoWorkResponse<TeamSnapshot>),
         OpenCoWorkWire.ConnectionAuthority, false, OpenCoWorkWire.NoIdempotency)]
     public async Task<WireCoWorkResponse<TeamSnapshot>> GetTeamAsync(
@@ -107,7 +107,7 @@ public sealed partial class OpenCoWorkJsonRpcConnection
 
     [OpenCoWorkWireMethod(
         "team/upsert", OpenCoWorkWire.ClientToServer, "team",
-        OpenCoWorkWire.LatestVersion, typeof(WireUpsertTeamRequest),
+        OpenCoWorkWire.CoWorkVersion, typeof(WireUpsertTeamRequest),
         typeof(WireCoWorkResponse<TeamSnapshot>),
         OpenCoWorkWire.ConnectionAuthority, true,
         OpenCoWorkWire.RequiredIdempotency)]
@@ -130,7 +130,7 @@ public sealed partial class OpenCoWorkJsonRpcConnection
 
     [OpenCoWorkWireMethod(
         "team/setEnabled", OpenCoWorkWire.ClientToServer, "team",
-        OpenCoWorkWire.LatestVersion, typeof(WireSetTeamEnabledRequest),
+        OpenCoWorkWire.CoWorkVersion, typeof(WireSetTeamEnabledRequest),
         typeof(WireCoWorkResponse<TeamSnapshot>),
         OpenCoWorkWire.ConnectionAuthority, true,
         OpenCoWorkWire.RequiredIdempotency)]
@@ -151,7 +151,7 @@ public sealed partial class OpenCoWorkJsonRpcConnection
 
     [OpenCoWorkWireMethod(
         "subagent/spawn", OpenCoWorkWire.ClientToServer, "subagent",
-        OpenCoWorkWire.LatestVersion, typeof(WireSpawnSubAgentRequest),
+        OpenCoWorkWire.CoWorkVersion, typeof(WireSpawnSubAgentRequest),
         typeof(WireCoWorkResponse<AgentRunSnapshot>),
         OpenCoWorkWire.ConnectionAuthority, true,
         OpenCoWorkWire.RequiredIdempotency)]
@@ -175,7 +175,7 @@ public sealed partial class OpenCoWorkJsonRpcConnection
 
     [OpenCoWorkWireMethod(
         "subagent/children", OpenCoWorkWire.ClientToServer, "subagent",
-        OpenCoWorkWire.LatestVersion, typeof(WireSubAgentQueryRequest),
+        OpenCoWorkWire.CoWorkVersion, typeof(WireSubAgentQueryRequest),
         typeof(WireCoWorkResponse<CoWorkPage<DirectSubAgentSnapshot>>),
         OpenCoWorkWire.ConnectionAuthority, false, OpenCoWorkWire.NoIdempotency)]
     public async Task<WireCoWorkResponse<CoWorkPage<DirectSubAgentSnapshot>>>
@@ -188,7 +188,7 @@ public sealed partial class OpenCoWorkJsonRpcConnection
 
     [OpenCoWorkWireMethod(
         "subagent/list", OpenCoWorkWire.ClientToServer, "subagent",
-        OpenCoWorkWire.LatestVersion, typeof(WireSubAgentQueryRequest),
+        OpenCoWorkWire.CoWorkVersion, typeof(WireSubAgentQueryRequest),
         typeof(WireCoWorkResponse<CoWorkPage<DirectSubAgentSnapshot>>),
         OpenCoWorkWire.ConnectionAuthority, false, OpenCoWorkWire.NoIdempotency)]
     public async Task<WireCoWorkResponse<CoWorkPage<DirectSubAgentSnapshot>>>
@@ -201,7 +201,7 @@ public sealed partial class OpenCoWorkJsonRpcConnection
 
     [OpenCoWorkWireMethod(
         "subagent/send", OpenCoWorkWire.ClientToServer, "subagent",
-        OpenCoWorkWire.LatestVersion, typeof(WireSendSubAgentMessageRequest),
+        OpenCoWorkWire.CoWorkVersion, typeof(WireSendSubAgentMessageRequest),
         typeof(WireCoWorkResponse<MailboxMessageSnapshot>),
         OpenCoWorkWire.ConnectionAuthority, true,
         OpenCoWorkWire.RequiredIdempotency)]
@@ -222,7 +222,7 @@ public sealed partial class OpenCoWorkJsonRpcConnection
 
     [OpenCoWorkWireMethod(
         "subagent/followup", OpenCoWorkWire.ClientToServer, "subagent",
-        OpenCoWorkWire.LatestVersion, typeof(WireFollowUpSubAgentRequest),
+        OpenCoWorkWire.CoWorkVersion, typeof(WireFollowUpSubAgentRequest),
         typeof(WireCoWorkResponse<AgentRunSnapshot>),
         OpenCoWorkWire.ConnectionAuthority, true,
         OpenCoWorkWire.RequiredIdempotency)]
@@ -243,7 +243,7 @@ public sealed partial class OpenCoWorkJsonRpcConnection
 
     [OpenCoWorkWireMethod(
         "subagent/cancel", OpenCoWorkWire.ClientToServer, "subagent",
-        OpenCoWorkWire.LatestVersion, typeof(WireCancelSubAgentRequest),
+        OpenCoWorkWire.CoWorkVersion, typeof(WireCancelSubAgentRequest),
         typeof(WireCoWorkResponse<DirectSubAgentSnapshot>),
         OpenCoWorkWire.ConnectionAuthority, true,
         OpenCoWorkWire.RequiredIdempotency)]
@@ -263,7 +263,7 @@ public sealed partial class OpenCoWorkJsonRpcConnection
 
     [OpenCoWorkWireMethod(
         "mission/create", OpenCoWorkWire.ClientToServer, "mission",
-        OpenCoWorkWire.LatestVersion, typeof(WireCreateMissionRequest),
+        OpenCoWorkWire.CoWorkVersion, typeof(WireCreateMissionRequest),
         typeof(WireCoWorkResponse<MissionSnapshot>),
         OpenCoWorkWire.ConnectionAuthority, true,
         OpenCoWorkWire.RequiredIdempotency)]
@@ -288,7 +288,7 @@ public sealed partial class OpenCoWorkJsonRpcConnection
 
     [OpenCoWorkWireMethod(
         "mission/list", OpenCoWorkWire.ClientToServer, "mission",
-        OpenCoWorkWire.LatestVersion, typeof(WireListMissionsRequest),
+        OpenCoWorkWire.CoWorkVersion, typeof(WireListMissionsRequest),
         typeof(WireCoWorkResponse<CoWorkPage<MissionSnapshot>>),
         OpenCoWorkWire.ConnectionAuthority, false, OpenCoWorkWire.NoIdempotency)]
     public async Task<WireCoWorkResponse<CoWorkPage<MissionSnapshot>>> ListMissionsAsync(
@@ -304,7 +304,7 @@ public sealed partial class OpenCoWorkJsonRpcConnection
 
     [OpenCoWorkWireMethod(
         "mission/get", OpenCoWorkWire.ClientToServer, "mission",
-        OpenCoWorkWire.LatestVersion, typeof(WireGetMissionRequest),
+        OpenCoWorkWire.CoWorkVersion, typeof(WireGetMissionRequest),
         typeof(WireCoWorkResponse<MissionSnapshot>),
         OpenCoWorkWire.ConnectionAuthority, false, OpenCoWorkWire.NoIdempotency)]
     public async Task<WireCoWorkResponse<MissionSnapshot>> GetMissionAsync(
@@ -316,7 +316,7 @@ public sealed partial class OpenCoWorkJsonRpcConnection
 
     [OpenCoWorkWireMethod(
         "mission/activate", OpenCoWorkWire.ClientToServer, "mission",
-        OpenCoWorkWire.LatestVersion, typeof(WireMissionCommandRequest),
+        OpenCoWorkWire.CoWorkVersion, typeof(WireMissionCommandRequest),
         typeof(WireCoWorkResponse<MissionSnapshot>),
         OpenCoWorkWire.ConnectionAuthority, true,
         OpenCoWorkWire.RequiredIdempotency)]
@@ -332,7 +332,7 @@ public sealed partial class OpenCoWorkJsonRpcConnection
 
     [OpenCoWorkWireMethod(
         "mission/cancel", OpenCoWorkWire.ClientToServer, "mission",
-        OpenCoWorkWire.LatestVersion, typeof(WireMissionCommandRequest),
+        OpenCoWorkWire.CoWorkVersion, typeof(WireMissionCommandRequest),
         typeof(WireCoWorkResponse<MissionSnapshot>),
         OpenCoWorkWire.ConnectionAuthority, true,
         OpenCoWorkWire.RequiredIdempotency)]
@@ -348,7 +348,7 @@ public sealed partial class OpenCoWorkJsonRpcConnection
 
     [OpenCoWorkWireMethod(
         "mission/task/add", OpenCoWorkWire.ClientToServer, "mission",
-        OpenCoWorkWire.LatestVersion, typeof(WireAddMissionTaskRequest),
+        OpenCoWorkWire.CoWorkVersion, typeof(WireAddMissionTaskRequest),
         typeof(WireCoWorkResponse<MissionTaskSnapshot>),
         OpenCoWorkWire.ConnectionAuthority, true,
         OpenCoWorkWire.RequiredIdempotency)]
@@ -374,7 +374,7 @@ public sealed partial class OpenCoWorkJsonRpcConnection
 
     [OpenCoWorkWireMethod(
         "mission/task/update", OpenCoWorkWire.ClientToServer, "mission",
-        OpenCoWorkWire.LatestVersion, typeof(WireUpdateMissionTaskRequest),
+        OpenCoWorkWire.CoWorkVersion, typeof(WireUpdateMissionTaskRequest),
         typeof(WireCoWorkResponse<MissionTaskSnapshot>),
         OpenCoWorkWire.ConnectionAuthority, true,
         OpenCoWorkWire.RequiredIdempotency)]
@@ -400,7 +400,7 @@ public sealed partial class OpenCoWorkJsonRpcConnection
 
     [OpenCoWorkWireMethod(
         "mission/task/remove", OpenCoWorkWire.ClientToServer, "mission",
-        OpenCoWorkWire.LatestVersion, typeof(WireMissionTaskCommandRequest),
+        OpenCoWorkWire.CoWorkVersion, typeof(WireMissionTaskCommandRequest),
         typeof(WireCoWorkResponse<MissionTaskSnapshot>),
         OpenCoWorkWire.ConnectionAuthority, true,
         OpenCoWorkWire.RequiredIdempotency)]
@@ -417,7 +417,7 @@ public sealed partial class OpenCoWorkJsonRpcConnection
 
     [OpenCoWorkWireMethod(
         "mission/task/block", OpenCoWorkWire.ClientToServer, "mission",
-        OpenCoWorkWire.LatestVersion, typeof(WireBlockMissionTaskRequest),
+        OpenCoWorkWire.CoWorkVersion, typeof(WireBlockMissionTaskRequest),
         typeof(WireCoWorkResponse<MissionTaskSnapshot>),
         OpenCoWorkWire.ConnectionAuthority, true,
         OpenCoWorkWire.RequiredIdempotency)]
@@ -438,7 +438,7 @@ public sealed partial class OpenCoWorkJsonRpcConnection
 
     [OpenCoWorkWireMethod(
         "mission/task/unblock", OpenCoWorkWire.ClientToServer, "mission",
-        OpenCoWorkWire.LatestVersion, typeof(WireMissionTaskCommandRequest),
+        OpenCoWorkWire.CoWorkVersion, typeof(WireMissionTaskCommandRequest),
         typeof(WireCoWorkResponse<MissionTaskSnapshot>),
         OpenCoWorkWire.ConnectionAuthority, true,
         OpenCoWorkWire.RequiredIdempotency)]
@@ -455,7 +455,7 @@ public sealed partial class OpenCoWorkJsonRpcConnection
 
     [OpenCoWorkWireMethod(
         "mission/task/retry", OpenCoWorkWire.ClientToServer, "mission",
-        OpenCoWorkWire.LatestVersion, typeof(WireMissionTaskCommandRequest),
+        OpenCoWorkWire.CoWorkVersion, typeof(WireMissionTaskCommandRequest),
         typeof(WireCoWorkResponse<MissionTaskSnapshot>),
         OpenCoWorkWire.ConnectionAuthority, true,
         OpenCoWorkWire.RequiredIdempotency)]
@@ -472,7 +472,7 @@ public sealed partial class OpenCoWorkJsonRpcConnection
 
     [OpenCoWorkWireMethod(
         "mission/task/reassign", OpenCoWorkWire.ClientToServer, "mission",
-        OpenCoWorkWire.LatestVersion, typeof(WireReassignMissionTaskRequest),
+        OpenCoWorkWire.CoWorkVersion, typeof(WireReassignMissionTaskRequest),
         typeof(WireCoWorkResponse<MissionTaskSnapshot>),
         OpenCoWorkWire.ConnectionAuthority, true,
         OpenCoWorkWire.RequiredIdempotency)]
@@ -493,7 +493,7 @@ public sealed partial class OpenCoWorkJsonRpcConnection
 
     [OpenCoWorkWireMethod(
         "mission/task/waive", OpenCoWorkWire.ClientToServer, "mission",
-        OpenCoWorkWire.LatestVersion, typeof(WireMissionTaskCommandRequest),
+        OpenCoWorkWire.CoWorkVersion, typeof(WireMissionTaskCommandRequest),
         typeof(WireCoWorkResponse<MissionTaskSnapshot>),
         OpenCoWorkWire.ConnectionAuthority, true,
         OpenCoWorkWire.RequiredIdempotency)]
@@ -510,7 +510,7 @@ public sealed partial class OpenCoWorkJsonRpcConnection
 
     [OpenCoWorkWireMethod(
         "mission/task/review", OpenCoWorkWire.ClientToServer, "mission",
-        OpenCoWorkWire.LatestVersion, typeof(WireReviewMissionTaskRequest),
+        OpenCoWorkWire.CoWorkVersion, typeof(WireReviewMissionTaskRequest),
         typeof(WireCoWorkResponse<MissionTaskSnapshot>),
         OpenCoWorkWire.ConnectionAuthority, true,
         OpenCoWorkWire.RequiredIdempotency)]
@@ -532,7 +532,7 @@ public sealed partial class OpenCoWorkJsonRpcConnection
 
     [OpenCoWorkWireMethod(
         "mailbox/list", OpenCoWorkWire.ClientToServer, "mailbox",
-        OpenCoWorkWire.LatestVersion, typeof(WireListMailboxMessagesRequest),
+        OpenCoWorkWire.CoWorkVersion, typeof(WireListMailboxMessagesRequest),
         typeof(WireCoWorkResponse<CoWorkPage<MailboxMessageSnapshot>>),
         OpenCoWorkWire.ConnectionAuthority, false, OpenCoWorkWire.NoIdempotency)]
     public async Task<WireCoWorkResponse<CoWorkPage<MailboxMessageSnapshot>>>
@@ -550,7 +550,7 @@ public sealed partial class OpenCoWorkJsonRpcConnection
 
     [OpenCoWorkWireMethod(
         "mailbox/send", OpenCoWorkWire.ClientToServer, "mailbox",
-        OpenCoWorkWire.LatestVersion, typeof(WireSendMailboxMessageRequest),
+        OpenCoWorkWire.CoWorkVersion, typeof(WireSendMailboxMessageRequest),
         typeof(WireCoWorkResponse<MailboxMessageSnapshot>),
         OpenCoWorkWire.ConnectionAuthority, true,
         OpenCoWorkWire.RequiredIdempotency)]
@@ -573,7 +573,7 @@ public sealed partial class OpenCoWorkJsonRpcConnection
 
     [OpenCoWorkWireMethod(
         "mailbox/acknowledge", OpenCoWorkWire.ClientToServer, "mailbox",
-        OpenCoWorkWire.LatestVersion, typeof(WireMailboxMessageCommandRequest),
+        OpenCoWorkWire.CoWorkVersion, typeof(WireMailboxMessageCommandRequest),
         typeof(WireCoWorkResponse<MailboxMessageSnapshot>),
         OpenCoWorkWire.ConnectionAuthority, true,
         OpenCoWorkWire.RequiredIdempotency)]
@@ -590,7 +590,7 @@ public sealed partial class OpenCoWorkJsonRpcConnection
 
     [OpenCoWorkWireMethod(
         "mailbox/retry", OpenCoWorkWire.ClientToServer, "mailbox",
-        OpenCoWorkWire.LatestVersion, typeof(WireMailboxMessageCommandRequest),
+        OpenCoWorkWire.CoWorkVersion, typeof(WireMailboxMessageCommandRequest),
         typeof(WireCoWorkResponse<MailboxMessageSnapshot>),
         OpenCoWorkWire.ConnectionAuthority, true,
         OpenCoWorkWire.RequiredIdempotency)]
@@ -606,7 +606,7 @@ public sealed partial class OpenCoWorkJsonRpcConnection
 
     [OpenCoWorkWireMethod(
         "artifact/list", OpenCoWorkWire.ClientToServer, "artifact",
-        OpenCoWorkWire.LatestVersion, typeof(WireListArtifactsRequest),
+        OpenCoWorkWire.CoWorkVersion, typeof(WireListArtifactsRequest),
         typeof(WireCoWorkResponse<CoWorkPage<ArtifactSnapshot>>),
         OpenCoWorkWire.ConnectionAuthority, false, OpenCoWorkWire.NoIdempotency)]
     public async Task<WireCoWorkResponse<CoWorkPage<ArtifactSnapshot>>> ListArtifactsAsync(
@@ -622,7 +622,7 @@ public sealed partial class OpenCoWorkJsonRpcConnection
 
     [OpenCoWorkWireMethod(
         "artifact/get", OpenCoWorkWire.ClientToServer, "artifact",
-        OpenCoWorkWire.LatestVersion, typeof(WireGetArtifactRequest),
+        OpenCoWorkWire.CoWorkVersion, typeof(WireGetArtifactRequest),
         typeof(WireCoWorkResponse<ArtifactSnapshot>),
         OpenCoWorkWire.ConnectionAuthority, false, OpenCoWorkWire.NoIdempotency)]
     public async Task<WireCoWorkResponse<ArtifactSnapshot>> GetArtifactAsync(
@@ -634,7 +634,7 @@ public sealed partial class OpenCoWorkJsonRpcConnection
 
     [OpenCoWorkWireMethod(
         "artifact/publish", OpenCoWorkWire.ClientToServer, "artifact",
-        OpenCoWorkWire.LatestVersion, typeof(WirePublishArtifactRequest),
+        OpenCoWorkWire.CoWorkVersion, typeof(WirePublishArtifactRequest),
         typeof(WireCoWorkResponse<ArtifactSnapshot>),
         OpenCoWorkWire.ConnectionAuthority, true,
         OpenCoWorkWire.RequiredIdempotency)]
@@ -657,7 +657,7 @@ public sealed partial class OpenCoWorkJsonRpcConnection
 
     [OpenCoWorkWireMethod(
         "artifact/promote", OpenCoWorkWire.ClientToServer, "artifact",
-        OpenCoWorkWire.LatestVersion, typeof(WirePromoteArtifactRequest),
+        OpenCoWorkWire.CoWorkVersion, typeof(WirePromoteArtifactRequest),
         typeof(WireCoWorkResponse<ArtifactSnapshot>),
         OpenCoWorkWire.ConnectionAuthority, true,
         OpenCoWorkWire.RequiredIdempotency)]
@@ -675,7 +675,7 @@ public sealed partial class OpenCoWorkJsonRpcConnection
 
     [OpenCoWorkWireMethod(
         "worktree/list", OpenCoWorkWire.ClientToServer, "worktree",
-        OpenCoWorkWire.LatestVersion, typeof(WireListWorktreesRequest),
+        OpenCoWorkWire.CoWorkVersion, typeof(WireListWorktreesRequest),
         typeof(WireCoWorkResponse<CoWorkPage<WorktreeSnapshot>>),
         OpenCoWorkWire.ConnectionAuthority, false, OpenCoWorkWire.NoIdempotency)]
     public async Task<WireCoWorkResponse<CoWorkPage<WorktreeSnapshot>>> ListWorktreesAsync(
@@ -691,7 +691,7 @@ public sealed partial class OpenCoWorkJsonRpcConnection
 
     [OpenCoWorkWireMethod(
         "worktree/get", OpenCoWorkWire.ClientToServer, "worktree",
-        OpenCoWorkWire.LatestVersion, typeof(WireGetWorktreeRequest),
+        OpenCoWorkWire.CoWorkVersion, typeof(WireGetWorktreeRequest),
         typeof(WireCoWorkResponse<WorktreeSnapshot>),
         OpenCoWorkWire.ConnectionAuthority, false, OpenCoWorkWire.NoIdempotency)]
     public async Task<WireCoWorkResponse<WorktreeSnapshot>> GetWorktreeAsync(
@@ -703,7 +703,7 @@ public sealed partial class OpenCoWorkJsonRpcConnection
 
     [OpenCoWorkWireMethod(
         "worktree/handoff", OpenCoWorkWire.ClientToServer, "worktree",
-        OpenCoWorkWire.LatestVersion, typeof(WireWorktreeCommandRequest),
+        OpenCoWorkWire.CoWorkVersion, typeof(WireWorktreeCommandRequest),
         typeof(WireCoWorkResponse<WorktreeHandoffSnapshot>),
         OpenCoWorkWire.ConnectionAuthority, true,
         OpenCoWorkWire.RequiredIdempotency)]
@@ -721,7 +721,7 @@ public sealed partial class OpenCoWorkJsonRpcConnection
 
     [OpenCoWorkWireMethod(
         "worktree/remove", OpenCoWorkWire.ClientToServer, "worktree",
-        OpenCoWorkWire.LatestVersion, typeof(WireWorktreeCommandRequest),
+        OpenCoWorkWire.CoWorkVersion, typeof(WireWorktreeCommandRequest),
         typeof(WireCoWorkResponse<WorktreeSnapshot>),
         OpenCoWorkWire.ConnectionAuthority, true,
         OpenCoWorkWire.RequiredIdempotency)]
@@ -867,7 +867,8 @@ public sealed partial class OpenCoWorkJsonRpcConnection
         WireCoWorkChangedNotification notification,
         CancellationToken cancellationToken)
     {
-        if (_wireVersion != OpenCoWorkWire.LatestVersion)
+        if (VersionRank(_wireVersion) <
+            VersionRank(OpenCoWorkWire.CoWorkVersion))
         {
             return;
         }
