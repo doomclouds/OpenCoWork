@@ -54,6 +54,7 @@ internal sealed class GatewayReconciler
     private CancellationTokenSource? _lifetime;
     private Task? _worker;
     private int _degraded;
+    private long _lastSuccessfulReconcileMilliseconds = long.MinValue;
 
     public GatewayReconciler(
         IWorkspaceStateStore state,
@@ -111,6 +112,17 @@ internal sealed class GatewayReconciler
     internal bool IsRunning => Volatile.Read(ref _lifetime) is not null;
 
     internal bool HasEnabledChannels => _channelRuntime?.HasEnabledChannels == true;
+
+    internal DateTimeOffset? LastSuccessfulReconcileAtUtc
+    {
+        get
+        {
+            var value = Volatile.Read(ref _lastSuccessfulReconcileMilliseconds);
+            return value == long.MinValue
+                ? null
+                : DateTimeOffset.FromUnixTimeMilliseconds(value);
+        }
+    }
 
     internal byte[]? AcquireInboundSecret(string channelId) =>
         _channelRuntime?.AcquireInboundSecret(channelId);
@@ -258,6 +270,9 @@ internal sealed class GatewayReconciler
                 Math.Max(1, Math.Min(64, _channels.Values.Sum(channel =>
                     channel.MaxConcurrentSends))),
                 cancellationToken);
+            Volatile.Write(
+                ref _lastSuccessfulReconcileMilliseconds,
+                _timeProvider.GetUtcNow().ToUnixTimeMilliseconds());
         }
         finally
         {

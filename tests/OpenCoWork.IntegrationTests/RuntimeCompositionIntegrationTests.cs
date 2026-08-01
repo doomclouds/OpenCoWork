@@ -10,6 +10,7 @@ using OpenCoWork.Core.Configuration;
 using OpenCoWork.Core.Gateway;
 using OpenCoWork.Core.Hosting;
 using OpenCoWork.Core.Logging;
+using OpenCoWork.Core.Operations;
 using OpenCoWork.Core.State;
 using OpenCoWork.Core.Workspaces;
 using OpenCoWork.Protocol;
@@ -155,7 +156,7 @@ public sealed class RuntimeCompositionIntegrationTests
     }
 
     [Fact]
-    public async Task Gateway_is_an_explicit_primary_host_without_a_second_lifecycle()
+    public async Task Gateway_RuntimeLifecycle_writes_and_stops_the_workspace_heartbeat()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var root = Path.Combine(
@@ -167,6 +168,7 @@ public sealed class RuntimeCompositionIntegrationTests
             using var host = OpenCoWorkCompositionRoot.Build(
                 [],
                 root,
+                services => AddTestWorkspaceRegistry(services, root),
                 primaryModuleId: "gateway");
             Assert.IsType<ModuleLifecycleCoordinator>(
                 Assert.Single(host.Services.GetServices<IHostedService>()));
@@ -178,11 +180,54 @@ public sealed class RuntimeCompositionIntegrationTests
             Assert.Equal(WorkspaceRuntimeStatus.Running, runtime.Status);
             Assert.True(
                 host.Services.GetRequiredService<GatewayReconciler>().IsRunning);
+            var operations = host.Services.GetRequiredService<IOperationsQueryService>();
+            var heartbeat = await operations.GetHeartbeatAsync(cancellationToken);
+            Assert.NotNull(heartbeat);
+            Assert.Equal("gateway", heartbeat.PrimaryHost);
+            Assert.Equal(OperationsHealthStatus.Healthy, heartbeat.Status);
 
             await host.StopAsync(cancellationToken);
             Assert.Equal(WorkspaceRuntimeStatus.Stopped, runtime.Status);
             Assert.False(
                 host.Services.GetRequiredService<GatewayReconciler>().IsRunning);
+            Assert.Equal(
+                OperationsHealthStatus.Stopped,
+                (await operations.GetHeartbeatAsync(cancellationToken))!.Status);
+        }
+        finally
+        {
+            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task AppServer_RuntimeLifecycle_writes_and_stops_the_workspace_heartbeat()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var root = Path.Combine(
+            Path.GetTempPath(),
+            $"opencowork-app-server-host-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            using var host = OpenCoWorkCompositionRoot.Build(
+                [],
+                root,
+                services => AddTestWorkspaceRegistry(services, root),
+                primaryModuleId: "app-server");
+            await host.StartAsync(cancellationToken);
+
+            var operations = host.Services.GetRequiredService<IOperationsQueryService>();
+            var heartbeat = await operations.GetHeartbeatAsync(cancellationToken);
+            Assert.NotNull(heartbeat);
+            Assert.Equal("app-server", heartbeat.PrimaryHost);
+            Assert.False(host.Services.GetRequiredService<GatewayReconciler>().IsRunning);
+
+            await host.StopAsync(cancellationToken);
+            Assert.Equal(
+                OperationsHealthStatus.Stopped,
+                (await operations.GetHeartbeatAsync(cancellationToken))!.Status);
         }
         finally
         {
@@ -237,6 +282,7 @@ public sealed class RuntimeCompositionIntegrationTests
                 root,
                 services =>
                 {
+                    AddTestWorkspaceRegistry(services, root);
                     services.AddSingleton(config);
                     services.AddSingleton(persistencePaths);
                     services.AddSingleton(trust);
@@ -273,6 +319,7 @@ public sealed class RuntimeCompositionIntegrationTests
             using var host = OpenCoWorkCompositionRoot.Build(
                 [],
                 root,
+                services => AddTestWorkspaceRegistry(services, root),
                 primaryModuleId: "gateway");
 
             Assert.IsType<GatewayMediaStore>(
@@ -295,6 +342,16 @@ public sealed class RuntimeCompositionIntegrationTests
         var port = ((IPEndPoint)listener.LocalEndpoint).Port;
         listener.Stop();
         return port;
+    }
+
+    private static void AddTestWorkspaceRegistry(
+        IServiceCollection services,
+        string root)
+    {
+        var userRoot = Path.Combine(root, "user");
+        Directory.CreateDirectory(userRoot);
+        services.AddSingleton<IWorkspaceRegistryService>(
+            new WorkspaceRegistryService(userRoot, TimeProvider.System));
     }
 
     private static async Task<bool> CanConnectAsync(
@@ -326,6 +383,7 @@ public sealed class RuntimeCompositionIntegrationTests
             using var host = OpenCoWorkCompositionRoot.Build(
                 [],
                 root,
+                services => AddTestWorkspaceRegistry(services, root),
                 primaryModuleId: "gateway");
             await host.StartAsync(cancellationToken);
             var state = host.Services.GetRequiredService<IWorkspaceStateStore>();

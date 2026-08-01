@@ -125,6 +125,9 @@ public sealed class ModuleLifecycleCoordinator : IHostedService
     internal bool ContainsModule(string moduleId) =>
         _modules.Any(module => module.Descriptor.Id == moduleId);
 
+    internal IReadOnlyList<string> ModuleIds =>
+        _modules.Select(module => module.Descriptor.Id).ToArray();
+
     internal async Task StartModulesAsync(CancellationToken cancellationToken)
     {
         if (_started.Count != 0)
@@ -319,6 +322,31 @@ public sealed class WorkspaceRuntime : IAsyncDisposable, IModuleHealthReporter
 
     internal bool IsPrimaryHost(string moduleId) =>
         string.Equals(_primaryHost.Id, moduleId, StringComparison.Ordinal);
+
+    internal (
+        string PrimaryHost,
+        string RuntimeStatus,
+        IReadOnlyList<KeyValuePair<string, string>> Modules) ReadOperationsHealth()
+    {
+        lock (_stateGate)
+        {
+            var runtimeStatus = Status.ToString().ToLowerInvariant();
+            return (
+                _primaryHost.Id,
+                runtimeStatus,
+                _coordinator.ModuleIds.Select(moduleId =>
+                    KeyValuePair.Create(
+                        moduleId,
+                        _degradedModules.ContainsKey(moduleId)
+                            ? "degraded"
+                            : Status switch
+                            {
+                                WorkspaceRuntimeStatus.Running or
+                                    WorkspaceRuntimeStatus.Degraded => "healthy",
+                                _ => runtimeStatus,
+                            })).ToArray());
+        }
+    }
 
     public WorkspaceRuntimeStartedState StartedState
     {

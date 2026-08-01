@@ -9,6 +9,7 @@ using OpenCoWork.Core.Capabilities;
 using OpenCoWork.Core.Configuration;
 using OpenCoWork.Core.Gateway;
 using OpenCoWork.Core.Logging;
+using OpenCoWork.Core.Operations;
 using OpenCoWork.Core.Workspaces;
 using Xunit;
 
@@ -71,6 +72,8 @@ public sealed class GatewayOutboxIntegrationTests
                 root,
                 services =>
                 {
+                    services.AddSingleton<IWorkspaceRegistryService>(
+                        new WorkspaceRegistryService(user, TimeProvider.System));
                     services.AddSingleton(config);
                     services.AddSingleton(credentials);
                     services.AddSingleton(persistencePaths);

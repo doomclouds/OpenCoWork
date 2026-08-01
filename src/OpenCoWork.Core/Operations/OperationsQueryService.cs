@@ -2,14 +2,29 @@ using System.Data.Common;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using OpenCoWork.Abstractions;
 using OpenCoWork.Core.State;
 
 namespace OpenCoWork.Core.Operations;
 
-internal sealed class OperationsQueryService(StateRuntime state) : IOperationsQueryService
+internal sealed class OperationsQueryService : IOperationsQueryService
 {
     private const int MaximumPageSize = 200;
+    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
+    {
+        Converters = { new JsonStringEnumConverter(JsonNamingPolicy.CamelCase) },
+    };
+    private readonly StateRuntime _state;
+    private readonly TimeProvider _timeProvider;
+
+    public OperationsQueryService(
+        StateRuntime state,
+        TimeProvider? timeProvider = null)
+    {
+        _state = state ?? throw new ArgumentNullException(nameof(state));
+        _timeProvider = timeProvider ?? TimeProvider.System;
+    }
 
     public async Task<IReadOnlyList<UsageAggregate>> QueryUsageAsync(
         UsageQuery query,
@@ -24,7 +39,7 @@ internal sealed class OperationsQueryService(StateRuntime state) : IOperationsQu
             _ => throw new ArgumentOutOfRangeException(nameof(query)),
         };
 
-        return await state.ReadAsync<IReadOnlyList<UsageAggregate>>(
+        return await _state.ReadAsync<IReadOnlyList<UsageAggregate>>(
             async (connection, token) =>
             {
                 await using var command = connection.CreateCommand();
@@ -114,7 +129,7 @@ internal sealed class OperationsQueryService(StateRuntime state) : IOperationsQu
 
         var shape = CursorShape(query);
         var cursor = DecodeCursor(query.Cursor, shape);
-        return await state.ReadAsync(
+        return await _state.ReadAsync(
             async (connection, token) =>
             {
                 await using var command = connection.CreateCommand();
@@ -186,7 +201,7 @@ internal sealed class OperationsQueryService(StateRuntime state) : IOperationsQu
             throw new ArgumentException("Trace id is invalid.", nameof(traceId));
         }
 
-        return await state.ReadAsync<IReadOnlyList<TraceSpanSnapshot>>(
+        return await _state.ReadAsync<IReadOnlyList<TraceSpanSnapshot>>(
             async (connection, token) =>
             {
                 await using var command = connection.CreateCommand();
@@ -229,6 +244,139 @@ internal sealed class OperationsQueryService(StateRuntime state) : IOperationsQu
             },
             cancellationToken);
     }
+
+    public Task<OperationsHeartbeatSnapshot?> GetHeartbeatAsync(
+        CancellationToken cancellationToken = default) =>
+        _state.ReadAsync(
+            (connection, token) => ReadHeartbeatAsync(
+                connection,
+                _timeProvider.GetUtcNow(),
+                token),
+            cancellationToken).AsTask();
+
+    public Task<OperationsDashboardSnapshot> GetDashboardAsync(
+        CancellationToken cancellationToken = default) =>
+        _state.ReadAsync(
+            (connection, token) => ReadDashboardAsync(
+                connection,
+                _timeProvider.GetUtcNow(),
+                token),
+            cancellationToken).AsTask();
+
+    internal static async ValueTask<OperationsHeartbeatSnapshot?> ReadHeartbeatAsync(
+        DbConnection connection,
+        DateTimeOffset now,
+        CancellationToken cancellationToken)
+    {
+        await using var command = connection.CreateCommand();
+        command.CommandText =
+            """
+            SELECT runtime_instance_id, primary_host, status, snapshot_json,
+                   observed_utc, expires_utc, stopped_utc, revision
+            FROM workspace_heartbeat
+            WHERE id = 1;
+            """;
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        if (!await reader.ReadAsync(cancellationToken))
+        {
+            return null;
+        }
+
+        var payload = JsonSerializer.Deserialize<OperationsHeartbeatPayload>(
+                          reader.GetString(3),
+                          JsonOptions)
+                      ?? throw new InvalidDataException(
+                          "Workspace Heartbeat snapshot is invalid.");
+        var status = ParseHealthStatus(reader.GetString(2));
+        var expires = DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(5));
+        if (status is not OperationsHealthStatus.Stopped && now > expires)
+        {
+            status = OperationsHealthStatus.Stale;
+        }
+
+        return new OperationsHeartbeatSnapshot(
+            Guid.Parse(reader.GetString(0)),
+            reader.GetString(1),
+            status,
+            payload.RuntimeStatus,
+            payload.Modules,
+            payload.ReadyChannels,
+            payload.FaultedChannels,
+            payload.PendingInbound,
+            payload.FailedInbound,
+            payload.DeadLetterInbound,
+            payload.PendingOutbox,
+            payload.FailedOutbox,
+            payload.DeadLetterOutbox,
+            payload.TraceDroppedCount,
+            payload.SqliteWritable,
+            payload.ReconcilerLastSuccessAtUtc,
+            DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(4)),
+            expires,
+            reader.IsDBNull(6)
+                ? null
+                : DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(6)),
+            reader.GetInt64(7));
+    }
+
+    internal static async ValueTask<OperationsDashboardSnapshot> ReadDashboardAsync(
+        DbConnection connection,
+        DateTimeOffset now,
+        CancellationToken cancellationToken)
+    {
+        var heartbeat = await ReadHeartbeatAsync(connection, now, cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText =
+            """
+            SELECT
+                (SELECT workspace_id FROM operations_state WHERE id = 1),
+                (SELECT count(*) FROM channels WHERE runtime_status = 'ready'),
+                (SELECT count(*) FROM channels WHERE runtime_status = 'faulted'),
+                (SELECT count(*) FROM channel_inbound_messages WHERE status = 'pending'),
+                (SELECT count(*) FROM channel_inbound_messages WHERE status = 'failed'),
+                (SELECT count(*) FROM channel_inbound_messages WHERE status = 'deadLettered'),
+                (SELECT count(*) FROM channel_outbox WHERE status = 'pending'),
+                (SELECT count(*) FROM channel_outbox WHERE status = 'failed'),
+                (SELECT count(*) FROM channel_outbox WHERE status = 'deadLettered'),
+                (SELECT coalesce(sum(json_extract(usage_json, '$.totalTokens')), 0)
+                 FROM provider_usage WHERE created_utc >= $since),
+                (SELECT count(*) FROM trace_spans
+                 WHERE status = 'error' AND started_utc >= $since),
+                (SELECT count(*) FROM improvement_proposals WHERE status = 'open');
+            """;
+        Add(command, "$since", now.AddHours(-24).ToUnixTimeMilliseconds());
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        if (!await reader.ReadAsync(cancellationToken))
+        {
+            throw new InvalidDataException("Operations Dashboard is unavailable.");
+        }
+
+        return new OperationsDashboardSnapshot(
+            Guid.Parse(reader.GetString(0)),
+            heartbeat,
+            reader.GetInt32(1),
+            reader.GetInt32(2),
+            reader.GetInt32(3),
+            reader.GetInt32(4),
+            reader.GetInt32(5),
+            reader.GetInt32(6),
+            reader.GetInt32(7),
+            reader.GetInt32(8),
+            reader.GetInt64(9),
+            reader.GetInt32(10),
+            reader.GetInt32(11),
+            now);
+    }
+
+    private static OperationsHealthStatus ParseHealthStatus(string value) => value switch
+    {
+        "healthy" => OperationsHealthStatus.Healthy,
+        "degraded" => OperationsHealthStatus.Degraded,
+        "unhealthy" => OperationsHealthStatus.Unhealthy,
+        "stopping" => OperationsHealthStatus.Stopping,
+        "stopped" => OperationsHealthStatus.Stopped,
+        _ => throw new InvalidDataException("Workspace Heartbeat status is invalid."),
+    };
 
     private static void ValidateRange(DateTimeOffset fromUtc, DateTimeOffset toUtc)
     {
@@ -298,3 +446,18 @@ internal sealed class OperationsQueryService(StateRuntime state) : IOperationsQu
 
     private sealed record CursorPayload(long StartedUtc, string TraceId, string Shape);
 }
+
+internal sealed record OperationsHeartbeatPayload(
+    string RuntimeStatus,
+    IReadOnlyList<OperationsModuleHealth> Modules,
+    int ReadyChannels,
+    int FaultedChannels,
+    int PendingInbound,
+    int FailedInbound,
+    int DeadLetterInbound,
+    int PendingOutbox,
+    int FailedOutbox,
+    int DeadLetterOutbox,
+    long TraceDroppedCount,
+    bool SqliteWritable,
+    DateTimeOffset? ReconcilerLastSuccessAtUtc);

@@ -3,6 +3,8 @@ using Microsoft.Extensions.DependencyInjection.Extensions;
 using OpenCoWork.Abstractions;
 using OpenCoWork.Core.Agents;
 using OpenCoWork.Core.Configuration;
+using OpenCoWork.Core.Gateway;
+using OpenCoWork.Core.Hosting;
 using OpenCoWork.Core.Logging;
 using OpenCoWork.Core.Operations;
 using OpenCoWork.Core.State;
@@ -37,6 +39,38 @@ public static class OpenCoWorkSessionExtensions
         services.TryAddSingleton<IWorkspaceStateStore>(serviceProvider =>
             serviceProvider.GetRequiredService<StateRuntime>());
         services.TryAddSingleton<IOperationsQueryService, OperationsQueryService>();
+        services.TryAddSingleton<OperationsTraceCollector>();
+        services.TryAddSingleton<WorkspaceRegistryService>();
+        services.TryAddSingleton<IWorkspaceRegistryService>(serviceProvider =>
+            serviceProvider.GetRequiredService<WorkspaceRegistryService>());
+        services.TryAddSingleton<WorkspaceInsightService>();
+        services.TryAddSingleton<IWorkspaceInsightService>(serviceProvider =>
+            serviceProvider.GetRequiredService<WorkspaceInsightService>());
+        services.TryAddSingleton<HubService>();
+        services.TryAddSingleton<IHubService>(serviceProvider =>
+            serviceProvider.GetRequiredService<HubService>());
+        services.TryAddSingleton(serviceProvider =>
+        {
+            var runtime = serviceProvider.GetRequiredService<WorkspaceRuntime>();
+            return new OperationsRuntime(
+                serviceProvider.GetRequiredService<StateRuntime>(),
+                serviceProvider.GetRequiredService<OperationsTraceCollector>(),
+                serviceProvider.GetRequiredService<IWorkspaceRegistryService>(),
+                serviceProvider.GetRequiredService<OpenCoWorkPaths>(),
+                serviceProvider.GetRequiredService<TimeProvider>(),
+                () =>
+                {
+                    var health = runtime.ReadOperationsHealth();
+                    return new OperationsRuntimeHealth(
+                        health.PrimaryHost,
+                        health.RuntimeStatus,
+                        health.Modules.Select(module =>
+                            new OperationsModuleHealth(module.Key, module.Value)).ToArray(),
+                        serviceProvider.GetService<GatewayReconciler>()
+                            ?.LastSuccessfulReconcileAtUtc);
+                },
+                serviceProvider.GetRequiredService<IWorkspaceInsightService>());
+        });
         services.TryAddSingleton<ProjectWriterLeaseService>();
         services.TryAddSingleton<IProjectWriterLeaseService>(serviceProvider =>
             serviceProvider.GetRequiredService<ProjectWriterLeaseService>());

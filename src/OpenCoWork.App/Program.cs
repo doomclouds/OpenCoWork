@@ -14,6 +14,7 @@ using OpenCoWork.Core.Diagnostics;
 using OpenCoWork.Core.Gateway;
 using OpenCoWork.Core.Hosting;
 using OpenCoWork.Core.Logging;
+using OpenCoWork.Core.Operations;
 using OpenCoWork.Core.Sessions;
 using OpenCoWork.Core.State;
 using OpenCoWork.Core.Workspaces;
@@ -1072,15 +1073,28 @@ namespace OpenCoWork.App
         {
         }
 
-        public ValueTask StartAsync(
+        public async ValueTask StartAsync(
             IServiceProvider services,
-            CancellationToken cancellationToken) =>
-            ValueTask.CompletedTask;
+            CancellationToken cancellationToken)
+        {
+            if (services.GetRequiredService<WorkspaceRuntime>()
+                .IsPrimaryHost("app-server"))
+            {
+                await services.GetRequiredService<OperationsRuntime>()
+                    .StartAsync(cancellationToken);
+            }
+        }
 
-        public ValueTask StopAsync(
+        public async ValueTask StopAsync(
             IServiceProvider services,
-            CancellationToken cancellationToken) =>
-            ValueTask.CompletedTask;
+            CancellationToken cancellationToken)
+        {
+            var operations = services.GetRequiredService<OperationsRuntime>();
+            if (operations.IsRunning)
+            {
+                await operations.StopAsync(cancellationToken);
+            }
+        }
     }
 
     [OpenCoWorkModule(
@@ -1139,8 +1153,32 @@ namespace OpenCoWork.App
                 return;
             }
 
+            var operations = services.GetRequiredService<OperationsRuntime>();
+            await operations.StartAsync(cancellationToken);
             var reconciler = services.GetRequiredService<GatewayReconciler>();
-            await reconciler.StartAsync(cancellationToken);
+            try
+            {
+                await reconciler.StartAsync(cancellationToken);
+            }
+            catch (Exception startupError)
+            {
+                try
+                {
+                    await operations.StopAsync(CancellationToken.None);
+                }
+                catch (Exception cleanupError)
+                {
+                    throw new AggregateException(
+                        "Gateway startup failed and operations cleanup reported an error.",
+                        startupError,
+                        cleanupError);
+                }
+
+                System.Runtime.ExceptionServices.ExceptionDispatchInfo
+                    .Capture(startupError)
+                    .Throw();
+                throw;
+            }
             if (!reconciler.HasEnabledChannels)
             {
                 return;
@@ -1187,16 +1225,28 @@ namespace OpenCoWork.App
                 _intake = null;
                 _intakeLifetime = null;
                 lifetime.Dispose();
+                var cleanupErrors = new List<Exception>();
                 try
                 {
                     await reconciler.StopAsync(CancellationToken.None);
                 }
                 catch (Exception cleanupError)
                 {
+                    cleanupErrors.Add(cleanupError);
+                }
+                try
+                {
+                    await operations.StopAsync(CancellationToken.None);
+                }
+                catch (Exception cleanupError)
+                {
+                    cleanupErrors.Add(cleanupError);
+                }
+                if (cleanupErrors.Count != 0)
+                {
                     throw new AggregateException(
-                        "Gateway intake startup failed and cleanup reported an error.",
-                        startupError,
-                        cleanupError);
+                        "Gateway intake startup failed and cleanup reported errors.",
+                        new[] { startupError }.Concat(cleanupErrors));
                 }
 
                 System.Runtime.ExceptionServices.ExceptionDispatchInfo
@@ -1210,7 +1260,7 @@ namespace OpenCoWork.App
             IServiceProvider services,
             CancellationToken cancellationToken)
         {
-            Exception? intakeError = null;
+            var errors = new List<Exception>();
             var lifetime = Interlocked.Exchange(ref _intakeLifetime, null);
             var intake = Interlocked.Exchange(ref _intake, null);
             if (lifetime is not null)
@@ -1227,7 +1277,7 @@ namespace OpenCoWork.App
                     }
                     catch (Exception error)
                     {
-                        intakeError = error;
+                        errors.Add(error);
                     }
                 }
                 lifetime.Dispose();
@@ -1241,19 +1291,27 @@ namespace OpenCoWork.App
                     await reconciler.StopAsync(cancellationToken);
                 }
             }
-            catch (Exception reconcilerError) when (intakeError is not null)
+            catch (Exception reconcilerError)
             {
-                throw new AggregateException(
-                    "Gateway intake and reconciliation failed to stop.",
-                    intakeError,
-                    reconcilerError);
+                errors.Add(reconcilerError);
             }
 
-            if (intakeError is not null)
+            try
             {
-                System.Runtime.ExceptionServices.ExceptionDispatchInfo
-                    .Capture(intakeError)
-                    .Throw();
+                var operations = services.GetRequiredService<OperationsRuntime>();
+                if (operations.IsRunning)
+                {
+                    await operations.StopAsync(cancellationToken);
+                }
+            }
+            catch (Exception operationsError)
+            {
+                errors.Add(operationsError);
+            }
+
+            if (errors.Count != 0)
+            {
+                throw new AggregateException("Gateway runtime cleanup failed.", errors);
             }
         }
     }

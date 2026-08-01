@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Text.Json;
 
 namespace OpenCoWork.Abstractions;
 
@@ -83,6 +84,188 @@ public interface IOperationsQueryService
 
     Task<IReadOnlyList<TraceSpanSnapshot>> GetTraceAsync(
         string traceId,
+        CancellationToken cancellationToken = default);
+
+    Task<OperationsHeartbeatSnapshot?> GetHeartbeatAsync(
+        CancellationToken cancellationToken = default);
+
+    Task<OperationsDashboardSnapshot> GetDashboardAsync(
+        CancellationToken cancellationToken = default);
+}
+
+public enum OperationsHealthStatus
+{
+    Healthy,
+    Degraded,
+    Unhealthy,
+    Stopping,
+    Stopped,
+    Stale,
+}
+
+public sealed record OperationsModuleHealth(
+    string ModuleId,
+    string Status);
+
+public sealed record OperationsHeartbeatSnapshot(
+    Guid RuntimeInstanceId,
+    string PrimaryHost,
+    OperationsHealthStatus Status,
+    string RuntimeStatus,
+    IReadOnlyList<OperationsModuleHealth> Modules,
+    int ReadyChannels,
+    int FaultedChannels,
+    int PendingInbound,
+    int FailedInbound,
+    int DeadLetterInbound,
+    int PendingOutbox,
+    int FailedOutbox,
+    int DeadLetterOutbox,
+    long TraceDroppedCount,
+    bool SqliteWritable,
+    DateTimeOffset? ReconcilerLastSuccessAtUtc,
+    DateTimeOffset ObservedAtUtc,
+    DateTimeOffset ExpiresAtUtc,
+    DateTimeOffset? StoppedAtUtc,
+    long Revision);
+
+public sealed record OperationsDashboardSnapshot(
+    Guid WorkspaceId,
+    OperationsHeartbeatSnapshot? Heartbeat,
+    int ReadyChannels,
+    int FaultedChannels,
+    int PendingInbound,
+    int FailedInbound,
+    int DeadLetterInbound,
+    int PendingOutbox,
+    int FailedOutbox,
+    int DeadLetterOutbox,
+    long Last24HoursTokens,
+    int TraceErrors,
+    int OpenProposals,
+    DateTimeOffset ObservedAtUtc);
+
+public sealed record WorkspaceRegistration(
+    Guid WorkspaceId,
+    string WorkspaceRoot,
+    string DataRoot,
+    string DisplayName,
+    DateTimeOffset RegisteredAtUtc,
+    DateTimeOffset LastSeenAtUtc);
+
+public enum HubWorkspaceAvailability
+{
+    Online,
+    Stale,
+    Stopped,
+    Missing,
+    Unavailable,
+}
+
+public sealed record HubWorkspaceSummary(
+    WorkspaceRegistration Registration,
+    HubWorkspaceAvailability Availability,
+    OperationsHealthStatus? HealthStatus,
+    string? Diagnostic);
+
+public interface IWorkspaceRegistryService
+{
+    Task<WorkspaceRegistration> UpsertAsync(
+        Guid workspaceId,
+        string workspaceRoot,
+        string dataRoot,
+        string displayName,
+        CancellationToken cancellationToken = default);
+
+    Task<IReadOnlyList<WorkspaceRegistration>> ListAsync(
+        CancellationToken cancellationToken = default);
+}
+
+public interface IHubService
+{
+    Task<IReadOnlyList<HubWorkspaceSummary>> ListWorkspacesAsync(
+        CancellationToken cancellationToken = default);
+
+    Task<OperationsDashboardSnapshot?> GetDashboardAsync(
+        Guid workspaceId,
+        CancellationToken cancellationToken = default);
+}
+
+public enum InsightRunTrigger
+{
+    Manual,
+    Scheduled,
+}
+
+public enum InsightRunStatus
+{
+    Running,
+    Completed,
+    Failed,
+}
+
+public enum ImprovementProposalType
+{
+    Reliability,
+    Performance,
+    Configuration,
+    Maintenance,
+}
+
+public enum ImprovementProposalSeverity
+{
+    Info,
+    Warning,
+    Critical,
+}
+
+public enum ImprovementProposalStatus
+{
+    Open,
+    Archived,
+}
+
+public sealed record InsightRunSnapshot(
+    Guid InsightRunId,
+    InsightRunTrigger Trigger,
+    InsightRunStatus Status,
+    DateTimeOffset HighWatermarkUtc,
+    int ProposalCount,
+    DateTimeOffset CreatedAtUtc,
+    DateTimeOffset? CompletedAtUtc,
+    long Revision);
+
+public sealed record ImprovementProposalSnapshot(
+    Guid ProposalId,
+    string FingerprintSha256,
+    ImprovementProposalType Type,
+    ImprovementProposalSeverity Severity,
+    string Summary,
+    JsonElement Evidence,
+    ImprovementProposalStatus Status,
+    long Revision,
+    DateTimeOffset CreatedAtUtc,
+    DateTimeOffset UpdatedAtUtc,
+    DateTimeOffset? ArchivedAtUtc);
+
+public interface IWorkspaceInsightService
+{
+    Task<InsightRunSnapshot> RunAsync(
+        InsightRunTrigger trigger,
+        CancellationToken cancellationToken = default);
+
+    Task<OperationsPage<ImprovementProposalSnapshot>> ListAsync(
+        int pageSize = 100,
+        string? cursor = null,
+        CancellationToken cancellationToken = default);
+
+    Task<ImprovementProposalSnapshot?> GetAsync(
+        Guid proposalId,
+        CancellationToken cancellationToken = default);
+
+    Task<ImprovementProposalSnapshot> ArchiveAsync(
+        Guid proposalId,
+        long expectedRevision,
         CancellationToken cancellationToken = default);
 }
 
