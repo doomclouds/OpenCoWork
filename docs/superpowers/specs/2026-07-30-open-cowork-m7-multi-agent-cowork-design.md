@@ -13,7 +13,7 @@
   - [OpenCoWork Runtime 1.0 路线规格](2026-07-25-open-cowork-runtime-1-0-roadmap.md)
   - [M0 Contract Freeze](2026-07-25-open-cowork-m0-contract-freeze-design.md)
   - [M0 能力台账](2026-07-25-open-cowork-m0-capability-ledger.md)
-  - [M0-M10 验收目录](2026-07-25-open-cowork-m0-acceptance-catalog.md)
+  - [M0-M11 验收目录](2026-07-25-open-cowork-m0-acceptance-catalog.md)
   - [M2 Durable Session Core 设计](2026-07-26-open-cowork-m2-durable-session-core-design.md)
   - [M3 Agent Runtime Alpha 设计](2026-07-27-open-cowork-m3-agent-runtime-alpha-design.md)
   - [M4 Tool Runtime Alpha 设计](2026-07-28-open-cowork-m4-tool-runtime-alpha-design.md)

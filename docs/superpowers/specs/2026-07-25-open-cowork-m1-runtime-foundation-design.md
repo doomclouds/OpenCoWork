@@ -9,7 +9,7 @@
 - 目标框架：.NET 10
 - 当前实现平台：`win-x64`
 - M1 正式验收平台：`win-x64`
-- macOS 真机验证：滚动登记于仓库 `AGENTS.md`，统一在 M10 / 1.0 发布前清零
+- macOS 真机验证：滚动登记于仓库 `AGENTS.md`，统一在 M11 / 1.0 发布前清零
 - 原始能力参考：
   [DotCraft 核心运行时复刻规范](../../../DotCraft_Core_核心代码详细设计与一比一复刻规范_v1.0.md)
 - M0 冻结契约：
@@ -19,7 +19,7 @@
 - 能力台账：
   [OpenCoWork M0 能力台账](2026-07-25-open-cowork-m0-capability-ledger.md)
 - 验收目录：
-  [OpenCoWork M0-M10 验收目录](2026-07-25-open-cowork-m0-acceptance-catalog.md)
+  [OpenCoWork M0-M11 验收目录](2026-07-25-open-cowork-m0-acceptance-catalog.md)
 
 ## 1. 目标
 
@@ -247,7 +247,7 @@ git status --short
 - 全局启用 `TreatWarningsAsErrors`；
 - 架构守卫优先使用 BCL，不新增架构测试依赖；
 - M1 依据 Windows 实机验证收口；M4 Mac mini 真机项滚动进入 `AGENTS.md`，
-  在 M10 / 1.0 发布前统一完成。
+  在 M11 / 1.0 发布前统一完成。
 
 当前没有影响工程基线结构的开放决策。
 
@@ -903,4 +903,4 @@ M1 子任务、独立规格或阶段归档：
 
 只有 `M1-ACC-001` 至 `M1-ACC-008` 的 Windows 收口证据全部通过、macOS 真机项
 已登记，且里程碑台账同步后，M1 才能标记为 Done。届时只生成一份 M1 交付归档；
-macOS 真机台账必须在 M10 / 1.0 正式发布前清零。
+macOS 真机台账必须在 M11 / 1.0 正式发布前清零。

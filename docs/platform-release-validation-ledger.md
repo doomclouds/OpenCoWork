@@ -33,7 +33,7 @@ Provider 的真实兼容性不在此重复维护，统一见
 - `Superseded`：旧基线已被更新的真机结果替代，保留历史入口但不再作为当前结论。
 
 `dotnet publish -r <RID>` 在另一操作系统成功时，只能登记为 `Cross-publish
-Passed`，不得把目标平台状态改为 `Passed`。M10 必须在最终发布候选上重新执行两端
+Passed`，不得把目标平台状态改为 `Passed`。M11 必须在最终发布候选上重新执行两端
 完整验收，早期里程碑结果不能直接沿用为 1.0 发布结论。
 
 ## 当前台账
@@ -56,8 +56,12 @@ Passed`，不得把目标平台状态改为 `Passed`。M10 必须在最终发布
 | M7 Multi-Agent CoWork | `osx-arm64` | Passed | `c30f168a7c01a39915662453799427e749c8eacf` | Apple Silicon macOS 26.5.2 (`25F84`)；.NET SDK `10.0.302`；Runtime `10.0.10`；Git `2.50.1` | 446 项回归、Release build 0/0、App/TestClient Mach-O arm64 发布目录 Wire 1.0/1.1/1.2、ACP、WebSocket、DAG、Mailbox、Artifact、Symlink、Worktree、恢复、Secret Canary、进程树与 Dirty Retention | [M7 实施计划 Outcome 10](superpowers/plans/2026-07-30-open-cowork-m7-multi-agent-cowork-implementation-plan.md) |
 | M8 Automations and Scheduler | `win-x64` | Pending | `a710866ec2f812dce3bb03a72d5723ac72e68427`；Cross-publish Passed | 从 macOS 26.5.2 交叉发布；Windows 真机环境待登记 | App/TestClient `win-x64` 独立 restore/publish 与 PE32+ x64 摘要通过；DST、强杀恢复、Reparse/Junction、Worktree、进程树与 Wire 1.3 仍待 Windows 真机 | [M8 实施计划 Outcome 10](superpowers/plans/2026-07-30-open-cowork-m8-automations-scheduler-implementation-plan.md) |
 | M8 Automations and Scheduler | `osx-arm64` | Passed | `a710866ec2f812dce3bb03a72d5723ac72e68427` | Apple Silicon macOS 26.5.2 (`25F84`)；.NET SDK `10.0.302`；Runtime `10.0.10`；Git `2.50.1` | 536 项回归、100 项 M8 专项、固定负载、Release build 0/0、App/TestClient Mach-O arm64 发布目录 Wire 1.0–1.3、DST、热更新、恢复、Symlink、Worktree、取消、Secret Canary 与残留检查 | [M8 实施计划 Outcome 10](superpowers/plans/2026-07-30-open-cowork-m8-automations-scheduler-implementation-plan.md) |
-| M10 OpenCoWork 1.0 Closure | `win-x64` | Pending | 最终发布候选待定 | 待登记 | 安装、升级、迁移、恢复、安全、性能、签名和完整发布候选验收 | [Runtime 1.0 里程碑](milestones/2026-07/open-cowork-runtime-1-0/README.md) |
-| M10 OpenCoWork 1.0 Closure | `osx-arm64` | Pending | 最终发布候选待定 | 待登记 | 安装、升级、迁移、恢复、安全、性能、签名/公证和完整发布候选验收 | [Runtime 1.0 里程碑](milestones/2026-07/open-cowork-runtime-1-0/README.md) |
+| M9 DeepSeek Responses Provider | `win-x64` | Pending | 待实现 | 待登记 | Release 回归、发布目录 `deepseek-v4-flash` Responses、Function、`web_search`、`custom/apply_patch`、Usage 与 Secret Canary 真实证据；Provider 细节见统一台账 | [Provider 台账](provider-validation-backlog.md) |
+| M9 DeepSeek Responses Provider | `osx-arm64` | Pending | 待实现 | 待登记 | Release 回归、发布目录 `deepseek-v4-flash` Responses、Function、`web_search`、`custom/apply_patch`、Usage 与 Secret Canary 真实证据；Provider 细节见统一台账 | [Provider 台账](provider-validation-backlog.md) |
+| M10 Gateway and Operations | `win-x64` | Pending | 待实现 | 待登记 | Gateway/Hub、Channel 生命周期、媒体路径、后台服务和发布目录验收 | [Runtime 1.0 里程碑](milestones/2026-07/open-cowork-runtime-1-0/README.md) |
+| M10 Gateway and Operations | `osx-arm64` | Pending | 待实现 | 待登记 | Gateway/Hub、Channel 生命周期、媒体路径、后台服务和发布目录验收 | [Runtime 1.0 里程碑](milestones/2026-07/open-cowork-runtime-1-0/README.md) |
+| M11 OpenCoWork 1.0 Closure | `win-x64` | Pending | 最终发布候选待定 | 待登记 | 安装、升级、迁移、恢复、安全、性能、签名和完整发布候选验收 | [Runtime 1.0 里程碑](milestones/2026-07/open-cowork-runtime-1-0/README.md) |
+| M11 OpenCoWork 1.0 Closure | `osx-arm64` | Pending | 最终发布候选待定 | 待登记 | 安装、升级、迁移、恢复、安全、性能、签名/公证和完整发布候选验收 | [Runtime 1.0 里程碑](milestones/2026-07/open-cowork-runtime-1-0/README.md) |
 
 ## M4 Windows 验证结果（2026-07-29）
 
@@ -86,7 +90,7 @@ Passed`，不得把目标平台状态改为 `Passed`。M10 必须在最终发布
   `Desktop|shell-ok|True`，Web 为 `tool.networkTargetDenied`。
 - Secret Canary 未命中 Journal、SQLite、Session Event、Provider Tool Message、
   日志、stdout/stderr 或验证目录；退出后无 `opencowork`/PowerShell 残留。
-- `M4-ACC-006`、`M4-ACC-009` 已由 `Deferred` 改为 `Passed`。M10 仍须在最终
+- `M4-ACC-006`、`M4-ACC-009` 已由 `Deferred` 改为 `Passed`。M11 仍须在最终
   发布候选上重跑完整双平台验收。
 
 ## M5 Windows 验证结果（2026-07-29）
@@ -139,7 +143,7 @@ Passed`，不得把目标平台状态改为 `Passed`。M10 必须在最终发布
   `13C8590F8CE58B1258554A56A096D9515942EB9E2343994DD5D6EBF6D75BB096`。
 - Windows Terminal/进程树夹具显式隐藏派生控制台，退出后工作区已清理；
   `opencowork`、`ping` 和终端父进程均无持久残留。`M6-ACC-001` 至
-  `M6-ACC-010` 已全部 `Passed`，M10 仍须重跑最终发布候选。
+  `M6-ACC-010` 已全部 `Passed`，M11 仍须重跑最终发布候选。
 
 ## M7 当前验证结果（macOS 2026-07-30；Windows 待验）
 

@@ -353,7 +353,7 @@ host。进程关闭时：
 重连、慢客户端、取消和脱敏 transcript。它不是生产 Desktop SDK。
 
 M5-ACC-002 需要 `osx-arm64` 与 `win-x64` 真机证据。两端发布目录 TestClient
-均已真实运行通过，状态为 `Passed`；交叉 publish 仍不能替代后续 M10 最终发布
+均已真实运行通过，状态为 `Passed`；交叉 publish 仍不能替代后续 M11 最终发布
 候选复验。
 
 ## 10. 冻结结论

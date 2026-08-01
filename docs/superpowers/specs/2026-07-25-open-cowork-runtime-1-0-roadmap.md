@@ -5,6 +5,8 @@
 - 状态：已确认
 - 日期：2026-07-25
 - 修订：2026-07-28，按 M5 头脑风暴确认 Desktop-first Wire 与稳定 ACP v1 边界
+- 修订：2026-08-01，新增 M9 DeepSeek Responses Provider，原 Gateway 与
+  1.0 Closure 顺延为 M10/M11
 - 目标版本：OpenCoWork 1.0
 - 目标框架：.NET 10
 - 正式平台：`win-x64`、`osx-arm64`
@@ -304,13 +306,13 @@ Running → NeedsAttention → Running
 - 配置、路径、协议、状态和存储目录；
 - 原规范能力映射；
 - 每项能力的保持语义、OpenCoWork 重设计或延期结论；
-- M1-M10 的验收编号。
+- M1-M11 的验收编号。
 
 交付规格：
 
 - [OpenCoWork M0 Contract Freeze](2026-07-25-open-cowork-m0-contract-freeze-design.md)
 - [OpenCoWork M0 能力台账](2026-07-25-open-cowork-m0-capability-ledger.md)
-- [OpenCoWork M0-M10 验收目录](2026-07-25-open-cowork-m0-acceptance-catalog.md)
+- [OpenCoWork M0-M11 验收目录](2026-07-25-open-cowork-m0-acceptance-catalog.md)
 
 不包含：
 
@@ -559,7 +561,51 @@ Mailbox 是多 Agent 内部的持久异步消息机制，用于补充要求、�
 - 权限不会因无人值守而自动扩大；
 - NeedsAttention 可经外部客户端恢复，也能按期限取消或超时。
 
-### M9 - Gateway and Operations
+### M9 - DeepSeek Responses Provider
+
+目标：把既有通用 OpenAI-compatible Chat Completions Provider 收敛为
+DeepSeek 专用 Responses API 实现，并形成 1.0 唯一真实 Provider 路径。
+
+包含：
+
+- DeepSeek-only Provider、Model 与 Auth 配置边界；
+- 以 [DeepSeek 官方 Responses API 指南](https://api-docs.deepseek.com/guides/responses_api/)
+  为协议权威，只实现现有运行时需要且官方明确支持的最小子集；
+- 用 Responses API 替换 `OpenAiCompatibleChatClient` 的文本请求、SSE 流事件和
+  错误映射；
+- Content、Reasoning、Usage、Function Call/Output 与
+  `response.completed` / `response.incomplete` / `response.failed` 终态；
+- DeepSeek 服务端 `web_search` 与 `custom/apply_patch`，其中 Provider 工具同样
+  受 EffectiveToolSnapshot、Authority、审计和 Journal 约束；
+- 本地 `ThreadJournal` 权威历史、重启恢复、压缩和重试边界；
+- 删除千问 Token Plan、其他 Provider 和通用 `openaiCompatible` 协议承诺；
+- 删除模型侧本地 `web.fetch/CoreWebTool` 和整文件 `file.write` 注册；保留可复用的
+  路径安全、原子提交、Approval 与 ToolInvocationPipeline；
+- 首发模型 `deepseek-v4-flash` 的离线 Fixture、真实发布冒烟和 Secret Canary。
+
+不包含：
+
+- OpenAI、千问 Token Plan 或其他 OpenAI-compatible Provider；
+- Chat Completions 或 Anthropic Messages 兼容层；
+- DeepSeek 官方未记录或标记为不支持的 Responses API 能力，以及尚未被
+  OpenCoWork 产品需求激活的结构化输出和其他 Tool Type；
+- 尚未获得 DeepSeek 官方 Responses API 支持并完成真实验证的
+  `deepseek-v4-pro`；
+- Provider 托管历史成为本地恢复前提。
+
+完成信号：
+
+- 配置与 Capability Catalog 只声明 DeepSeek 和 `deepseek-v4-flash`；
+- 官方 Responses 子集的流、Reasoning、Usage、Function、`web_search`、
+  `custom/apply_patch`、三类终态、错误和重试通过离线故障注入；
+- 本地 `web.fetch` 与模型侧 `file.write` 已退出 Catalog，且 Provider 工具没有
+  绕过既有 Authority、Approval、审计或 Journal；
+- 进程重启只依赖本地 Journal，可重建同一模型可见历史且不重复工具副作用；
+- `deepseek-v4-flash` 在目标发布目录通过真实短冒烟、Usage 对账和 Secret
+  Canary；
+- 被移除的旧 Provider/协议配置产生稳定、可诊断的迁移错误。
+
+### M10 - Gateway and Operations
 
 目标：通过外部渠道长期接收任务、可靠投递结果，并提供用户级协调与后台运维。
 
@@ -590,7 +636,7 @@ Mailbox 是多 Agent 内部的持久异步消息机制，用于补充要求、�
 - Hub 不依赖当前工作目录；
 - 后台服务可按 WorkspaceRuntime 生命周期完整清理。
 
-### M10 - OpenCoWork 1.0 Closure
+### M11 - OpenCoWork 1.0 Closure
 
 目标：不再增加大型子系统，关闭契约缺口并形成可发布产品。
 
@@ -630,14 +676,15 @@ Mailbox 是多 Agent 内部的持久异步消息机制，用于补充要求、�
 | M6 | Extension Beta |
 | M7 | CoWork Beta |
 | M8 | Unattended Beta |
-| M9 | Release Candidate |
-| M10 | OpenCoWork 1.0 |
+| M9 | Provider Beta |
+| M10 | Release Candidate |
+| M11 | OpenCoWork 1.0 |
 
 ## 11. 后续工作规则
 
-- 每个 M1-M10 在实施前必须有独立规格和可恢复计划；
+- 每个 M1-M11 在实施前必须有独立规格和可恢复计划；
 - 每个 Slice 只在完成硬验收并具备交付证据后标记 Done；
 - CHECKLIST 只维护 Slice 状态和资产链接，不写任务级施工步骤；
 - 新发现的能力不能直接塞进当前 Slice，必须判断属于当前边界、未来 Slice、
   技术债还是 1.x 后续；
-- M10 只允许收口，不接受新大型子系统。
+- M11 只允许收口，不接受新大型子系统。

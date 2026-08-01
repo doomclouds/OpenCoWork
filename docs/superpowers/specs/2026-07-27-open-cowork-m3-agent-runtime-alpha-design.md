@@ -16,7 +16,7 @@
 - 能力台账：
   [OpenCoWork M0 能力台账](2026-07-25-open-cowork-m0-capability-ledger.md)
 - 验收目录：
-  [OpenCoWork M0-M10 验收目录](2026-07-25-open-cowork-m0-acceptance-catalog.md)
+  [OpenCoWork M0-M11 验收目录](2026-07-25-open-cowork-m0-acceptance-catalog.md)
 
 本文已于 2026-07-27 读取并核对仓库根目录的
 `DotCraft_Core_核心代码详细设计与一比一复刻规范_v1.0.md`。该文件只作为
@@ -26,6 +26,10 @@
 
 本文是 M3 的冻结设计契约。实现计划必须遵守本文已经确认的边界、状态语义、安全
 顺序和验收证据；后续若发现必须改变公共行为，应先修订本文，不得在实现中静默偏离。
+
+2026-08-01 前向修订：M3 已交付的通用 OpenAI-compatible/Qwen Chat Completions
+路径保留为历史证据，但将在 M9 由 DeepSeek-only Responses API 实现取代；M3 的
+Agent、Journal、恢复、压缩和 Usage 语义继续有效。
 
 ## 1. 目标与边界
 

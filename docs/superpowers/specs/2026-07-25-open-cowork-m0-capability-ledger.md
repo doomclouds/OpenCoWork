@@ -10,11 +10,13 @@
   双平台验收仍等待 `win-x64`
 - 修订：2026-07-30，复核 M8 实现映射；CAP-061..066 契约不变，
   双平台验收仍等待 `win-x64`
+- 修订：2026-08-01，新增 M9 DeepSeek Responses Provider，Provider 支持面
+  收敛为 DeepSeek-only；Gateway 与 Closure 顺延为 M10/M11
 - 所属里程碑：OpenCoWork Runtime 1.0 / M0
 - 契约规格：
   [OpenCoWork M0 Contract Freeze](2026-07-25-open-cowork-m0-contract-freeze-design.md)
 - 验收目录：
-  [OpenCoWork M0-M10 验收目录](2026-07-25-open-cowork-m0-acceptance-catalog.md)
+  [OpenCoWork M0-M11 验收目录](2026-07-25-open-cowork-m0-acceptance-catalog.md)
 
 ## 1. 使用规则
 
@@ -45,10 +47,10 @@
 | CapabilityId | Capability | SourceEvidence | Decision | OpenCoWorkContract | OwnerMilestone | AcceptanceIds | Notes |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | CAP-007 | `.craft` 工作区兼容 | 原规范持久化目录 | Removed | OpenCoWork 只使用 `.opencowork`，不读取、不迁移 `.craft`。 | M0 | M0-ACC-001, M0-ACC-008 | 品牌硬边界。 |
-| CAP-008 | JSONC 分层配置与确定性覆盖 | 原规范配置聚合能力 | Redesign | 默认、用户、工作区、本机、覆盖文件、环境变量、CLI 按冻结优先级合并。 | M1 | M0-ACC-003, M1-ACC-005 | 数组替换、对象递归。 |
+| CAP-008 | JSONC 分层配置与确定性覆盖 | 原规范配置聚合能力 | Redesign | 默认、用户、工作区、本机、覆盖文件、环境变量、CLI 按冻结优先级合并。 | M1, M9 | M0-ACC-003, M1-ACC-005, M9-ACC-017 | M9 为旧 Provider 配置提供稳定迁移诊断。 |
 | CAP-009 | 双平面工作区目录 | 原规范配置与运行数据混合目录 | Redesign | 可跟踪定义与 `.opencowork/runtime` 本机状态分离，`init` 生成 Git 忽略规则。 | M1 | M0-ACC-003, M1-ACC-006 | 避免误提交状态和 Secret。 |
 | CAP-010 | OpenCoWorkPaths 与路径包含安全 | 原规范 CraftPath/路径服务 | Redesign | 规范化绝对路径、按声明文件解析相对路径，拒绝逃逸与符号链接越界。 | M1 | M1-ACC-006, M10-ACC-006 | Windows/macOS 行为一致。 |
-| CAP-011 | 正式平台矩阵 | 原规范跨平台能力与用户设备边界 | Deferred | 1.0 仅正式支持 `win-x64`、`osx-arm64`；Linux 与 Intel macOS 推迟到 1.x。 | M10 | M1-ACC-008, M10-ACC-010, M10-ACC-011 | 代码应隔离平台差异。 |
+| CAP-011 | 正式平台矩阵 | 原规范跨平台能力与用户设备边界 | Deferred | 1.0 仅正式支持 `win-x64`、`osx-arm64`；Linux 与 Intel macOS 推迟到 1.x。 | M11 | M1-ACC-008, M10-ACC-010, M10-ACC-011 | Closure 顺延但 Acceptance ID 保持稳定；代码应隔离平台差异。 |
 | CAP-012 | Electron 与 `node-run-as-node` 配置 | 原规范桌面宿主遗留边界 | Removed | 1.0 不包含 Electron 桌面宿主，也不保留相应环境变量兼容。 | M0 | M0-ACC-008 | .NET 原生运行时。 |
 
 ## 4. Workspace 生命周期
@@ -67,21 +69,21 @@
 | CapabilityId | Capability | SourceEvidence | Decision | OpenCoWorkContract | OwnerMilestone | AcceptanceIds | Notes |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | CAP-019 | Thread-Turn-Item 聚合 | 原规范 Session 模型 | PreserveSemantics | 唯一 Session Core 管理 Thread、Turn、Item；所有入口复用 `ISessionService`。 | M2 | M2-ACC-001, M5-ACC-009 | 不建立第二状态机。 |
-| CAP-020 | ThreadJournal 权威历史 | 原规范 Rollout 与回放 | Redesign | `ThreadJournal` 是模型历史和会话状态的权威追加日志。 | M2 | M0-ACC-005, M2-ACC-002 | Rollout 政名。 |
+| CAP-020 | ThreadJournal 权威历史 | 原规范 Rollout 与回放 | Redesign | `ThreadJournal` 是模型历史和会话状态的权威追加日志。 | M2, M9 | M0-ACC-005, M2-ACC-002, M9-ACC-016 | M9 不依赖 Provider 托管历史；Rollout 改名。 |
 | CAP-021 | SQLite 查询投影与重建 | 原规范 Session 数据库能力 | Redesign | 列表、搜索、统计为可从 Journal Sequence 重建的投影。 | M2 | M2-ACC-003, M10-ACC-004 | `lastAppliedSequence`。 |
 | CAP-022 | 同 Thread 串行与跨 Thread 并行 | 原规范会话并发协调 | PreserveSemantics | `ThreadWriteGate` 保护单 Thread 提交，不建立全局串行瓶颈。 | M2 | M2-ACC-004 | 支持 expectedSequence。 |
 | CAP-023 | Queue、Steer、Cancel 与等待恢复 | 原规范 Turn 队列和交互等待 | PreserveSemantics | 排队输入独立于 Turn；审批、输入和取消均为持久业务状态。 | M2 | M2-ACC-005, M2-ACC-006 | Resolution 首次有效。 |
 | CAP-024 | Archive、Delete、Fork 与 Rollback | 原规范会话管理操作 | Redesign | Archive/删除采用可恢复顺序；Fork 自包含；Rollback 追加且不声称撤销外部副作用。 | M2 | M2-ACC-007, M2-ACC-008, M10-ACC-005 | 删除需 prepare token。 |
 
-## 6. Agent 与 Provider
+## 6. Agent 与 DeepSeek Provider
 
 | CapabilityId | Capability | SourceEvidence | Decision | OpenCoWorkContract | OwnerMilestone | AcceptanceIds | Notes |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | CAP-025 | AgentSession 与 AgentFactory | 原规范 ModelSession/Agent 创建能力 | Redesign | 使用 `AgentSession` 表达代理会话，由 `AgentFactory` 组装 Provider、Context 与 Tool Snapshot。 | M3 | M3-ACC-001 | 语境优先，不机械改名。 |
-| CAP-026 | Provider Registry | 原规范模型 Provider 体系 | PreserveSemantics | Provider 按稳定 ID 注册，能力、限制和认证需求可查询。 | M3 | M3-ACC-002, M6-ACC-001 | 不泄漏 Provider 私有实现。 |
-| CAP-027 | Provider-neutral Auth | 原规范多 Provider 认证 | Redesign | 公共认证契约与 Provider 无关，Secret 由 OS Store/环境引用解析。 | M3 | M3-ACC-002, M10-ACC-006 | 禁止明文落盘。 |
-| CAP-028 | 流式 Item、Reasoning 与 Usage | 原规范流式模型事件 | PreserveSemantics | 所有流片段进入 Item/Journal；Usage 可累积并可恢复。 | M3 | M3-ACC-003, M3-ACC-007 | 协议通过 item/delta 暴露。 |
-| CAP-029 | 瞬态重试边界 | 原规范模型调用恢复 | PreserveSemantics | 首 Token 前可按策略重试；首 Token 后不得造成重复可见输出。 | M3 | M3-ACC-004 | 保留相关 Correlation。 |
+| CAP-026 | DeepSeek Provider Registry | 原规范模型 Provider 体系 | Redesign | 1.0 只注册 DeepSeek；M9 用专用 Responses API 实现取代通用 OpenAI-compatible 与千问 Token Plan 路径，首发仅激活 `deepseek-v4-flash`。 | M3, M9 | M3-ACC-002, M6-ACC-001, M9-ACC-011, M9-ACC-017, M9-ACC-018 | M3/M6 证据保留为历史基线；`deepseek-v4-pro` 待官方 Responses 支持和真实验证。 |
+| CAP-027 | DeepSeek Auth 与 Secret | 原规范多 Provider 认证 | Redesign | DeepSeek 只使用 API Key；Secret 由 OS Store/环境引用解析，不进入配置、日志、Journal 或事件。 | M3, M9 | M3-ACC-002, M9-ACC-011, M9-ACC-018, M10-ACC-006 | 禁止明文落盘；Closure Acceptance ID 保持稳定。 |
+| CAP-028 | 流式 Item、Reasoning 与 Usage | 原规范流式模型事件 | PreserveSemantics | 所有流片段进入 Item/Journal；Usage 可累积并可恢复；M9 改由 DeepSeek Responses 事件驱动。 | M3, M9 | M3-ACC-003, M3-ACC-007, M9-ACC-012, M9-ACC-014, M9-ACC-018 | 协议通过 item/delta 暴露。 |
+| CAP-029 | 瞬态重试边界 | 原规范模型调用恢复 | PreserveSemantics | 首个可见增量前可按策略重试；提交后不得造成重复可见输出或工具副作用。 | M3, M9 | M3-ACC-004, M9-ACC-015 | 保留相关 Correlation。 |
 | CAP-030 | Agent/Plan 模式 | 原规范模式切换与工具范围 | PreserveSemantics | 模式是持久状态；Plan 模式使用受限系统提示和只读工具曝光。 | M4 | M3-ACC-008, M4-ACC-008 | 不靠 Prompt 自觉约束。 |
 
 ## 7. Tool 与安全
@@ -89,11 +91,11 @@
 | CapabilityId | Capability | SourceEvidence | Decision | OpenCoWorkContract | OwnerMilestone | AcceptanceIds | Notes |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | CAP-031 | 工具定义、Binding 与 Registration 分离 | 原规范工具注册模型 | PreserveSemantics | 模型可见定义、运行时绑定和来源注册是独立对象。 | M4 | M4-ACC-001 | 支持动态失效。 |
-| CAP-032 | EffectiveToolSnapshot | 原规范每回合工具快照 | PreserveSemantics | Turn 开始冻结有效工具、权限和名称映射，进行中的 Turn 不受热更新影响。 | M4 | M4-ACC-002, M6-ACC-007 | 下一 Turn 使用新快照。 |
-| CAP-033 | ToolInvocationPipeline 固定顺序 | 原规范 ToolDispatcher 安全链 | Redesign | 按 Snapshot、审计、Exposure、Lease、Authority、Schema、Policy、Hook、Approval、Timeout、Invoke、Normalize、Terminal 执行。 | M4 | M0-ACC-005, M4-ACC-003 | 禁止旁路。 |
-| CAP-034 | Authority 与审批 | 原规范权限和 Approval | PreserveSemantics | 有效权限取交集；拒绝与审批同样产出 Started/Terminal 审计。 | M4 | M4-ACC-004, M4-ACC-005, M10-ACC-006 | Workspace 不可提权。 |
+| CAP-032 | EffectiveToolSnapshot | 原规范每回合工具快照 | PreserveSemantics | Turn 开始冻结有效工具、权限和名称映射，进行中的 Turn 不受热更新影响；Provider 托管工具同样从有效快照投影。 | M4, M9 | M4-ACC-002, M6-ACC-007, M9-ACC-013, M9-ACC-019 | 下一 Turn 使用新快照。 |
+| CAP-033 | ToolInvocationPipeline 固定顺序 | 原规范 ToolDispatcher 安全链 | Redesign | 按 Snapshot、审计、Exposure、Lease、Authority、Schema、Policy、Hook、Approval、Timeout、Invoke、Normalize、Terminal 执行。 | M4 | M0-ACC-005, M4-ACC-003, M9-ACC-013 | Responses Tool Call 不得旁路。 |
+| CAP-034 | Authority 与审批 | 原规范权限和 Approval | PreserveSemantics | 有效权限取交集；拒绝与审批同样产出 Started/Terminal 审计；服务端工具不得先执行后补授权。 | M4, M9 | M4-ACC-004, M4-ACC-005, M9-ACC-013, M9-ACC-019, M10-ACC-006 | Workspace 不可提权。 |
 | CAP-035 | Timeout、Cancellation 与 OutcomeUnknown | 原规范工具超时/取消 | Redesign | 结果不明的非幂等副作用不自动重试，交互失败、无人值守转人工处理。 | M4 | M4-ACC-006, M4-ACC-007, M8-ACC-006 | 稳定错误码。 |
-| CAP-036 | 内置 Node REPL | 原规范 Node 执行工具 | Deferred | 1.0 不承诺内置 Node REPL；File/Shell/Web 提供最小跨平台工具面。 | M4 | M4-ACC-009 | 可在 1.x 作为授信扩展。 |
+| CAP-036 | 内置 Node REPL | 原规范 Node 执行工具 | Deferred | 1.0 不承诺内置 Node REPL；M9 用 DeepSeek `web_search` 和 `custom/apply_patch` 收敛模型工具面，移除本地 `web.fetch` 与模型侧 `file.write`。 | M4, M9 | M4-ACC-009, M9-ACC-018, M9-ACC-019 | M4 交付证据保留为历史基线；本地安全与审计边界不删除。 |
 
 ## 8. Context、记忆与 Insights
 
@@ -101,10 +103,10 @@
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | CAP-037 | 系统提示与运行时上下文组合 | 原规范 Prompt 组装 | PreserveSemantics | 按确定顺序组装产品、Workspace、Mode、Skill 和动态上下文。 | M3 | M3-ACC-001 | 记录版本/摘要。 |
 | CAP-038 | Token 预算与窗口跟踪 | 原规范 Context Window | PreserveSemantics | Provider 限制、已用 Token 和预留输出共同决定可用预算。 | M3 | M3-ACC-005 | 预算可诊断。 |
-| CAP-039 | Micro/Partial Compaction | 原规范上下文压缩 | PreserveSemantics | 压缩产物持久化并可重放，不修改既有 Journal Entry。 | M3 | M3-ACC-005, M10-ACC-004 | 支持 Upcaster。 |
-| CAP-040 | Prompt-too-long 响应式压缩 | 原规范溢出恢复 | PreserveSemantics | 压缩后重试不得重复当前 Turn 或已显示流片段。 | M3 | M3-ACC-006 | 重试次数有界。 |
+| CAP-039 | Micro/Partial Compaction | 原规范上下文压缩 | PreserveSemantics | 压缩产物持久化并可重放，不修改既有 Journal Entry。 | M3, M9 | M3-ACC-005, M9-ACC-016, M10-ACC-004 | M9 按无状态 Responses 请求重建历史；支持 Upcaster。 |
+| CAP-040 | Prompt-too-long 响应式压缩 | 原规范溢出恢复 | PreserveSemantics | 压缩后重试不得重复当前 Turn 或已显示流片段。 | M3, M9 | M3-ACC-006, M9-ACC-015 | 重试次数有界。 |
 | CAP-041 | Workspace Memory | 原规范长期记忆能力 | Redesign | 文件保存内容、SQLite 保存元数据与摘要，写入受 Authority 与路径约束。 | M6 | M6-ACC-009, M10-ACC-006 | 不等同全局用户记忆。 |
-| CAP-042 | Dreams/后台反思 | 原规范 DreamsService | Redesign | 使用 `WorkspaceInsightService`、`InsightRun`、`ImprovementProposal`；只产出可审阅建议，不直接改代码。 | M9 | M9-ACC-008 | Wire 域为 insight。 |
+| CAP-042 | Dreams/后台反思 | 原规范 DreamsService | Redesign | 使用 `WorkspaceInsightService`、`InsightRun`、`ImprovementProposal`；只产出可审阅建议，不直接改代码。 | M10 | M9-ACC-008 | Gateway 顺延；Acceptance ID 保持稳定。 |
 
 ## 9. Wire、ACP 与 CLI
 
@@ -115,7 +117,7 @@
 | CAP-045 | Thread/Turn/Item 方法与事件 | 原规范会话 RPC | Redesign | 使用 `domain/action`、分页 history 和统一 `item/delta`；补齐 model/mode，不复制 214 方法。 | M5 | M5-ACC-003, M5-ACC-004 | Generated Catalog。 |
 | CAP-046 | 订阅、Sequence 与重连 | 原规范事件订阅 | Redesign | 原子快照+Cursor、Thread 内有序、至少一次、eventId+sequence 去重。 | M5 | M5-ACC-005, M5-ACC-008 | Sequence 来自 Journal。 |
 | CAP-047 | ACP Bridge | 原规范 ACP 适配 | PreserveSemantics | 固定稳定 ACP v1，只转换 initialize/new/load/prompt/cancel/set_mode，不维护独立 Session 状态；通用 UserInput 明确失败并取消。 | M5 | M5-ACC-007, M5-ACC-009 | stdio only，历史回放不重复。 |
-| CAP-048 | 桌面/Web Dashboard 与内嵌交互 Host | 原规范 UI/Widget/Welcome 能力 | Deferred | 1.0 只提供 CLI、协议、查询和可引用 Visualization Artifact；不提供嵌入式 UI Host、Welcome Suggestion 或 Widget State。 | M9 | M9-ACC-008 | UI 推迟到 1.x；遗留 UI 状态不兼容。 |
+| CAP-048 | 桌面/Web Dashboard 与内嵌交互 Host | 原规范 UI/Widget/Welcome 能力 | Deferred | 1.0 只提供 CLI、协议、查询和可引用 Visualization Artifact；不提供嵌入式 UI Host、Welcome Suggestion 或 Widget State。 | M10 | M9-ACC-008 | Gateway 顺延；UI 推迟到 1.x；Acceptance ID 保持稳定。 |
 
 ## 10. Skills、Plugins、MCP、LSP 与 Hooks
 
@@ -150,16 +152,16 @@
 | CAP-065 | 并发、互斥、Lease 与崩溃恢复 | 原规范调度并发 | PreserveSemantics | SQLite 权威状态+Lease+Reconciler，重启不重复派发。 | M8 | M8-ACC-005, M8-ACC-008 | BEGIN IMMEDIATE。 |
 | CAP-066 | NeedsAttention 与无人值守权限 | 原规范审批等待 | Redesign | 权限不自动扩大；需要人工或结果不明时进入 NeedsAttention，可恢复、取消或超时。 | M8 | M8-ACC-006, M8-ACC-007, M8-ACC-009 | 不读 Console。 |
 
-## 13. Gateway、Hub 与可靠消息
+## 13. Gateway、Hub 与可靠消息（M10）
 
 | CapabilityId | Capability | SourceEvidence | Decision | OpenCoWorkContract | OwnerMilestone | AcceptanceIds | Notes |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| CAP-067 | Channel Adapter 与多渠道隔离 | 原规范 External Channel | Redesign | Wire 域为 channel；每个 Channel 独立生命周期、凭据和故障边界。 | M9 | M9-ACC-001, M9-ACC-007 | 先交付 Test/Webhook。 |
-| CAP-068 | Inbound 去重与 Thread 映射 | 原规范 Message Router | PreserveSemantics | 入站先持久化，外部消息 ID 幂等映射到单个 Turn。 | M9 | M9-ACC-002 | 至少一次。 |
-| CAP-069 | Outbox 与 Dead Letter | 原规范可靠出站 | PreserveSemantics | 发送前写 Outbox；状态 Pending/Sending/Sent/Failed/DeadLettered，可恢复重试。 | M9 | M9-ACC-003 | 不承诺 Exactly Once。 |
-| CAP-070 | 单外部会话顺序 | 原规范 Channel 顺序 | PreserveSemantics | 同一外部会话串行，跨会话可并行，不保证全局顺序。 | M9 | M9-ACC-004 | 分区键稳定。 |
-| CAP-071 | 附件与外部媒体安全 | 原规范媒体缓存 | Redesign | 文件内容进入 runtime/external-channel-media，校验大小、类型、摘要和路径包含。 | M9 | M9-ACC-005, M10-ACC-006 | 不信任远端文件名。 |
-| CAP-072 | Hub 与 Dashboard 查询 | 原规范 Hub/Dashboard | Redesign | Hub 使用用户级注册发现 Workspace；只提供 Usage/Trace/Insight 查询，不交付桌面/Web UI。 | M9 | M9-ACC-006, M9-ACC-008 | UI 见 CAP-048。 |
+| CAP-067 | Channel Adapter 与多渠道隔离 | 原规范 External Channel | Redesign | Wire 域为 channel；每个 Channel 独立生命周期、凭据和故障边界。 | M10 | M9-ACC-001, M9-ACC-007 | Gateway 顺延；先交付 Test/Webhook；Acceptance ID 保持稳定。 |
+| CAP-068 | Inbound 去重与 Thread 映射 | 原规范 Message Router | PreserveSemantics | 入站先持久化，外部消息 ID 幂等映射到单个 Turn。 | M10 | M9-ACC-002 | Gateway 顺延；至少一次。 |
+| CAP-069 | Outbox 与 Dead Letter | 原规范可靠出站 | PreserveSemantics | 发送前写 Outbox；状态 Pending/Sending/Sent/Failed/DeadLettered，可恢复重试。 | M10 | M9-ACC-003 | Gateway 顺延；不承诺 Exactly Once。 |
+| CAP-070 | 单外部会话顺序 | 原规范 Channel 顺序 | PreserveSemantics | 同一外部会话串行，跨会话可并行，不保证全局顺序。 | M10 | M9-ACC-004 | Gateway 顺延；分区键稳定。 |
+| CAP-071 | 附件与外部媒体安全 | 原规范媒体缓存 | Redesign | 文件内容进入 runtime/external-channel-media，校验大小、类型、摘要和路径包含。 | M10 | M9-ACC-005, M10-ACC-006 | Gateway/Closure 顺延；Acceptance ID 保持稳定。 |
+| CAP-072 | Hub 与 Dashboard 查询 | 原规范 Hub/Dashboard | Redesign | Hub 使用用户级注册发现 Workspace；只提供 Usage/Trace/Insight 查询，不交付桌面/Web UI。 | M10 | M9-ACC-006, M9-ACC-008 | Gateway 顺延；UI 见 CAP-048。 |
 
 ## 14. 日志、Tracing 与 Doctor
 
@@ -167,17 +169,17 @@
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | CAP-073 | 结构化日志与 Correlation | 原规范日志能力 | PreserveSemantics | Workspace/Thread/Turn/Tool/Run 共享可传播 Correlation，日志写入结构化 Sink。 | M1 | M1-ACC-007, M9-ACC-010 | stdio 日志只到 stderr。 |
 | CAP-074 | Secret 与敏感字段脱敏 | 原规范安全日志 | PreserveSemantics | API Key、Token、Authorization、Secret 配置和值不得进入日志、Journal、事件。 | M1 | M1-ACC-007, M10-ACC-006 | 失败路径同样脱敏。 |
-| CAP-075 | Usage 统计 | 原规范 Token/成本统计 | PreserveSemantics | 从已提交事件/投影聚合 Token、模型、任务与 Channel Usage，可重建。 | M9 | M3-ACC-007, M9-ACC-010 | 不作为计费系统承诺。 |
-| CAP-076 | Tracing | 原规范调用追踪 | PreserveSemantics | 跨 Session、Tool、MCP、Mission、Automation、Gateway 传播 Trace/Correlation。 | M9 | M9-ACC-010 | 不记录 Secret Payload。 |
-| CAP-077 | Heartbeat 与后台健康 | 原规范后台心跳 | PreserveSemantics | Heartbeat 反映 WorkspaceRuntime 和关键服务状态，停止时完整注销。 | M9 | M9-ACC-009 | 不能伪装业务成功。 |
+| CAP-075 | Usage 统计 | 原规范 Token/成本统计 | PreserveSemantics | 从已提交事件/投影聚合 Token、模型、任务与 Channel Usage，可重建。 | M3, M9, M10 | M3-ACC-007, M9-ACC-014, M9-ACC-010 | M9 完成 DeepSeek `cached_tokens` / `reasoning_tokens` 语义，M10 再接 Channel 聚合。 |
+| CAP-076 | Tracing | 原规范调用追踪 | PreserveSemantics | 跨 Session、Tool、MCP、Mission、Automation、Gateway 传播 Trace/Correlation。 | M10 | M9-ACC-010 | Gateway 顺延；不记录 Secret Payload。 |
+| CAP-077 | Heartbeat 与后台健康 | 原规范后台心跳 | PreserveSemantics | Heartbeat 反映 WorkspaceRuntime 和关键服务状态，停止时完整注销。 | M10 | M9-ACC-009 | Gateway 顺延；不能伪装业务成功。 |
 | CAP-078 | Doctor 与静态分析证据边界 | 原规范诊断与源分析 | Redesign | `doctor` 验证 SDK、路径、配置、SQLite、进程与平台；静态分析只作参考，不得宣称为运行时行为证据。 | M1 | M1-ACC-008, M10-ACC-012 | 严格配置模式可失败。 |
 
 ## 15. 决策汇总
 
 | Decision | 数量 | 结论 |
 | --- | ---: | --- |
-| PreserveSemantics | 36 | 保留行为语义，以 OpenCoWork 边界实现。 |
-| Redesign | 33 | 保留目标，冻结新的命名、存储或协议设计。 |
+| PreserveSemantics | 35 | 保留行为语义，以 OpenCoWork 边界实现。 |
+| Redesign | 34 | 保留目标，冻结新的命名、存储或协议设计。 |
 | Deferred | 5 | 明确推迟到 1.x，不阻塞 1.0。 |
 | Removed | 4 | 明确不兼容或不实现，不属于缺口。 |
 | **Total** | **78** | **全部有确定去向，无 TBD。** |

@@ -8,7 +8,7 @@
 - 当前已完成阶段：M2 Durable Session Core
 - 目标框架：.NET 10
 - 当前正式验证平台：`win-x64`
-- macOS 真机验证：滚动登记于仓库 `AGENTS.md`，统一在 M10 / 1.0 发布前清零
+- macOS 真机验证：滚动登记于仓库 `AGENTS.md`，统一在 M11 / 1.0 发布前清零
 - 原始能力参考：
   [DotCraft 核心运行时复刻规范](../../../DotCraft_Core_核心代码详细设计与一比一复刻规范_v1.0.md)
 - M0 冻结契约：
@@ -18,7 +18,7 @@
 - 能力台账：
   [OpenCoWork M0 能力台账](2026-07-25-open-cowork-m0-capability-ledger.md)
 - 验收目录：
-  [OpenCoWork M0-M10 验收目录](2026-07-25-open-cowork-m0-acceptance-catalog.md)
+  [OpenCoWork M0-M11 验收目录](2026-07-25-open-cowork-m0-acceptance-catalog.md)
 
 ## 1. 目标
 
@@ -922,7 +922,7 @@ M2 关闭前必须在当前 Windows 真机验证：
 当前执行 `osx-arm64` 交叉构建或发布，但不得称为 macOS 真机证据。需要 M4 Mac mini
 验证的 Journal Flush、原子移动、文件锁、并发、崩溃恢复和 Symlink 安全场景统一
 记录在仓库 `AGENTS.md`。这些 Pending 项不阻塞当前 M2 的 Windows 阶段关闭，但必须
-在 M10 / OpenCoWork 1.0 正式发布前清零。
+在 M11 / OpenCoWork 1.0 正式发布前清零。
 
 ### 24.4 验收映射
 

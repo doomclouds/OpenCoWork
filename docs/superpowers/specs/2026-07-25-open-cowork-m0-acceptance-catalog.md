@@ -1,4 +1,4 @@
-# OpenCoWork M0-M10 验收目录
+# OpenCoWork M0-M11 验收目录
 
 ## 文档状态
 
@@ -10,6 +10,9 @@
   `Passed`，不新增或重排 Acceptance ID
 - 修订：2026-07-29，补齐 M6 Windows 真机与发布目录证据；M6 十项验收全部
   `Passed`，不新增或重排 Acceptance ID
+- 修订：2026-08-01，按用户决策新增 M9 DeepSeek Responses Provider，原
+  Gateway/Operations 与 1.0 Closure 顺延为 M10/M11；既有 Acceptance ID
+  保持稳定，新 M9 从未占用的 `M9-ACC-011` 继续编号
 - 所属里程碑：OpenCoWork Runtime 1.0
 - 契约规格：
   [OpenCoWork M0 Contract Freeze](2026-07-25-open-cowork-m0-contract-freeze-design.md)
@@ -50,22 +53,31 @@ Platform 标签：
 
 Status 使用 `Passed`、`Planned`、`Failed`、`Deferred`、`Superseded`。
 `Deferred` 只允许用于用户明确接受的 Slice 边界变更，必须链接后续台账；它不代表
-通过，也不能用于绕过 M10 发布候选关闭门禁。
+通过，也不能用于绕过 M11 发布候选关闭门禁。
 
 2026-07-25 用户确认 M1 先以 `win-x64` 正式证据关闭；M1 的 macOS 真机项不作
-伪通过，统一滚动登记到仓库 `AGENTS.md`，并在 M10 / OpenCoWork 1.0 发布前清零。
+伪通过，统一滚动登记到仓库 `AGENTS.md`，并在 M11 / OpenCoWork 1.0 发布前清零。
 该调整只改变 M1 的收口时点，不改变 1.0 对 `osx-arm64` 真实平台验收的承诺。
 
 2026-07-28 用户确认 M3 以 DeepSeek 官方作为首个真实 Provider，并接受
 `osx-arm64` 的两条真实模型证据关闭本 Slice。千问 Token Plan、其他 Provider 和
 `win-x64` 真实 Provider 兼容性统一进入
 [`docs/provider-validation-backlog.md`](../../provider-validation-backlog.md)，
-并由 M10 的双平台兼容矩阵继续约束；未验证项不得对外宣称支持。
+并由当时的 M10（现顺延为 M11）双平台兼容矩阵继续约束；未验证项不得对外
+宣称支持。
+
+2026-08-01 用户确认新增 M9 DeepSeek Responses Provider：1.0 的 Provider
+实现只支持 DeepSeek，首发只激活 `deepseek-v4-flash` Responses API；千问
+Token Plan、其他 Provider 与通用 OpenAI-compatible Chat Completions 路径退出
+目标支持面；`deepseek-v4-pro` 等 DeepSeek 官方支持 Responses API 并完成真实
+验证后再激活。原 M9 Gateway/Operations 与原 M10 Closure 顺延为 M10/M11。
+Acceptance ID 是历史稳定标识，因此原 `M9-ACC-001..010` 继续标识 Gateway
+验收，原 `M10-ACC-001..012` 继续标识 Closure 验收，不因 Slice 顺延而重排。
 
 2026-07-28 用户确认关闭 M4 功能需求，并将 `M4-ACC-006`、`M4-ACC-009` 缺少的
 `win-x64` 真机维度标记为 `Deferred`，统一进入
 [`docs/platform-release-validation-ledger.md`](../../platform-release-validation-ledger.md)
-后续集中补验。平台状态保持 `Pending`，不得对外宣称 Windows 已通过，且 M10
+后续集中补验。平台状态保持 `Pending`，不得对外宣称 Windows 已通过，且 M11
 关闭前必须补齐。
 
 2026-07-29 已在 Windows 11 x64 真机完成 M4/M5 补验：
@@ -73,7 +85,7 @@ Status 使用 `Passed`、`Planned`、`Failed`、`Deferred`、`Superseded`。
 `M5-ACC-002` 由 `Planned` 改为 `Passed`。验证基线、Source/Test Patch、
 环境、测试计数、发布物摘要和发布目录场景见
 [`docs/platform-release-validation-ledger.md`](../../platform-release-validation-ledger.md)；
-M10 仍须在最终发布候选上重跑双平台验收。
+M11 仍须在最终发布候选上重跑双平台验收。
 
 2026-07-29 已在 Windows 11 x64 真机完成 M6 补验：
 `M6-ACC-002`、`M6-ACC-004`、`M6-ACC-005`、`M6-ACC-006`、
@@ -81,7 +93,7 @@ M10 仍须在最终发布候选上重跑双平台验收。
 Credential Manager、Git、Memory、隐藏 Terminal、Wire 1.1、进程树与 Secret
 Canary 证据见
 [`docs/platform-release-validation-ledger.md`](../../platform-release-validation-ledger.md)；
-M10 仍须在最终发布候选上重跑完整双平台验收。
+M11 仍须在最终发布候选上重跑完整双平台验收。
 
 ## 2. M0 - Contract Freeze（8）
 
@@ -93,7 +105,7 @@ M10 仍须在最终发布候选上重跑完整双平台验收。
 | M0-ACC-004 | OpenCoWork Wire 的握手、命名、核心方法、事件、订阅、幂等和 Transport 已冻结。 | CAP-043, CAP-044, CAP-045, CAP-046 | ContractSnapshot | All | Contract Freeze §5。 | Passed | — |
 | M0-ACC-005 | 权威源、Journal 提交点、SQLite、故障恢复和核心状态机已冻结。 | CAP-017, CAP-020, CAP-021, CAP-033, CAP-035 | ContractSnapshot | All | Contract Freeze §6-§8。 | Passed | — |
 | M0-ACC-006 | 能力台账包含 60-90 个可观察能力，所有 Decision 均非 TBD。 | CAP-001-CAP-078 | ContractSnapshot | All | 能力台账 78 项统计与自动校验。 | Passed | — |
-| M0-ACC-007 | M1-M10 均具有稳定 Acceptance ID、证据类型、平台和预期证据。 | CAP-001-CAP-078 | ContractSnapshot | All | 本目录编号连续性与字段完整性校验。 | Passed | — |
+| M0-ACC-007 | M1-M11 均具有稳定 Acceptance ID、证据类型、平台和预期证据；Slice 顺延不重排既有 ID。 | CAP-001-CAP-078 | ContractSnapshot | All | 本目录字段完整性、稳定 ID 与 2026-08-01 顺延规则校验。 | Passed | — |
 | M0-ACC-008 | 文档不存在未解释的 DotCraft、`.craft`、旧程序集或数字一比一兼容承诺。 | CAP-002, CAP-006, CAP-007, CAP-012 | ContractSnapshot | All | 规格定向检索与例外清单。 | Passed | — |
 
 ## 3. M1 - Runtime Foundation（8）
@@ -210,7 +222,21 @@ M10 仍须在最终发布候选上重跑完整双平台验收。
 | M8-ACC-008 | Running/Pending/Lease 各状态崩溃后恢复且不重复创建 Turn 或 Worktree。 | CAP-065 | FaultInjection | DualPlatform | macOS Dispatch/Reconciler/路径恢复已通过；Windows 强杀与 Reparse/Junction 真机待验。 | Planned | — |
 | M8-ACC-009 | NeedsAttention 可由协议恢复，也能按策略取消或超时并重排下一周期。 | CAP-066 | AutomatedTest | All | `AutomationInteractionTests`、`AutomationReconcilerTests` 与 Wire 1.3。 | Passed | — |
 
-## 11. M9 - Gateway and Operations（10）
+## 11. M9 - DeepSeek Responses Provider（9）
+
+| AcceptanceId | Requirement | CapabilityIds | EvidenceType | Platforms | ExpectedEvidence | Status | SupersededBy |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| M9-ACC-011 | Provider Catalog、配置和 Auth 只暴露 DeepSeek；通用 `openaiCompatible`、千问 Token Plan 和其他 Provider 不能进入有效运行时。 | CAP-026, CAP-027 | ContractSnapshot | All | M9 配置 Schema、Catalog Snapshot、旧配置拒绝与 Secret Store 测试。 | Planned | — |
+| M9-ACC-012 | DeepSeek 官方 Responses 子集的请求与语义 SSE 事件严格、有界地映射为 Content、Reasoning、Usage 和终态；流以 `response.completed` / `response.incomplete` / `response.failed` 结束且不等待 `[DONE]`。 | CAP-028 | AutomatedTest | All | 按官方事件表生成的 BCL Loopback Fixture 覆盖合法流、三类终态、未知事件、损坏帧、大小上限和空响应。 | Planned | — |
+| M9-ACC-013 | 官方 `function_call`、Arguments Delta、`function_call_output` 与 `custom/apply_patch` 在同一 Turn 内保持 Call ID、顺序、快照和多轮循环语义。 | CAP-032, CAP-033, CAP-034 | AutomatedTest | All | 多 Function Call、跨帧参数、重复 Call ID、Apply Patch 路径/审批/原子提交、恢复和结果回注测试。 | Planned | — |
+| M9-ACC-014 | `deepseek-v4-flash` 的 Reasoning Text、`reasoning.effort`、Usage 与三类响应终态映射确定且可恢复对账。 | CAP-028, CAP-075 | ContractSnapshot | All | 官方协议 Fixture、`cached_tokens` / `reasoning_tokens` Usage Ledger 对账和终态快照。 | Planned | — |
+| M9-ACC-015 | 官方 400/401/402/422 稳定失败，429/500/503 与超时按策略瞬态处理；只有已识别的上下文过长 400 触发压缩，所有重试遵守首个可见增量边界。 | CAP-029, CAP-040 | FaultInjection | All | 全部官方 HTTP 错误码、响应头/空闲超时、首增量前后断流和响应式压缩测试。 | Planned | — |
+| M9-ACC-016 | ThreadJournal 仍是唯一恢复事实源；进程重启不依赖官方明确不支持的 `previous_response_id`、`conversation` 或 `store`。 | CAP-020, CAP-039 | FaultInjection | All | 响应中断、进程重启、Checkpoint 回放与工具副作用唯一性测试。 | Planned | — |
+| M9-ACC-017 | 旧 OpenAI-compatible/Qwen 配置和不受支持模型以稳定迁移诊断失败，不静默回退或别名映射。 | CAP-008, CAP-026 | MigrationTest | All | 旧配置 Corpus、Schema/Doctor/CLI 错误快照与无网络调用断言。 | Planned | — |
+| M9-ACC-018 | `deepseek-v4-flash` 在 `win-x64` 与 `osx-arm64` 发布目录通过 Responses API 真实冒烟、Function、`web_search`、`custom/apply_patch`、Usage 对账和 Secret Canary。 | CAP-026, CAP-027, CAP-028, CAP-036 | RealPlatformValidation | DualPlatform | 两平台独立发布目录记录、精确模型/API、Provider 工具、Usage、终态与全输出面 Secret 扫描。 | Planned | — |
+| M9-ACC-019 | DeepSeek 服务端 `web_search` 只有在有效 `NetworkRead` Authority 已授权时才进入请求并映射官方状态事件；本地 `web.fetch/CoreWebTool` 与模型侧 `file.write` 退出 Catalog。 | CAP-032, CAP-034, CAP-036 | SecurityTest | DualPlatform | Provider 请求 Snapshot、Web Search 事件 Fixture、Authority 拒绝/允许矩阵、旧工具不存在断言，以及双平台真实搜索。 | Planned | — |
+
+## 12. M10 - Gateway and Operations（10，沿用稳定 `M9-ACC-*`）
 
 | AcceptanceId | Requirement | CapabilityIds | EvidenceType | Platforms | ExpectedEvidence | Status | SupersededBy |
 | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -225,7 +251,7 @@ M10 仍须在最终发布候选上重跑完整双平台验收。
 | M9-ACC-009 | Heartbeat 和所有后台服务随 WorkspaceRuntime 完整注册与清理。 | CAP-016, CAP-077 | FaultInjection | DualPlatform | Stop Timeout、崩溃与残留资源报告。 | Planned | — |
 | M9-ACC-010 | 日志、Usage、Tracing 跨 Gateway 到 Session/Tool 可关联且不泄漏 Secret。 | CAP-073, CAP-074, CAP-075, CAP-076 | SecurityTest | All | 端到端 Correlation 与敏感信息扫描。 | Planned | — |
 
-## 12. M10 - OpenCoWork 1.0 Closure（12）
+## 13. M11 - OpenCoWork 1.0 Closure（12，沿用稳定 `M10-ACC-*`）
 
 | AcceptanceId | Requirement | CapabilityIds | EvidenceType | Platforms | ExpectedEvidence | Status | SupersededBy |
 | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -242,7 +268,7 @@ M10 仍须在最终发布候选上重跑完整双平台验收。
 | M10-ACC-011 | `osx-arm64` 在 M4 Mac mini 完成安装、升级、卸载和真实模型冒烟。 | CAP-011 | RealPlatformValidation | osx-arm64 | 签名/Notarization 产物、安装日志和冒烟报告。 | Planned | — |
 | M10-ACC-012 | 用户、协议、插件文档、Release Notes、SBOM、校验和与诊断说明齐全。 | CAP-051, CAP-072, CAP-078 | ManualValidation | All | 发布包清单、文档链接、SBOM 与校验和验证。 | Planned | — |
 
-## 13. 数量与关闭规则
+## 14. 数量与关闭规则
 
 | Slice | Acceptance 数量 | 当前状态 |
 | --- | ---: | --- |
@@ -255,9 +281,10 @@ M10 仍须在最终发布候选上重跑完整双平台验收。
 | M6 | 10 | Passed |
 | M7 | 10 | 8 Passed / 2 Planned |
 | M8 | 9 | 7 Passed / 2 Planned |
-| M9 | 10 | Planned |
-| M10 | 12 | Planned |
-| **Total** | **104** | **78 Passed / 26 Planned** |
+| M9 | 9 | Planned |
+| M10 | 10 | Planned |
+| M11 | 12 | Planned |
+| **Total** | **113** | **78 Passed / 35 Planned** |
 
 每个 Slice 标记 Done 前必须：
 
@@ -267,5 +294,5 @@ M10 仍须在最终发布候选上重跑完整双平台验收。
 3. 执行此前 Slice 的累计回归；
 4. 确认没有 P0/P1 缺陷；
 5. 对 `DualPlatform` 项提供两台真实平台的独立证据，或明确记录已接受的延期平台；
-   M10 不允许保留该延期；
+   M11 不允许保留该延期；
 6. 更新能力台账、里程碑 Checklist 和交付归档。

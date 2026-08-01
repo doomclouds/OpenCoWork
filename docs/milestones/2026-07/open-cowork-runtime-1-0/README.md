@@ -14,7 +14,7 @@
 
 ## Acceptance Statement
 
-M0-M10 全部完成并具备对应交付证据；OpenCoWork 1.0 在 win-x64 与 osx-arm64 上通过构建、迁移、恢复、安全、故障注入和真实运行验收。
+M0-M11 全部完成并具备对应交付证据；OpenCoWork 1.0 在 win-x64 与 osx-arm64 上通过构建、迁移、恢复、安全、故障注入和真实运行验收。
 
 ## Scope
 
@@ -67,8 +67,10 @@ DotCraft .craft 兼容、DotCraft 二进制或私有实现兼容、Linux 与 Int
 - [OpenCoWork Runtime 1.0 路线规格](../../../superpowers/specs/2026-07-25-open-cowork-runtime-1-0-roadmap.md)
 - [OpenCoWork M0 Contract Freeze](../../../superpowers/specs/2026-07-25-open-cowork-m0-contract-freeze-design.md)
 - [OpenCoWork M0 能力台账](../../../superpowers/specs/2026-07-25-open-cowork-m0-capability-ledger.md)
-- [OpenCoWork M0-M10 验收目录](../../../superpowers/specs/2026-07-25-open-cowork-m0-acceptance-catalog.md)
-- 2026-07-25 用户逐项确认的 M0-M10 头脑风暴决策
+- [OpenCoWork M0-M11 验收目录](../../../superpowers/specs/2026-07-25-open-cowork-m0-acceptance-catalog.md)
+- 2026-07-25 用户逐项确认的原 M0-M10 头脑风暴决策
+- 2026-08-01 用户确认新增 M9 DeepSeek Responses Provider，原 M9/M10
+  顺延为 M10/M11
 
 ## Slice Boundaries
 
@@ -83,8 +85,9 @@ DotCraft .craft 兼容、DotCraft 二进制或私有实现兼容、Linux 与 Int
 | M6 - Capability Ecosystem | 交付 Skills、Plugins、MCP、LSP、Hooks、SourceControl 与动态/延迟工具生态。 | Teams、Automations 和 Gateway 编排。 | 插件信任、Binding Lease、断连失效、能力热更新和冲突隔离验收通过。 |
 | M7 - Multi-Agent CoWork | 交付 SubAgent、Teams、Mission DAG、Mailbox、Artifact 和 Worktree 协作闭环。 | 周期自动化和外部渠道。 | DAG、成员互斥、预算、恢复、Leader 综合和 Origin 单次回传验收通过。 |
 | M8 - Automations and Scheduler | 交付可版本控制定义、可恢复运行和严格权限边界的无人值守调度。 | Gateway、Hub 和外部渠道交付。 | 去重调度、时区、并发、Worktree、定义快照、NeedsAttention 和崩溃恢复验收通过。 |
-| M9 - Gateway and Operations | 交付外部渠道、可靠消息、Hub、Heartbeat、Tracing 和后台服务运行能力。 | 新增大型核心子系统和桌面/Web UI。 | 入站去重、Outbox、断连隔离、顺序、媒体安全和后台生命周期验收通过。 |
-| M10 - OpenCoWork 1.0 Closure | 关闭契约缺口，完成迁移、恢复、安全、性能、安装和双平台发布证据。 | 临门新增大型功能、Linux/Intel macOS 正式支持。 | M0 能力台账清零，`win-x64` 与 `osx-arm64` 发布候选通过完整验收。 |
+| M9 - DeepSeek Responses Provider | 按 DeepSeek 官方 Responses API 指南，用专用最小实现替换通用 OpenAI-compatible Chat Completions 路径；接入服务端 `web_search` 和 `custom/apply_patch`，首发只支持 `deepseek-v4-flash`。 | 千问 Token Plan、其他 Provider、Chat Completions 兼容层、官方未支持/未记录或产品未激活的 Responses 能力，以及 `deepseek-v4-pro`。 | DeepSeek-only 配置、官方 Responses 子集、旧 `web.fetch`/模型侧 `file.write` 删减、无状态恢复边界和双平台真实发布冒烟通过验收。 |
+| M10 - Gateway and Operations | 交付外部渠道、可靠消息、Hub、Heartbeat、Tracing 和后台服务运行能力。 | 新增大型核心子系统和桌面/Web UI。 | 入站去重、Outbox、断连隔离、顺序、媒体安全和后台生命周期验收通过。 |
+| M11 - OpenCoWork 1.0 Closure | 关闭契约缺口，完成迁移、恢复、安全、性能、安装和双平台发布证据。 | 临门新增大型功能、Linux/Intel macOS 正式支持。 | M0 能力台账清零，`win-x64` 与 `osx-arm64` 发布候选通过完整验收。 |
 
 ## Update Rules
 

@@ -6,6 +6,8 @@
 - 日期：2026-07-25
 - 修订：2026-07-28，按 M5 用户确认的 Desktop-first 方案收窄认证边界并补齐
   history/model/mode 方法；权威状态和安全顺序不变
+- 修订：2026-08-01，新增 M9 DeepSeek Responses Provider，原 Gateway/Closure
+  顺延为 M10/M11；既有 Acceptance ID 保持稳定
 - 所属里程碑：OpenCoWork Runtime 1.0 / M0
 - 目标框架：.NET 10
 - 正式平台：`win-x64`、`osx-arm64`
@@ -16,12 +18,12 @@
 - 能力台账：
   [OpenCoWork M0 能力台账](2026-07-25-open-cowork-m0-capability-ledger.md)
 - 验收目录：
-  [OpenCoWork M0-M10 验收目录](2026-07-25-open-cowork-m0-acceptance-catalog.md)
+  [OpenCoWork M0-M11 验收目录](2026-07-25-open-cowork-m0-acceptance-catalog.md)
 
 ## 1. 目的与约束级别
 
 本文冻结 OpenCoWork 1.0 的品牌、领域术语、程序集依赖、配置与路径、
-OpenCoWork Wire、状态机和存储一致性契约。M1-M10 的独立规格可以细化实现，
+OpenCoWork Wire、状态机和存储一致性契约。M1-M11 的独立规格可以细化实现，
 但不得无说明地改变本文的外部行为、安全顺序或权威数据边界。
 
 约束级别：
@@ -607,7 +609,7 @@ Wire 响应必须明确 `externalSideEffectsReverted: false`。
 - `Deferred`
 - `Removed`
 
-不得保留 `TBD`。M1-M10 的完成证据以
+不得保留 `TBD`。M1-M11 的完成证据以
 [验收目录](2026-07-25-open-cowork-m0-acceptance-catalog.md)
 中的稳定 Acceptance ID 为索引；ID 永不重排，废弃项使用 `Superseded` 并指向
 替代 ID。
@@ -633,6 +635,7 @@ Wire 响应必须明确 `externalSideEffectsReverted: false`。
 - Journal、SQLite、文件和 Secret 的权威边界与故障恢复已冻结；
 - 状态机、Archive/Delete/Rollback/Fork 语义已冻结；
 - 原始能力均已进入能力台账且无 `TBD`；
-- M0-M10 均已有稳定验收编号。
+- M0-M11 均已有稳定验收编号；2026-08-01 新增 M9 验收从未占用编号继续追加，
+  原 M9/M10 ID 不因 Slice 顺延而重排。
 
 M1 可以直接引用本文开始 Runtime Foundation 的独立规格与实施计划。

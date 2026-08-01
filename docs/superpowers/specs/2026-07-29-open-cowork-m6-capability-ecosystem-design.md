@@ -14,7 +14,7 @@
   - [OpenCoWork Runtime 1.0 路线规格](2026-07-25-open-cowork-runtime-1-0-roadmap.md)
   - [M0 Contract Freeze](2026-07-25-open-cowork-m0-contract-freeze-design.md)
   - [M0 能力台账](2026-07-25-open-cowork-m0-capability-ledger.md)
-  - [M0-M10 验收目录](2026-07-25-open-cowork-m0-acceptance-catalog.md)
+  - [M0-M11 验收目录](2026-07-25-open-cowork-m0-acceptance-catalog.md)
   - [M3 Agent Runtime Alpha 设计](2026-07-27-open-cowork-m3-agent-runtime-alpha-design.md)
   - [M4 Tool Runtime Alpha 设计](2026-07-28-open-cowork-m4-tool-runtime-alpha-design.md)
   - [M5 Wire Alpha 设计](2026-07-28-open-cowork-m5-wire-alpha-design.md)
@@ -22,6 +22,10 @@
 
 本文冻结 M6 的产品边界、权威关系、安全顺序、外部契约、持久化模型和验收边界。
 实现与双平台验证已按对应计划完成。
+
+2026-08-01 前向修订：M6 已交付的 Provider/Model 声明式扩展证据保留，但 1.0
+公共 Provider 支持面将在 M9 收敛为 DeepSeek-only Responses API；这不改变 Skills、
+Plugins、MCP、LSP、Hooks、Trust 或 Binding Lease 的既有交付语义。
 
 ## 1. 目标、范围与既有不变量
 

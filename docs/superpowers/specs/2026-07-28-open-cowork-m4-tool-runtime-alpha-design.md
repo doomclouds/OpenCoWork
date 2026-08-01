@@ -15,7 +15,7 @@
 - 能力台账：
   [OpenCoWork M0 能力台账](2026-07-25-open-cowork-m0-capability-ledger.md)
 - 验收目录：
-  [OpenCoWork M0-M10 验收目录](2026-07-25-open-cowork-m0-acceptance-catalog.md)
+  [OpenCoWork M0-M11 验收目录](2026-07-25-open-cowork-m0-acceptance-catalog.md)
 
 本文已于 2026-07-28 读取并核对仓库根目录的
 `DotCraft_Core_核心代码详细设计与一比一复刻规范_v1.0.md`。该文件只作为
@@ -28,12 +28,17 @@
 2026-07-28 用户确认 M4 功能需求按已完成实现和现有验证关闭，`M4-ACC-006`、
 `M4-ACC-009` 缺少的 `win-x64` 真机部分转入
 `docs/platform-release-validation-ledger.md` 后续集中补验。该平台状态保持
-`Pending`，验收状态记为 `Deferred`，不得解释为 Windows 已通过；M10 双平台发布
+`Pending`，验收状态记为 `Deferred`，不得解释为 Windows 已通过；M11 双平台发布
 候选门禁不受此关闭决定影响。
 
 2026-07-29 已按双平台台账在 Windows 11 x64 真机完成补验，
 `M4-ACC-006`、`M4-ACC-009` 由 `Deferred` 改为 `Passed`。该补验只关闭 M4
-开发基线的平台证据，不替代 M10 最终发布候选复验。
+开发基线的平台证据，不替代 M11 最终发布候选复验。
+
+2026-08-01 前向修订：M4 的 File/Shell/Web 真机证据保留为历史基线；M9 将以
+DeepSeek 服务端 `web_search` 取代模型侧 `web.fetch/CoreWebTool`，并以官方
+`custom/apply_patch` 取代模型侧整文件 `file.write`。路径安全、Authority、
+Approval、原子提交、ToolInvocationPipeline、Journal 和恢复语义继续有效。
 
 ## 1. 目标与边界
 
@@ -1047,4 +1052,4 @@ EffectiveToolSnapshot 冻结每 Turn 工具视图，并严格执行本文定义�
 
 实现计划不得提前引入 MCP、Plugin、动态工具、公共 Hook API、后台工具、Sandbox、
 Node REPL、第二套工具状态机或独立 Tool Store。M4 初次关闭时保留的两项 Windows
-真机缺口已于 2026-07-29 补齐；M10 仍须在最终发布候选上重跑完整双平台验收。
+真机缺口已于 2026-07-29 补齐；M11 仍须在最终发布候选上重跑完整双平台验收。
