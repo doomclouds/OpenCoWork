@@ -66,8 +66,7 @@ public sealed class MissionReconcilerTests
         var completed = await MissionTestData.ReconcileUntilAsync(
             workspace,
             planning.MissionId,
-            mission => mission.Tasks.All(task =>
-                task.Status == CoWorkTaskStatus.Completed),
+            mission => mission.Status == CoWorkMissionStatus.Completed,
             token);
         Assert.All(
             completed.Tasks,
