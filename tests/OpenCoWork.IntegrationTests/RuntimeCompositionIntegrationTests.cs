@@ -5,10 +5,12 @@ using OpenCoWork.App;
 using OpenCoWork.Automations;
 using OpenCoWork.Core.Capabilities;
 using OpenCoWork.Core.Configuration;
+using OpenCoWork.Core.Gateway;
 using OpenCoWork.Core.Hosting;
 using OpenCoWork.Core.Logging;
 using OpenCoWork.Core.State;
 using OpenCoWork.Core.Workspaces;
+using OpenCoWork.Protocol;
 using OpenCoWork.Teams;
 using Xunit;
 
@@ -179,6 +181,33 @@ public sealed class RuntimeCompositionIntegrationTests
         finally
         {
             Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void ChannelMedia_and_Webhook_sender_share_the_gateway_module_lifecycle()
+    {
+        var root = Path.Combine(
+            Path.GetTempPath(),
+            $"opencowork-gateway-composition-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            using var host = OpenCoWorkCompositionRoot.Build(
+                [],
+                root,
+                primaryModuleId: "gateway");
+
+            Assert.IsType<GatewayMediaStore>(
+                host.Services.GetRequiredService<GatewayMediaStore>());
+            Assert.IsType<WebhookChannelSender>(
+                host.Services.GetRequiredService<IChannelSender>());
+            Assert.IsType<ModuleLifecycleCoordinator>(
+                Assert.Single(host.Services.GetServices<IHostedService>()));
+        }
+        finally
+        {
             Directory.Delete(root, recursive: true);
         }
     }

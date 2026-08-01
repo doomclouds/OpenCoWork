@@ -2,6 +2,7 @@ using System.Collections;
 using System.CommandLine;
 using System.CommandLine.Invocation;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using OpenCoWork.Abstractions;
@@ -10,6 +11,7 @@ using OpenCoWork.Core.Agents;
 using OpenCoWork.Core.Capabilities;
 using OpenCoWork.Core.Configuration;
 using OpenCoWork.Core.Diagnostics;
+using OpenCoWork.Core.Gateway;
 using OpenCoWork.Core.Hosting;
 using OpenCoWork.Core.Logging;
 using OpenCoWork.Core.Sessions;
@@ -1114,6 +1116,9 @@ namespace OpenCoWork.App
             {
                 services.AddSingleton(contributor);
             }
+
+            services.TryAddSingleton<GatewayMediaStore>();
+            services.TryAddSingleton<IChannelSender, WebhookChannelSender>();
         }
 
         public ValueTask StartAsync(

@@ -40,6 +40,13 @@ public static class ChannelErrorCodes
     public const string MessageConflict = "channel.messageConflict";
     public const string CapacityExceeded = "channel.capacityExceeded";
     public const string MediaInvalid = "channel.mediaInvalid";
+    public const string MediaRejected = "channel.mediaRejected";
+    public const string MediaNotFound = "channel.mediaNotFound";
+    public const string SchemaInvalid = "channel.schemaInvalid";
+    public const string IdempotencyConflict = "channel.idempotencyConflict";
+    public const string PermissionDenied = "channel.permissionDenied";
+    public const string Unavailable = "channel.unavailable";
+    public const string RateLimited = "channel.rateLimited";
     public const string StateUnavailable = "channel.stateUnavailable";
     public const string RevisionConflict = "channel.revisionConflict";
     public const string CursorInvalid = "channel.cursorInvalid";
@@ -75,6 +82,14 @@ public sealed record ChannelMediaInput(
     string DisplayName,
     string ContentBase64);
 
+public sealed record ChannelMediaReference(
+    Guid MediaId,
+    string MediaType,
+    string DisplayName,
+    long ContentLength,
+    string ContentSha256,
+    string RelativePath);
+
 public sealed record ChannelInboundEnvelope(
     int SchemaVersion,
     string MessageId,
@@ -82,6 +97,23 @@ public sealed record ChannelInboundEnvelope(
     DateTimeOffset SentAtUtc,
     string? Text,
     IReadOnlyList<ChannelMediaInput> Attachments);
+
+public sealed record ChannelInboundRequest(
+    string ChannelId,
+    string BodySha256,
+    ChannelInboundEnvelope Envelope);
+
+public sealed record ChannelInboundReceipt(
+    Guid ReceiptId,
+    Guid CorrelationId,
+    bool Duplicate);
+
+public interface IChannelInboundSink
+{
+    ValueTask<ChannelInboundReceipt> AcceptAsync(
+        ChannelInboundRequest request,
+        CancellationToken cancellationToken = default);
+}
 
 public sealed record ChannelOutboundEnvelope(
     int SchemaVersion,
