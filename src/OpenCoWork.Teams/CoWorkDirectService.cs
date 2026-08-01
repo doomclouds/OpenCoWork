@@ -2457,6 +2457,7 @@ public sealed partial class CoWorkService
     private static CoWorkWorkspaceAccess InferWorkspaceAccess(
         AgentProfileSnapshot profile) =>
         profile.ToolAllowlist.Any(tool =>
+            tool.Equals("file.apply_patch", StringComparison.OrdinalIgnoreCase) ||
             tool.Contains("write", StringComparison.OrdinalIgnoreCase) ||
             tool.Contains("shell", StringComparison.OrdinalIgnoreCase) ||
             tool.Contains("terminal", StringComparison.OrdinalIgnoreCase) ||

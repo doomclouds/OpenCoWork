@@ -166,7 +166,7 @@ public sealed class MissionReconcilerTests
                 CoWorkWorkspaceMode.Project,
                 20_000,
                 ("leader", CoWorkMemberRole.Leader, Array.Empty<string>()),
-                ("one", CoWorkMemberRole.Member, ["file.write"]),
+                ("one", CoWorkMemberRole.Member, ["file.apply_patch"]),
                 ("two", CoWorkMemberRole.Member, ["shell.execute"]));
             var mission = await MissionTestData.AddIndependentTasksAsync(
                 project,
@@ -208,7 +208,7 @@ public sealed class MissionReconcilerTests
             CoWorkWorkspaceMode.Worktree,
             20_000,
             ("leader", CoWorkMemberRole.Leader, Array.Empty<string>()),
-            ("one", CoWorkMemberRole.Member, ["file.write"]),
+            ("one", CoWorkMemberRole.Member, ["file.apply_patch"]),
             ("two", CoWorkMemberRole.Member, ["shell.execute"]));
         var worktreeMission = await MissionTestData.AddIndependentTasksAsync(
             worktree,
@@ -240,7 +240,7 @@ public sealed class MissionReconcilerTests
             CoWorkWorkspaceMode.Project,
             20_000,
             ("leader", CoWorkMemberRole.Leader, Array.Empty<string>()),
-            ("writer", CoWorkMemberRole.Member, ["file.write"]));
+            ("writer", CoWorkMemberRole.Member, ["file.apply_patch"]));
         var mission = setup.Mission;
         _ = await MissionTestData.AddTaskAsync(
             workspace,

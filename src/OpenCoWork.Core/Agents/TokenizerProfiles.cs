@@ -11,7 +11,6 @@ internal sealed record TokenizerProfile(
     string Id,
     string Version,
     IReadOnlyList<string> ModelIds,
-    string? BuiltInEncoding,
     string? AssetFileName,
     string? AssetSha256,
     string Source,
@@ -44,53 +43,13 @@ internal static class TokenizerProfiles
     private const int MaximumAssetBytes = 32 * 1024 * 1024;
     private const string DeepSeekSha256 =
         "8f9f37ca37fdc4f5fd36d5cf4d3b0e8392edb4e894fd10cc0d70b4957c8633cf";
-    private const string GlmSha256 =
-        "19e773648cb4e65de8660ea6365e10acca112d42a854923df93db4a6f333a82d";
-
     public static IReadOnlyList<TokenizerProfile> BuiltIn { get; } =
         Array.AsReadOnly<TokenizerProfile>(
         [
             new(
-                "qwen-o200k",
-                "1",
-                ["qwen3.8-max-preview"],
-                "o200k_base",
-                AssetFileName: null,
-                AssetSha256: null,
-                "QwenCloud token-counting guidance, retrieved 2026-07-27",
-                "qwen3.8-chat",
-                "1",
-                ContextWindowTokens: 983_616,
-                MaxOutputTokens: 131_072),
-            new(
-                "glm-5.2",
-                "1",
-                ["glm-5.2"],
-                BuiltInEncoding: null,
-                "glm-5.2.tokenizer.json.gz",
-                GlmSha256,
-                "zai-org/GLM-5.2@b4734de4facf877f85769a911abafc5283eab3d9",
-                "glm-5.2-chat",
-                "1",
-                ContextWindowTokens: 1_048_576,
-                MaxOutputTokens: 131_072),
-            new(
-                "deepseek-v4-pro",
-                "1",
-                ["deepseek-v4-pro"],
-                BuiltInEncoding: null,
-                "deepseek-v4.tokenizer.json.gz",
-                DeepSeekSha256,
-                "deepseek-ai/DeepSeek-V4-Pro@b5968e9190ef611bbf34a7229255be88a0e937c1",
-                "deepseek-v4-chat",
-                "1",
-                ContextWindowTokens: 1_048_576,
-                MaxOutputTokens: 393_216),
-            new(
                 "deepseek-v4-flash",
                 "1",
                 ["deepseek-v4-flash"],
-                BuiltInEncoding: null,
                 "deepseek-v4.tokenizer.json.gz",
                 DeepSeekSha256,
                 "deepseek-ai/DeepSeek-V4-Flash@60d8d70770c6776ff598c94bb586a859a38244f1",
@@ -124,11 +83,6 @@ internal static class TokenizerProfiles
     {
         ArgumentNullException.ThrowIfNull(profile);
         ArgumentException.ThrowIfNullOrWhiteSpace(baseDirectory);
-        if (profile.BuiltInEncoding == "o200k_base")
-        {
-            return new ModelTokenizer(new Encoder(new O200KBase()));
-        }
-
         var assetPath = Path.Combine(
             baseDirectory,
             "tokenizers",
@@ -143,18 +97,6 @@ internal static class TokenizerProfiles
             profile.AssetSha256
                 ?? throw new InvalidOperationException(
                     $"Tokenizer profile '{profile.Id}' has no asset SHA-256."));
-    }
-
-    internal static ModelTokenizer CreateCustomTokenizer(
-        string profileId,
-        string tokenizerPath,
-        string expectedSha256)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(profileId);
-        ArgumentException.ThrowIfNullOrWhiteSpace(tokenizerPath);
-        ArgumentException.ThrowIfNullOrWhiteSpace(expectedSha256);
-        using var file = File.OpenRead(tokenizerPath);
-        return CreateFromJson(file, profileId, expectedSha256);
     }
 
     private static ModelTokenizer CreateFromJson(

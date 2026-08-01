@@ -1,4 +1,3 @@
-using System.IO.Compression;
 using System.Runtime.CompilerServices;
 using System.Security.Cryptography;
 using System.Text;
@@ -22,24 +21,9 @@ public sealed class AgentFactoryTests
     public static TheoryData<string, string, int[]> TokenizerCorpus => new()
     {
         {
-            "qwen3.8-max-preview",
-            "你好，小陌。",
-            [177519, 137380, 130887, 788]
-        },
-        {
-            "deepseek-v4-pro",
-            "public static int Add(int a, int b) => a + b;",
-            [3978, 4911, 688, 7043, 5047, 260, 14, 688, 291, 11, 2705, 260, 940, 291, 29]
-        },
-        {
             "deepseek-v4-flash",
             "reasoning: verify -> execute -> persist",
             [86512, 288, 28, 23393, 6248, 22218, 6248, 37746]
-        },
-        {
-            "glm-5.2",
-            "Hello, OpenCoWork!",
-            [9703, 11, 5264, 7339, 6776, 0]
         },
     };
 
@@ -61,12 +45,7 @@ public sealed class AgentFactoryTests
     public void Built_in_profiles_are_exact_versioned_and_cover_only_the_frozen_models()
     {
         Assert.Equal(
-            [
-                "deepseek-v4-flash",
-                "deepseek-v4-pro",
-                "glm-5.2",
-                "qwen3.8-max-preview",
-            ],
+            ["deepseek-v4-flash"],
             TokenizerProfiles.BuiltIn
                 .SelectMany(profile => profile.ModelIds)
                 .Order(StringComparer.Ordinal));
@@ -185,88 +164,39 @@ public sealed class AgentFactoryTests
     }
 
     [Fact]
-    public void Custom_tokenizer_is_local_sha_pinned_and_uses_the_same_tiktoken_engine()
+    public void Custom_provider_selection_is_rejected_before_tokenizer_access()
     {
-        var directory = Path.Combine(
-            Path.GetTempPath(),
-            $"opencowork-tokenizer-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(directory);
-        try
+        var models = new ModelsConfig
         {
-            var tokenizerPath = Path.Combine(directory, "tokenizer.json");
-            using (var source = File.OpenRead(Path.Combine(
-                       TokenizerBaseDirectory,
-                       "tokenizers",
-                       "glm-5.2.tokenizer.json.gz")))
-            using (var compressed = new GZipStream(source, CompressionMode.Decompress))
-            using (var target = File.Create(tokenizerPath))
+            DefaultProvider = "custom",
+            DefaultModel = "custom-model",
+            Providers = new Dictionary<string, ProviderConfig>(StringComparer.Ordinal)
             {
-                compressed.CopyTo(target);
-            }
-
-            var sha256 = Convert.ToHexString(
-                    SHA256.HashData(File.ReadAllBytes(tokenizerPath)))
-                .ToLowerInvariant();
-            var models = new ModelsConfig
-            {
-                Providers = new Dictionary<string, ProviderConfig>(StringComparer.Ordinal)
+                ["custom"] = new()
                 {
-                    ["custom"] = new()
+                    BaseUrl = "https://example.test/v1",
+                    ApiKey = new ProviderApiKeyConfig { Environment = "CUSTOM_KEY" },
+                    Models = new Dictionary<string, ModelConfig>(StringComparer.Ordinal)
                     {
-                        BaseUrl = "https://example.test/v1",
-                        ApiKey = new ProviderApiKeyConfig
+                        ["custom-model"] = new()
                         {
-                            Environment = "CUSTOM_KEY",
-                        },
-                        Models = new Dictionary<string, ModelConfig>(StringComparer.Ordinal)
-                        {
-                            ["custom-model"] = new()
-                            {
-                                TokenizerProfileId = "custom-profile",
-                                TokenizerProfileVersion = "1",
-                                ContextWindowTokens = 1_048_576,
-                                MaxOutputTokens = 131_072,
-                                TokenizerPath = "tokenizer.json",
-                                TokenizerSha256 = sha256,
-                            },
+                            TokenizerProfileId = "custom-profile",
+                            TokenizerProfileVersion = "1",
+                            ContextWindowTokens = 1_048_576,
+                            MaxOutputTokens = 131_072,
                         },
                     },
                 },
-            };
-            var credentials = FrozenProviderCredentials.Capture(
-                models,
-                name => name == "CUSTOM_KEY" ? "secret" : null);
+            },
+        };
 
-            var tokenizer = ModelSelectionPreflight.Validate(
+        Assert.Throws<InvalidOperationException>(() =>
+            ModelSelectionPreflight.Validate(
                 models,
-                credentials,
                 "custom",
                 "custom-model",
                 TokenizerBaseDirectory,
-                directory);
-
-            Assert.Equal(
-                [9703, 11, 5264, 7339, 6776, 0],
-                tokenizer.Encode("Hello, OpenCoWork!"));
-
-            models.Providers["custom"].Models["custom-model"] =
-                models.Providers["custom"].Models["custom-model"] with
-                {
-                    TokenizerSha256 = new string('0', 64),
-                };
-            Assert.Throws<InvalidDataException>(() =>
-                ModelSelectionPreflight.Validate(
-                    models,
-                    credentials,
-                    "custom",
-                    "custom-model",
-                    TokenizerBaseDirectory,
-                    directory));
-        }
-        finally
-        {
-            Directory.Delete(directory, recursive: true);
-        }
+                TokenizerBaseDirectory));
     }
 
     [Fact]
@@ -284,7 +214,7 @@ public sealed class AgentFactoryTests
             var instructions = WorkspaceInstructionDocument.Read(
                 new OpenCoWorkPaths(directory));
             var tokenizer = TokenizerProfiles
-                .GetRequiredForModel("qwen3.8-max-preview")
+                .GetRequiredForModel(ModelsConfig.FlashModelId)
                 .CreateTokenizer(TokenizerBaseDirectory);
 
             var agent = AgentPrompts.CreateResponse(
@@ -344,7 +274,7 @@ public sealed class AgentFactoryTests
     public void Response_prompt_injects_active_skills_before_catalog_and_runtime_facts()
     {
         var tokenizer = TokenizerProfiles
-            .GetRequiredForModel("qwen3.8-max-preview")
+            .GetRequiredForModel(ModelsConfig.FlashModelId)
             .CreateTokenizer(TokenizerBaseDirectory);
         const string body = "Always review correctness first.";
         var source = new CapabilitySourceDescriptor(

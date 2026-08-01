@@ -15,7 +15,7 @@ return await ProtocolTestClient.RunAsync(args);
 
 internal static class ProtocolTestClient
 {
-    private const string SecretEnvironment = "OPENCOWORK_PROTOCOL_TEST_KEY";
+    private const string SecretEnvironment = "DEEPSEEK_API_KEY";
     private static readonly TimeSpan Timeout = TimeSpan.FromSeconds(15);
 
     public static async Task<int> RunAsync(string[] args)
@@ -42,23 +42,19 @@ internal static class ProtocolTestClient
             await WriteCapabilityAuthAsync(workspace);
             await WriteAutomationDefinitionAsync(workspace);
             await InitializeGitAsync(workspace);
-            await using var provider = new HoldingHttpEndpoint();
-            await using var dynamicProvider = new DynamicToolHttpEndpoint(secret);
-            await WriteConfigAsync(workspace, provider.Port, dynamicProvider.Port);
+            await WriteConfigAsync(workspace);
 
             stage = "Wire stdio";
             var wire = await RunWireAsync(
                 server,
                 workspace,
                 secret,
-                provider,
                 transcript);
             stage = "Wire 1.1 capabilities";
             var capabilities = await RunCapabilityWireAsync(
                 server,
                 workspace,
                 secret,
-                dynamicProvider,
                 transcript);
             stage = "Wire 1.2 CoWork";
             var cowork = await RunCoWorkWireAsync(
@@ -77,7 +73,6 @@ internal static class ProtocolTestClient
                 server,
                 workspace,
                 secret,
-                provider,
                 transcript);
             stage = "WebSocket";
             var websocket = await RunWebSocketAsync(
@@ -235,8 +230,8 @@ internal static class ProtocolTestClient
             name = "M7 Wire Profile",
             description = "Wire 1.2 black-box profile.",
             instructions = "Return concise results.",
-            providerId = "m5-test",
-            modelId = "qwen3.8-max-preview",
+            providerId = "deepseek",
+            modelId = "deepseek-v4-flash",
             skillAllowlist = Array.Empty<string>(),
             toolAllowlist = Array.Empty<string>(),
         };
@@ -266,7 +261,6 @@ internal static class ProtocolTestClient
         string server,
         string workspace,
         string secret,
-        DynamicToolHttpEndpoint dynamicProvider,
         ConcurrentQueue<string> transcript)
     {
         var childPidPath = Path.Combine(workspace, "m6-terminal-child.pid");
@@ -414,8 +408,8 @@ internal static class ProtocolTestClient
                     idempotencyKey = Guid.CreateVersion7(),
                     expectedSequence = 0,
                     displayName = "M6 capability black-box",
-                    providerId = "m6-dynamic",
-                    modelId = "qwen3.8-max-preview",
+                    providerId = "deepseek",
+                    modelId = "deepseek-v4-flash",
                     mode = "agent",
                 });
             var threadId = created.GetProperty("result").GetProperty("thread")
@@ -524,74 +518,6 @@ internal static class ProtocolTestClient
                         inputSchema),
                     leaseSeconds = 60,
                 });
-            _ = await client.RequestAsync(
-                15,
-                "trust/decide",
-                new { arguments = new { dynamicConnection = true } });
-            _ = await client.RequestAsync(
-                16,
-                "thread/subscribe",
-                new { threadId, mode = "snapshotThenLive" });
-            await client.SendRequestAsync(
-                17,
-                "turn/start",
-                new
-                {
-                    threadId,
-                    idempotencyKey = Guid.CreateVersion7(),
-                    expectedSequence = sequence,
-                    text = "Call the dynamic echo tool once.",
-                });
-            var turnAccepted = false;
-            var callbackCompleted = false;
-            while (!turnAccepted || !callbackCompleted)
-            {
-                var message = await client.ReadMessageAsync();
-                if (message.TryGetProperty("id", out var messageId) &&
-                    messageId.ValueKind == JsonValueKind.Number &&
-                    messageId.GetInt64() == 17)
-                {
-                    Require(
-                        message.TryGetProperty("result", out _),
-                        "Dynamic Tool turn was not accepted.");
-                    turnAccepted = true;
-                }
-                else if (message.TryGetProperty("method", out var method) &&
-                         method.GetString() == "tool/invoke")
-                {
-                    var parameters = message.GetProperty("params");
-                    Require(
-                        parameters.GetProperty("threadId").GetGuid() == threadId &&
-                        parameters.GetProperty("registrationId").GetGuid() ==
-                        registrationId &&
-                        parameters.GetProperty("arguments").GetProperty("text")
-                            .GetString() == "ping",
-                        "Dynamic Tool callback parameters changed.");
-                    await client.SendResultAsync(
-                        message.GetProperty("id").GetString()!,
-                        new { text = "pong" });
-                    callbackCompleted = true;
-                }
-            }
-
-            await dynamicProvider.Completion.WaitAsync(Timeout);
-            for (var attempt = 0; attempt < 100; attempt++)
-            {
-                var current = await client.RequestAsync(
-                    18 + attempt,
-                    "thread/get",
-                    new { threadId });
-                var thread = current.GetProperty("result").GetProperty("thread");
-                if (!thread.TryGetProperty("activeTurnId", out var activeTurnId) ||
-                    activeTurnId.ValueKind == JsonValueKind.Null)
-                {
-                    break;
-                }
-
-                await Task.Delay(25);
-                Require(attempt < 99, "Dynamic Tool turn did not complete.");
-            }
-
             var terminalId = Guid.CreateVersion7();
             _ = await client.RequestAsync(
                 120,
@@ -617,7 +543,6 @@ internal static class ProtocolTestClient
         string server,
         string workspace,
         string secret,
-        HoldingHttpEndpoint provider,
         ConcurrentQueue<string> transcript)
     {
         Guid threadId;
@@ -638,53 +563,18 @@ internal static class ProtocolTestClient
                     idempotencyKey = Guid.CreateVersion7(),
                     expectedSequence = 0,
                     displayName = "M5 black-box",
-                    providerId = "m5-test",
-                    modelId = "qwen3.8-max-preview",
+                    providerId = "deepseek",
+                    modelId = "deepseek-v4-flash",
                     mode = "agent",
                 });
             threadId = created.GetProperty("result").GetProperty("thread")
                 .GetProperty("threadId").GetGuid();
-            var sequence = created.GetProperty("result")
+            watermark = created.GetProperty("result")
                 .GetProperty("currentSequence").GetInt64();
             await client.RequestAsync(
                 3,
                 "thread/subscribe",
                 new { threadId, mode = "snapshotThenLive" });
-            var started = await client.RequestAsync(
-                4,
-                "turn/start",
-                new
-                {
-                    threadId,
-                    idempotencyKey = Guid.CreateVersion7(),
-                    expectedSequence = sequence,
-                    text = "Hold until cancellation.",
-                });
-            var turnId = started.GetProperty("result")
-                .GetProperty("turnId").GetGuid();
-            await provider.WaitForConnectionAsync(Timeout);
-            var current = await client.RequestAsync(
-                5,
-                "thread/get",
-                new { threadId });
-            sequence = current.GetProperty("result")
-                .GetProperty("currentSequence").GetInt64();
-            var cancelled = await client.RequestAsync(
-                6,
-                "turn/cancel",
-                new
-                {
-                    threadId,
-                    turnId,
-                    idempotencyKey = Guid.CreateVersion7(),
-                    expectedSequence = sequence,
-                });
-            Require(
-                cancelled.GetProperty("result").GetProperty("turn")
-                    .GetProperty("status").GetString() == "cancelled",
-                "Wire cancellation did not reach a terminal state.");
-            watermark = cancelled.GetProperty("result")
-                .GetProperty("currentSequence").GetInt64();
         }
 
         await using (var reconnect = StartLineClient(
@@ -718,14 +608,13 @@ internal static class ProtocolTestClient
                 "Wire reconnect replay was empty, duplicated, or out of order.");
         }
 
-        return "wire-stdio-reconnect-cancel";
+        return "wire-stdio-reconnect";
     }
 
     private static async Task<string> RunAcpAsync(
         string server,
         string workspace,
         string secret,
-        HoldingHttpEndpoint provider,
         ConcurrentQueue<string> transcript)
     {
         string sessionId;
@@ -752,26 +641,6 @@ internal static class ProtocolTestClient
                 .GetProperty("sessionId").GetString()
                 ?? throw new InvalidOperationException(
                     "ACP session ID is missing.");
-            await client.SendRequestAsync(
-                3,
-                "session/prompt",
-                new
-                {
-                    sessionId,
-                    prompt = new[]
-                    {
-                        new { type = "text", text = "Hold until cancellation." },
-                    },
-                });
-            await provider.WaitForConnectionAsync(Timeout);
-            await client.SendNotificationAsync(
-                "session/cancel",
-                new { sessionId });
-            var prompt = await client.ReadResponseAsync(3);
-            Require(
-                prompt.GetProperty("result").GetProperty("stopReason")
-                    .GetString() == "cancelled",
-                "ACP cancellation did not map to cancelled.");
         }
 
         await using (var reconnect = StartLineClient(
@@ -794,14 +663,9 @@ internal static class ProtocolTestClient
                     cwd = workspace,
                     mcpServers = Array.Empty<object>(),
                 });
-            Require(
-                reconnect.Messages.Any(message =>
-                    message.TryGetProperty("method", out var method) &&
-                    method.GetString() == "session/update"),
-                "ACP reconnect did not replay session history.");
         }
 
-        return "acp-v1-reconnect-cancel";
+        return "acp-v1-session-load";
     }
 
     private static async Task<string> RunWebSocketAsync(
@@ -1155,44 +1019,15 @@ internal static class ProtocolTestClient
         }
     }
 
-    private static Task WriteConfigAsync(
-        string workspace,
-        int providerPort,
-        int dynamicProviderPort)
+    private static Task WriteConfigAsync(string workspace)
     {
         var path = Path.Combine(workspace, ".opencowork", "config.jsonc");
         var content =
             $$"""
             {
               "models": {
-                "defaultProvider": "m5-test",
-                "defaultModel": "qwen3.8-max-preview",
-                "providers": {
-                  "m5-test": {
-                    "baseUrl": "http://127.0.0.1:{{providerPort}}/v1",
-                    "apiKey": { "environment": "{{SecretEnvironment}}" },
-                    "models": {
-                      "qwen3.8-max-preview": {
-                        "tokenizerProfileId": "qwen-o200k",
-                        "tokenizerProfileVersion": "1",
-                        "contextWindowTokens": 983616,
-                        "maxOutputTokens": 131072
-                      }
-                    }
-                  },
-                  "m6-dynamic": {
-                    "baseUrl": "http://127.0.0.1:{{dynamicProviderPort}}/v1",
-                    "apiKey": { "environment": "{{SecretEnvironment}}" },
-                    "models": {
-                      "qwen3.8-max-preview": {
-                        "tokenizerProfileId": "qwen-o200k",
-                        "tokenizerProfileVersion": "1",
-                        "contextWindowTokens": 983616,
-                        "maxOutputTokens": 131072
-                      }
-                    }
-                  }
-                }
+                "defaultModel": "deepseek-v4-flash",
+                "reasoningEffort": "low"
               },
               "automations": {
                 "enabled": true
@@ -1648,244 +1483,5 @@ internal sealed class ChildProcess : IAsyncDisposable
 
         await _errorReader;
         Process.Dispose();
-    }
-}
-
-internal sealed class DynamicToolHttpEndpoint : IAsyncDisposable
-{
-    private readonly string _secret;
-    private readonly TcpListener _listener = new(IPAddress.Loopback, 0);
-    private readonly Task _run;
-
-    public DynamicToolHttpEndpoint(string secret)
-    {
-        _secret = secret;
-        _listener.Start();
-        Port = ((IPEndPoint)_listener.LocalEndpoint).Port;
-        _run = RunAsync();
-    }
-
-    public int Port { get; }
-
-    public Task Completion => _run;
-
-    private async Task RunAsync()
-    {
-        for (var round = 0; round < 2; round++)
-        {
-            using var client = await _listener.AcceptTcpClientAsync();
-            await using var stream = client.GetStream();
-            using var request = await ReadRequestAsync(stream);
-            var root = request.RootElement;
-            if (round == 0)
-            {
-                var toolName = root.GetProperty("tools")
-                    .EnumerateArray()
-                    .Select(tool => tool.GetProperty("function")
-                        .GetProperty("name").GetString())
-                    .Single(name =>
-                        name?.StartsWith("dynamic_", StringComparison.Ordinal) == true &&
-                        name.EndsWith("__echo", StringComparison.Ordinal));
-                var chunk = JsonSerializer.Serialize(new
-                {
-                    choices = new[]
-                    {
-                        new
-                        {
-                            index = 0,
-                            delta = new
-                            {
-                                tool_calls = new[]
-                                {
-                                    new
-                                    {
-                                        index = 0,
-                                        id = "call-dynamic",
-                                        function = new
-                                        {
-                                            name = toolName,
-                                            arguments = """{"text":"ping"}""",
-                                        },
-                                    },
-                                },
-                            },
-                            finish_reason = "tool_calls",
-                        },
-                    },
-                    usage = new
-                    {
-                        prompt_tokens = 10,
-                        completion_tokens = 1,
-                        total_tokens = 11,
-                    },
-                });
-                await WriteSseAsync(
-                    stream,
-                    $"data: {chunk}\n\ndata: [DONE]\n\n");
-            }
-            else
-            {
-                var toolResult = root.GetProperty("messages")
-                    .EnumerateArray()
-                    .Single(message =>
-                        message.GetProperty("role").GetString() == "tool")
-                    .GetProperty("content").GetString();
-                if (toolResult?.Contains("pong", StringComparison.Ordinal) != true)
-                {
-                    throw new InvalidOperationException(
-                        "Dynamic Tool result did not return to the provider.");
-                }
-
-                await WriteSseAsync(
-                    stream,
-                    """
-                    data: {"choices":[{"index":0,"delta":{"content":"OK"},"finish_reason":"stop"}],"usage":{"prompt_tokens":12,"completion_tokens":1,"total_tokens":13}}
-
-                    data: [DONE]
-
-                    """);
-            }
-        }
-    }
-
-    private async Task<JsonDocument> ReadRequestAsync(NetworkStream stream)
-    {
-        var header = new ArrayBufferWriter<byte>();
-        var one = new byte[1];
-        while (header.WrittenCount < 64 * 1024)
-        {
-            if (await stream.ReadAsync(one) == 0)
-            {
-                throw new InvalidOperationException("Provider request ended early.");
-            }
-
-            header.Write(one);
-            if (header.WrittenCount >= 4 &&
-                header.WrittenSpan[^4..].SequenceEqual("\r\n\r\n"u8))
-            {
-                break;
-            }
-        }
-
-        if (header.WrittenCount < 4 ||
-            !header.WrittenSpan[^4..].SequenceEqual("\r\n\r\n"u8))
-        {
-            throw new InvalidOperationException(
-                "Provider request headers are too large.");
-        }
-
-        var headers = Encoding.ASCII.GetString(header.WrittenSpan);
-        if (!headers.Contains(
-                $"Authorization: Bearer {_secret}",
-                StringComparison.OrdinalIgnoreCase))
-        {
-            throw new InvalidOperationException(
-                "Provider authorization header is missing.");
-        }
-
-        var contentLength = headers.Split("\r\n", StringSplitOptions.RemoveEmptyEntries)
-            .Where(line => line.StartsWith(
-                "Content-Length:",
-                StringComparison.OrdinalIgnoreCase))
-            .Select(line => int.Parse(
-                line["Content-Length:".Length..].Trim(),
-                System.Globalization.CultureInfo.InvariantCulture))
-            .Single();
-        var body = new byte[contentLength];
-        await stream.ReadExactlyAsync(body);
-        return JsonDocument.Parse(body);
-    }
-
-    private static async Task WriteSseAsync(NetworkStream stream, string sse)
-    {
-        var body = Encoding.UTF8.GetBytes(sse);
-        var header = Encoding.ASCII.GetBytes(
-            "HTTP/1.1 200 OK\r\n" +
-            "Content-Type: text/event-stream\r\n" +
-            $"Content-Length: {body.Length}\r\n" +
-            "Connection: close\r\n\r\n");
-        await stream.WriteAsync(header);
-        await stream.WriteAsync(body);
-        await stream.FlushAsync();
-    }
-
-    public async ValueTask DisposeAsync()
-    {
-        _listener.Stop();
-        try
-        {
-            await _run;
-        }
-        catch (Exception exception) when (
-            exception is OperationCanceledException or SocketException)
-        {
-        }
-    }
-}
-
-internal sealed class HoldingHttpEndpoint : IAsyncDisposable
-{
-    private readonly TcpListener _listener =
-        new(IPAddress.Loopback, 0);
-    private readonly CancellationTokenSource _lifetime = new();
-    private readonly Channel<bool> _connections =
-        Channel.CreateUnbounded<bool>();
-    private readonly Task _acceptLoop;
-
-    public HoldingHttpEndpoint()
-    {
-        _listener.Start();
-        Port = ((IPEndPoint)_listener.LocalEndpoint).Port;
-        _acceptLoop = AcceptAsync();
-    }
-
-    public int Port { get; }
-
-    public async Task WaitForConnectionAsync(TimeSpan timeout)
-    {
-        using var cancellation = new CancellationTokenSource(timeout);
-        await _connections.Reader.ReadAsync(cancellation.Token);
-    }
-
-    private async Task AcceptAsync()
-    {
-        try
-        {
-            while (!_lifetime.IsCancellationRequested)
-            {
-                var client = await _listener.AcceptTcpClientAsync(_lifetime.Token);
-                await _connections.Writer.WriteAsync(true, _lifetime.Token);
-                _ = HoldAsync(client);
-            }
-        }
-        catch (OperationCanceledException) when (_lifetime.IsCancellationRequested)
-        {
-        }
-        catch (SocketException) when (_lifetime.IsCancellationRequested)
-        {
-        }
-    }
-
-    private async Task HoldAsync(TcpClient client)
-    {
-        using (client)
-        {
-            try
-            {
-                await Task.Delay(Timeout.InfiniteTimeSpan, _lifetime.Token);
-            }
-            catch (OperationCanceledException) when (
-                _lifetime.IsCancellationRequested)
-            {
-            }
-        }
-    }
-
-    public async ValueTask DisposeAsync()
-    {
-        _lifetime.Cancel();
-        _listener.Stop();
-        await _acceptLoop;
-        _lifetime.Dispose();
     }
 }

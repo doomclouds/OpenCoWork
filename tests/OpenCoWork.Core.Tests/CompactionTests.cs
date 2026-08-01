@@ -213,7 +213,7 @@ public sealed class CompactionTests
                 4,
                 new string('0', 64),
                 "opencowork.compaction.v1",
-                "qwen-o200k",
+                "deepseek-v4-flash",
                 "1",
                 tokenizer.CountTokens(CompactionClient.Summary));
             var client = new CompactionClient();

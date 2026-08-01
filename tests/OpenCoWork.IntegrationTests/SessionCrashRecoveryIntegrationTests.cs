@@ -15,8 +15,8 @@ public sealed class SessionCrashRecoveryIntegrationTests
     private const string ChildFlag = "OPENCOWORK_M2_CRASH_CHILD";
     private const string ToolChildFlag = "OPENCOWORK_M4_TOOL_CRASH_CHILD";
     private const string ChildWorkspace = "OPENCOWORK_M2_CRASH_WORKSPACE";
-    private const string ToolKeyEnvironment = "OPENCOWORK_M4_TOOL_KEY";
-    private const string ToolModel = "qwen3.8-max-preview";
+    private const string ToolKeyEnvironment = "DEEPSEEK_API_KEY";
+    private const string ToolModel = "deepseek-v4-flash";
     private const int CrashExitCode = 73;
 
     [Fact]
@@ -219,7 +219,7 @@ public sealed class SessionCrashRecoveryIntegrationTests
                 Guid.CreateVersion7(),
                 ExpectedSequence: 0,
                 DisplayName: "tool crash recovery",
-                ProviderId: "test",
+                ProviderId: "deepseek",
                 ModelId: ToolModel),
             TestContext.Current.CancellationToken)).Value!;
         await service.EnqueueInputAsync(
@@ -305,16 +305,16 @@ public sealed class SessionCrashRecoveryIntegrationTests
             var snapshotHash = tools.SnapshotSha256;
             var invocation = new AgentInvocationSnapshot(
                 Guid.CreateVersion7(),
-                "test",
+                "deepseek",
                 ToolModel,
-                "qwen-o200k",
+                "deepseek-v4-flash",
                 "1",
                 AgentMode.Agent,
                 new AgentPromptSnapshot("response-v1", new string('b', 64), 1),
                 new AgentPromptSnapshot("compaction-v1", new string('c', 64), 1),
                 WorkspaceInstructions: null,
-                ContextWindowTokens: 983_616,
-                MaxOutputTokens: 131_072,
+                ContextWindowTokens: 1_048_576,
+                MaxOutputTokens: 393_216,
                 new string('d', 64),
                 tools);
             await sink.EmitAsync(
@@ -393,33 +393,7 @@ public sealed class SessionCrashRecoveryIntegrationTests
         }
     }
 
-    private static ModelsConfig ToolCrashModels() =>
-        new()
-        {
-            DefaultProvider = "test",
-            DefaultModel = ToolModel,
-            Providers = new Dictionary<string, ProviderConfig>(StringComparer.Ordinal)
-            {
-                ["test"] = new()
-                {
-                    BaseUrl = "https://example.test/v1",
-                    ApiKey = new ProviderApiKeyConfig
-                    {
-                        Environment = ToolKeyEnvironment,
-                    },
-                    Models = new Dictionary<string, ModelConfig>(StringComparer.Ordinal)
-                    {
-                        [ToolModel] = new()
-                        {
-                            TokenizerProfileId = "qwen-o200k",
-                            TokenizerProfileVersion = "1",
-                            ContextWindowTokens = 983_616,
-                            MaxOutputTokens = 131_072,
-                        },
-                    },
-                },
-            },
-        };
+    private static ModelsConfig ToolCrashModels() => new();
 
     private sealed record CrashChildResult(
         int ExitCode,

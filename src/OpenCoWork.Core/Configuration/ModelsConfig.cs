@@ -161,11 +161,6 @@ internal sealed record ModelConfig
     [Range(1, int.MaxValue)]
     public int MaxOutputTokens { get; init; }
 
-    public string? TokenizerPath { get; init; }
-
-    [RegularExpression("^[0-9a-f]{64}$")]
-    public string? TokenizerSha256 { get; init; }
-
     internal IEnumerable<ValidationResult> Validate(string modelId, string path)
     {
         if (MaxOutputTokens > ContextWindowTokens)
@@ -173,14 +168,6 @@ internal sealed record ModelConfig
             yield return new ValidationResult(
                 "Maximum output tokens cannot exceed the context window.",
                 [$"{path}.MaxOutputTokens"]);
-        }
-
-        if (string.IsNullOrWhiteSpace(TokenizerPath) !=
-            string.IsNullOrWhiteSpace(TokenizerSha256))
-        {
-            yield return new ValidationResult(
-                "Custom tokenizer path and SHA-256 must be configured together.",
-                [$"{path}.TokenizerPath", $"{path}.TokenizerSha256"]);
         }
 
         if (TokenizerProfiles.TryGetForModel(modelId, out var builtIn))
@@ -202,20 +189,6 @@ internal sealed record ModelConfig
                     [$"{path}.TokenizerProfileId"]);
             }
 
-            if (!string.IsNullOrWhiteSpace(TokenizerPath) ||
-                !string.IsNullOrWhiteSpace(TokenizerSha256))
-            {
-                yield return new ValidationResult(
-                    "Built-in models cannot override their Tokenizer Profile asset.",
-                    [$"{path}.TokenizerPath", $"{path}.TokenizerSha256"]);
-            }
-        }
-        else if (string.IsNullOrWhiteSpace(TokenizerPath) ||
-                 string.IsNullOrWhiteSpace(TokenizerSha256))
-        {
-            yield return new ValidationResult(
-                "Custom models require a local tokenizer path and SHA-256.",
-                [$"{path}.TokenizerPath", $"{path}.TokenizerSha256"]);
         }
     }
 }
@@ -308,8 +281,10 @@ internal static class ModelSelectionPreflight
         ArgumentException.ThrowIfNullOrWhiteSpace(modelId);
         ArgumentException.ThrowIfNullOrWhiteSpace(bundledTokenizerBaseDirectory);
         ArgumentException.ThrowIfNullOrWhiteSpace(customTokenizerBaseDirectory);
-        if (!models.Providers.TryGetValue(providerId, out var provider) ||
-            !provider.Models.TryGetValue(modelId, out var model))
+        if (!string.Equals(providerId, ModelsConfig.ProviderId, StringComparison.Ordinal) ||
+            !string.Equals(modelId, ModelsConfig.FlashModelId, StringComparison.Ordinal) ||
+            !models.Providers.TryGetValue(ModelsConfig.ProviderId, out var provider) ||
+            !provider.Models.TryGetValue(ModelsConfig.FlashModelId, out var model))
         {
             throw new InvalidOperationException(
                 $"Provider/model selection '{providerId}/{modelId}' is not configured.");
@@ -321,18 +296,7 @@ internal static class ModelSelectionPreflight
                 $"Provider/model selection '{providerId}/{modelId}' does not match its Tokenizer Profile.");
         }
 
-        if (TokenizerProfiles.TryGetForModel(modelId, out var builtIn))
-        {
-            return builtIn!.CreateTokenizer(bundledTokenizerBaseDirectory);
-        }
-
-        var tokenizerPath = model.TokenizerPath!;
-        var resolvedPath = Path.IsPathFullyQualified(tokenizerPath)
-            ? Path.GetFullPath(tokenizerPath)
-            : Path.GetFullPath(tokenizerPath, customTokenizerBaseDirectory);
-        return TokenizerProfiles.CreateCustomTokenizer(
-            model.TokenizerProfileId,
-            resolvedPath,
-            model.TokenizerSha256!);
+        return TokenizerProfiles.GetRequiredForModel(ModelsConfig.FlashModelId)
+            .CreateTokenizer(bundledTokenizerBaseDirectory);
     }
 }

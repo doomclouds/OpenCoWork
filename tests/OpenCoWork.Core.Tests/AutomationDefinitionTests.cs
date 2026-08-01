@@ -108,7 +108,7 @@ public sealed class AutomationDefinitionTests
             ("task: cleanup", "task: inspect"),
             ("plugins: [sample]", "plugins: [other]"),
             ("skills: [review]", "skills: [other]"),
-            ("tools: [file.read]", "tools: [file.write]"),
+            ("tools: [file.read]", "tools: [file.apply_patch]"),
             ("effects: [workspaceRead]", "effects: [workspaceWrite]"),
             ("runTimeout: 30m", "runTimeout: 31m"),
             ("attentionTimeout: 24h", "attentionTimeout: 25h"),

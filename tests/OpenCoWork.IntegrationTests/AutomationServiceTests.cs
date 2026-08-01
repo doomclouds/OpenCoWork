@@ -140,7 +140,7 @@ public sealed class AutomationServiceTests
         [
             new AutomationCapabilitySnapshot(
                 "tool",
-                "file.write",
+                "file.apply_patch",
                 "2",
                 new string('d', 64),
                 99),
@@ -588,7 +588,7 @@ public sealed class AutomationServiceTests
             allow:
               plugins: [sample-plugin]
               skills: [review]
-              tools: [file.read, file.write]
+              tools: [file.read, file.apply_patch]
               effects: [workspaceRead, workspaceWrite]
             runTimeout: 30m
             attentionTimeout: 24h

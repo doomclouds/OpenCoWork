@@ -199,8 +199,16 @@ internal sealed class ProviderRegistry
             }
 
             ProviderModelRegistration registration;
-            if (_models.Providers.TryGetValue(providerId, out var provider) &&
-                provider.Models.TryGetValue(modelId, out var model))
+            if (string.Equals(
+                    providerId,
+                    ModelsConfig.ProviderId,
+                    StringComparison.Ordinal) &&
+                string.Equals(
+                    modelId,
+                    ModelsConfig.FlashModelId,
+                    StringComparison.Ordinal) &&
+                _models.Providers.TryGetValue(ModelsConfig.ProviderId, out var provider) &&
+                provider.Models.TryGetValue(ModelsConfig.FlashModelId, out var model))
             {
                 registration = ResolveBuiltIn(providerId, modelId, provider, model);
             }
@@ -275,26 +283,18 @@ internal sealed class ProviderRegistry
             modelId,
             _bundledTokenizerBaseDirectory,
             _customTokenizerBaseDirectory);
-        var profile = TokenizerProfiles.TryGetForModel(modelId, out var builtIn)
-            ? builtIn
-            : null;
+        var profile = TokenizerProfiles.GetRequiredForModel(ModelsConfig.FlashModelId);
         var legacyApiKey = _legacyCredentials?.GetRequired(providerId);
         return new ProviderModelRegistration(
             providerId,
             modelId,
-            new Uri(
-                string.Equals(providerId, ModelsConfig.ProviderId, StringComparison.Ordinal)
-                    ? ModelsConfig.BaseUrl + "/"
-                    : provider.BaseUrl.TrimEnd('/') + "/",
-                UriKind.Absolute),
-            string.Equals(providerId, ModelsConfig.ProviderId, StringComparison.Ordinal)
-                ? ModelsConfig.AuthProfileId
-                : $"core/{providerId}",
+            new Uri(ModelsConfig.BaseUrl + "/", UriKind.Absolute),
+            ModelsConfig.AuthProfileId,
             ProviderAuthPlacement.Bearer,
             model.TokenizerProfileId,
             model.TokenizerProfileVersion,
-            profile?.ChatTemplateId ?? "openai-compatible-chat",
-            profile?.ChatTemplateVersion ?? "1",
+            profile.ChatTemplateId,
+            profile.ChatTemplateVersion,
             model.ContextWindowTokens,
             model.MaxOutputTokens,
             _models.ReasoningEffort,
@@ -328,8 +328,7 @@ internal sealed class ProviderRegistry
             model.TokenizerProfileId,
             model.TokenizerProfileVersion,
             model.ContextWindowTokens,
-            model.MaxOutputTokens,
-            model.TokenizerSha256 ?? string.Empty);
+            model.MaxOutputTokens);
         return Convert.ToHexString(
                 SHA256.HashData(Encoding.UTF8.GetBytes(canonical)))
             .ToLowerInvariant();

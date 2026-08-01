@@ -73,7 +73,7 @@ public sealed class CapabilityCatalogTests
         [
             Set(
                 Source(CapabilitySourceKind.Core, "opencowork.core", '1'),
-                Item(CapabilityKind.Tool, "web.fetch"),
+                Item(CapabilityKind.Tool, "web.search"),
                 Item(CapabilityKind.Tool, "file.read")),
         ]);
         var second = new WorkspaceCapabilityRuntime(
@@ -81,7 +81,7 @@ public sealed class CapabilityCatalogTests
             Set(
                 Source(CapabilitySourceKind.Core, "opencowork.core", '1'),
                 Item(CapabilityKind.Tool, "file.read"),
-                Item(CapabilityKind.Tool, "web.fetch")),
+                Item(CapabilityKind.Tool, "web.search")),
         ]);
 
         await first.StartAsync(TestContext.Current.CancellationToken);
@@ -89,7 +89,7 @@ public sealed class CapabilityCatalogTests
 
         Assert.Equal(first.CurrentCatalog.CatalogSha256, second.CurrentCatalog.CatalogSha256);
         Assert.Equal(
-            ["file.read", "web.fetch"],
+            ["file.read", "web.search"],
             first.CurrentCatalog.Items.Select(item => item.Id));
         Assert.Equal(1, first.CurrentCatalog.Revision);
 
