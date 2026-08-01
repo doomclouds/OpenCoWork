@@ -135,7 +135,6 @@ public sealed class McpCapabilityTests
             var tools = new ToolRuntime(paths);
             var declarations = new ProviderDeclarationCatalog(paths);
             var auth = new ProviderAuthService(
-                new ModelsConfig(),
                 declarations,
                 new InMemoryOsSecretStore(),
                 new SecretRedactor([]),
@@ -277,7 +276,6 @@ public sealed class McpCapabilityTests
                 files,
                 tools,
                 new ProviderAuthService(
-                    new ModelsConfig(),
                     declarations,
                     new InMemoryOsSecretStore(),
                     new SecretRedactor([]),
@@ -366,7 +364,6 @@ public sealed class McpCapabilityTests
                 files,
                 new ToolRuntime(paths),
                 new ProviderAuthService(
-                    new ModelsConfig(),
                     declarations,
                     new InMemoryOsSecretStore(),
                     new SecretRedactor([]),
@@ -422,7 +419,6 @@ public sealed class McpCapabilityTests
                 ["resources.read", "tools.read"],
                 declarations.AuthProfiles["auth/mcp"].Scopes);
             var auth = new ProviderAuthService(
-                new ModelsConfig(),
                 declarations,
                 new InMemoryOsSecretStore(),
                 new SecretRedactor([]),

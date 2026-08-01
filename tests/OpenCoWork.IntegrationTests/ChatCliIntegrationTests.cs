@@ -3,6 +3,7 @@ using Microsoft.Extensions.DependencyInjection;
 using OpenCoWork.Abstractions;
 using OpenCoWork.App;
 using OpenCoWork.Core.Configuration;
+using OpenCoWork.Core.Logging;
 using OpenCoWork.Core.Workspaces;
 using Xunit;
 
@@ -31,7 +32,7 @@ public sealed class ChatCliIntegrationTests
                 cancellationToken);
             await File.WriteAllTextAsync(
                 paths.ConfigPath,
-                Config(secretName),
+                Config(),
                 cancellationToken);
             var output = new StringWriter();
             var error = new StringWriter();
@@ -66,9 +67,9 @@ public sealed class ChatCliIntegrationTests
                     "--thread",
                     threadId.ToString("D"),
                     "--provider",
-                    "fake",
+                    "deepseek",
                     "--model",
-                    "glm-5.2",
+                    "deepseek-v4-flash",
                 ],
                 new StringReader("three\n"),
                 output,
@@ -86,18 +87,18 @@ public sealed class ChatCliIntegrationTests
                 Normalize(error.ToString()),
                 StringComparison.Ordinal);
             Assert.Contains(
-                "provider fake",
+                "provider deepseek",
                 error.ToString(),
                 StringComparison.Ordinal);
             Assert.Contains(
-                "model glm-5.2",
+                "model deepseek-v4-flash",
                 error.ToString(),
                 StringComparison.Ordinal);
             Assert.Equal(
                 [
-                    (AgentMode.Agent, "qwen3.8-max-preview"),
-                    (AgentMode.Agent, "qwen3.8-max-preview"),
-                    (AgentMode.Agent, "glm-5.2"),
+                    (AgentMode.Agent, "deepseek-v4-flash"),
+                    (AgentMode.Agent, "deepseek-v4-flash"),
+                    (AgentMode.Agent, "deepseek-v4-flash"),
                 ],
                 executor.Selections);
             Assert.DoesNotContain(
@@ -115,8 +116,12 @@ public sealed class ChatCliIntegrationTests
                 root,
                 userProfile,
                 isInteractive: false,
-                services => services.AddSingleton<ISessionExecutor>(
-                    new ThrowingExecutor("apiKey=chat-test-secret")),
+                services =>
+                {
+                    services.AddSingleton<ISessionExecutor>(
+                        new ThrowingExecutor("apiKey=chat-test-secret"));
+                    services.AddSingleton(new SecretRedactor(["chat-test-secret"]));
+                },
                 cancellationToken);
 
             Assert.Equal(1, failedExitCode);
@@ -161,7 +166,7 @@ public sealed class ChatCliIntegrationTests
                 cancellationToken);
             await File.WriteAllTextAsync(
                 paths.ConfigPath,
-                Config(secretName),
+                Config(),
                 cancellationToken);
             var output = new StringWriter();
             var error = new StringWriter();
@@ -190,7 +195,7 @@ public sealed class ChatCliIntegrationTests
                 StringComparison.Ordinal);
             Assert.Contains("mode plan", error.ToString(), StringComparison.Ordinal);
             Assert.Contains("mode agent", error.ToString(), StringComparison.Ordinal);
-            Assert.Equal([(AgentMode.Plan, "qwen3.8-max-preview")], executor.Selections);
+            Assert.Equal([(AgentMode.Plan, "deepseek-v4-flash")], executor.Selections);
 
             output.GetStringBuilder().Clear();
             error.GetStringBuilder().Clear();
@@ -289,7 +294,7 @@ public sealed class ChatCliIntegrationTests
                 testCancellation);
             await File.WriteAllTextAsync(
                 paths.ConfigPath,
-                Config(secretName),
+                Config(),
                 testCancellation);
             var output = new StringWriter();
             var error = new StringWriter();
@@ -327,34 +332,12 @@ public sealed class ChatCliIntegrationTests
         }
     }
 
-    private static string Config(string secretName) =>
-        $$"""
+    private static string Config() =>
+        """
         {
           "models": {
-            "defaultProvider": "fake",
-            "defaultModel": "qwen3.8-max-preview",
-            "providers": {
-              "fake": {
-                "baseUrl": "https://example.test/v1",
-                "apiKey": {
-                  "environment": "{{secretName}}"
-                },
-                "models": {
-                  "qwen3.8-max-preview": {
-                    "tokenizerProfileId": "qwen-o200k",
-                    "tokenizerProfileVersion": "1",
-                    "contextWindowTokens": 983616,
-                    "maxOutputTokens": 131072
-                  },
-                  "glm-5.2": {
-                    "tokenizerProfileId": "glm-5.2",
-                    "tokenizerProfileVersion": "1",
-                    "contextWindowTokens": 1048576,
-                    "maxOutputTokens": 131072
-                  }
-                }
-              }
-            }
+            "defaultModel": "deepseek-v4-flash",
+            "reasoningEffort": "high"
           }
         }
         """;

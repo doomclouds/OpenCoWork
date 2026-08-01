@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "provider": "deepseek",
+  "model": "deepseek-v4-flash",
+  "requestTool": {
+    "type": "custom",
+    "name": "apply_patch"
+  },
+  "outputItem": {
+    "type": "custom_tool_call",
+    "keys": ["call_id", "id", "input", "name", "status", "type"]
+  },
+  "inputDeltaKeys": ["delta", "item_id", "output_index", "sequence_number", "type"],
+  "inputDoneKeys": ["input", "item_id", "output_index", "sequence_number", "type"],
+  "resultInput": {
+    "type": "custom_tool_call_output",
+    "keys": ["call_id", "output", "type"]
+  },
+  "customRequiredToolChoiceAccepted": false,
+  "normalizedShapeSha256": "c2354907bba0cd7358c7d8ddaf3e52d700c7ddbc85f8872a46f579f1a7923ca2"
+}

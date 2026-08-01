@@ -34,6 +34,26 @@ Completions 与千问 Token Plan 路径。首发只支持 `deepseek-v4-flash`；
 - [Error Codes](https://api-docs.deepseek.com/quick_start/error_codes/)
 - [Codex Integration](https://api-docs.deepseek.com/quick_start/agent_integrations/codex/)
 
+### 1.1 实施前真实协议探针（2026-08-01）
+
+用户显式授权后，在 macOS 从安全进程环境读取凭据，对官方
+`https://api.deepseek.com/responses` 和精确模型 `deepseek-v4-flash` 执行了最小
+两轮探针。探针未保存 Prompt、正文、Reasoning、Response/Call ID 或 Secret。
+
+- 请求工具为 `{"type":"custom","name":"apply_patch"}`；对 Custom Tool 发送
+  `tool_choice:"required"` 会得到 400，因此产品不得发送该组合；
+- 调用输出为 `custom_tool_call`，字段为 `call_id`、`id`、`input`、`name`、
+  `status`、`type`；自由格式 Patch 通过
+  `response.custom_tool_call_input.delta/done` 组装；
+- 结果回注 Item 精确为 `custom_tool_call_output`，只需 `call_id`、`output`、
+  `type`；将第一轮完整 Output Items 与该结果按无状态 Input 回注后，第二轮 HTTP 200、
+  `response.completed`，且正常返回 Message、不重复调用 Patch；
+- 规范化线结构 SHA-256 为
+  `c2354907bba0cd7358c7d8ddaf3e52d700c7ddbc85f8872a46f579f1a7923ca2`；脱敏结构见
+  `tests/OpenCoWork.Core.Tests/Fixtures/DeepSeekResponses/apply-patch-wire-shape.json`；
+- 官方仅保证超上下文请求返回 400，未保证稳定错误体。M9 不发送百万 Token 的高成本
+  合成探针，也不实现泛化 400 响应式压缩；继续依赖本地 Token 预算与主动压缩。
+
 当前实现锚点：
 
 - `src/OpenCoWork.Core/Agents/OpenAiCompatibleChatClient.cs`

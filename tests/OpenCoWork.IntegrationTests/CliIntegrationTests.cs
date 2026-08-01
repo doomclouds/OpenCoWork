@@ -411,22 +411,8 @@ public sealed class CliIntegrationTests
             """
             {
               "models": {
-                "defaultProvider": "test",
-                "defaultModel": "qwen3.8-max-preview",
-                "providers": {
-                  "test": {
-                    "baseUrl": "https://example.test/v1",
-                    "apiKey": { "environment": "OPENCOWORK_TEST_API_KEY" },
-                    "models": {
-                      "qwen3.8-max-preview": {
-                        "tokenizerProfileId": "qwen-o200k",
-                        "tokenizerProfileVersion": "1",
-                        "contextWindowTokens": 983616,
-                        "maxOutputTokens": 131072
-                      }
-                    }
-                  }
-                }
+                "defaultModel": "deepseek-v4-flash",
+                "reasoningEffort": "high"
               }
             }
             """,

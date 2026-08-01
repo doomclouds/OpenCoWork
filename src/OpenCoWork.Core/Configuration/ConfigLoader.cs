@@ -869,14 +869,25 @@ public static class ConfigLoader
     private static string JoinPath(string parent, string child) =>
         string.IsNullOrEmpty(parent) ? child : $"{parent}.{child}";
 
-    private static OpenCoWorkDiagnostic Unknown(string path, bool strict) =>
-        new(
+    private static OpenCoWorkDiagnostic Unknown(string path, bool strict)
+    {
+        if (path is "models.defaultProvider" or "models.providers" ||
+            path.StartsWith("models.providers.", StringComparison.Ordinal))
+        {
+            return Error(
+                "OCWCFG010",
+                "旧 Provider 配置已不受支持；仅保留 models.defaultModel 与 models.reasoningEffort。",
+                path);
+        }
+
+        return new OpenCoWorkDiagnostic(
             "OCWCFG004",
             strict
                 ? OpenCoWorkDiagnosticSeverity.Error
                 : OpenCoWorkDiagnosticSeverity.Warning,
             $"未知配置字段 '{path}'。",
             path);
+    }
 
     private static OpenCoWorkDiagnostic Error(string code, string message, string? path) =>
         new(code, OpenCoWorkDiagnosticSeverity.Error, message, path);

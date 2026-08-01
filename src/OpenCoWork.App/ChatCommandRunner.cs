@@ -168,7 +168,7 @@ public static class ChatCommandRunner
     {
         if (requestedThreadId is null)
         {
-            var selectedProvider = providerId ?? models.DefaultProvider;
+            var selectedProvider = providerId ?? ModelsConfig.ProviderId;
             var selectedModel = modelId ?? models.DefaultModel;
             services.ValidateOpenCoWorkAgentModel(
                 selectedProvider,

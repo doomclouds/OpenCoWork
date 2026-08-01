@@ -85,7 +85,6 @@ internal sealed class ProviderSecretLease : IDisposable
 
 internal sealed class ProviderAuthService
 {
-    private readonly ModelsConfig _models;
     private readonly ProviderDeclarationCatalog _declarations;
     private readonly IProviderOsSecretStore _store;
     private readonly SecretRedactor _redactor;
@@ -93,14 +92,12 @@ internal sealed class ProviderAuthService
     private readonly string _workspaceHash;
 
     public ProviderAuthService(
-        ModelsConfig models,
         ProviderDeclarationCatalog declarations,
         IProviderOsSecretStore store,
         SecretRedactor redactor,
         Func<string, string?>? readEnvironmentVariable = null,
         OpenCoWorkPaths? paths = null)
     {
-        _models = models ?? throw new ArgumentNullException(nameof(models));
         _declarations = declarations ??
                         throw new ArgumentNullException(nameof(declarations));
         _store = store ?? throw new ArgumentNullException(nameof(store));
@@ -117,6 +114,14 @@ internal sealed class ProviderAuthService
         if (profileId is null)
         {
             return new ProviderSecretLease(secret: null);
+        }
+
+        if (string.Equals(
+                profileId,
+                ModelsConfig.AuthProfileId,
+                StringComparison.Ordinal))
+        {
+            return AcquireDeepSeek();
         }
 
         var profile = GetProfile(profileId);
@@ -210,19 +215,18 @@ internal sealed class ProviderAuthService
 
     internal ProviderAuthProfile GetProfile(string profileId)
     {
-        if (profileId.StartsWith("core/", StringComparison.Ordinal))
+        if (string.Equals(
+                profileId,
+                ModelsConfig.AuthProfileId,
+                StringComparison.Ordinal))
         {
-            var providerId = profileId["core/".Length..];
-            if (_models.Providers.TryGetValue(providerId, out var provider))
-            {
-                return new ProviderAuthProfile(
-                    profileId,
-                    ProviderAuthKind.ApiKey,
-                    ProviderAuthSourceKind.Environment,
-                    provider.ApiKey.Environment,
-                    ProviderAuthPlacement.Bearer,
-                    Available: true);
-            }
+            return new ProviderAuthProfile(
+                profileId,
+                ProviderAuthKind.ApiKey,
+                ProviderAuthSourceKind.OsSecretStore,
+                ModelsConfig.ApiKeyEnvironmentVariable,
+                ProviderAuthPlacement.Bearer,
+                Available: true);
         }
 
         return _declarations.AuthProfiles.TryGetValue(profileId, out var profile)
@@ -231,6 +235,32 @@ internal sealed class ProviderAuthService
     }
 
     private string Account(string profileId) => $"{_workspaceHash}:{profileId}";
+
+    private ProviderSecretLease AcquireDeepSeek()
+    {
+        string? secret;
+        try
+        {
+            secret = _readEnvironmentVariable(ModelsConfig.ApiKeyEnvironmentVariable);
+            if (string.IsNullOrWhiteSpace(secret) && _store.IsAvailable)
+            {
+                secret = _store.Read(Account(ModelsConfig.AuthProfileId));
+            }
+        }
+        catch (Exception exception) when (
+            exception is Win32Exception or ExternalException or
+                PlatformNotSupportedException)
+        {
+            throw AuthenticationFailed();
+        }
+
+        if (string.IsNullOrWhiteSpace(secret))
+        {
+            throw AuthenticationFailed();
+        }
+
+        return new ProviderSecretLease(secret, _redactor.RegisterSecret(secret));
+    }
 
     private static AgentPreparationException AuthenticationFailed() =>
         new(

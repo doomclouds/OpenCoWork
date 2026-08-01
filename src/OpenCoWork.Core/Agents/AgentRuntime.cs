@@ -57,7 +57,6 @@ public static class OpenCoWorkAgentExtensions
             static _ => ProviderOsSecretStore.Create());
         services.TryAddSingleton(serviceProvider =>
             new ProviderAuthService(
-                serviceProvider.GetRequiredService<ModelsConfig>(),
                 serviceProvider.GetRequiredService<ProviderDeclarationCatalog>(),
                 serviceProvider.GetRequiredService<IProviderOsSecretStore>(),
                 serviceProvider.GetRequiredService<SecretRedactor>(),
@@ -126,7 +125,7 @@ internal sealed class ProviderRegistry
     private readonly object _gate = new();
     private readonly ModelsConfig _models;
     private readonly FrozenProviderCredentials? _legacyCredentials;
-    private readonly ProviderDeclarationCatalog? _declarations;
+    private readonly bool _unsupportedProviderConfiguration;
     private readonly string _bundledTokenizerBaseDirectory;
     private readonly string _customTokenizerBaseDirectory;
     private readonly Dictionary<string, ProviderModelRegistration> _resolved =
@@ -169,7 +168,8 @@ internal sealed class ProviderRegistry
     {
         _models = models ?? throw new ArgumentNullException(nameof(models));
         _legacyCredentials = legacyCredentials;
-        _declarations = declarations;
+        _unsupportedProviderConfiguration =
+            declarations?.HasUnsupportedProviderConfiguration == true;
         ArgumentException.ThrowIfNullOrWhiteSpace(bundledTokenizerBaseDirectory);
         ArgumentException.ThrowIfNullOrWhiteSpace(customTokenizerBaseDirectory);
         _bundledTokenizerBaseDirectory =
@@ -190,18 +190,18 @@ internal sealed class ProviderRegistry
                 return existing;
             }
 
+            if (_unsupportedProviderConfiguration)
+            {
+                throw new AgentPreparationException(
+                    AgentErrorCodes.ContextInputInvalid,
+                    "Legacy workspace Provider configuration is unsupported; remove .opencowork/providers.json.");
+            }
+
             ProviderModelRegistration registration;
             if (_models.Providers.TryGetValue(providerId, out var provider) &&
                 provider.Models.TryGetValue(modelId, out var model))
             {
                 registration = ResolveBuiltIn(providerId, modelId, provider, model);
-            }
-            else if (_declarations?.Providers.TryGetValue(
-                         providerId,
-                         out var external) == true &&
-                     external.Models.TryGetValue(modelId, out var externalModel))
-            {
-                registration = ResolveExternal(external, externalModel);
             }
             else
             {
@@ -217,41 +217,36 @@ internal sealed class ProviderRegistry
 
     internal CapabilityContributionSet CreateCoreContributions()
     {
-        var items = new List<CapabilityContribution>();
-        foreach (var (providerId, provider) in _models.Providers
-                     .OrderBy(pair => pair.Key, StringComparer.Ordinal))
-        {
-            items.Add(new CapabilityContribution(
+        CapabilityContribution[] items =
+        [
+            new(
                 CapabilityKind.AuthProfile,
-                $"core/{providerId}",
-                $"{providerId} authentication",
-                "Built-in provider environment authentication.",
+                ModelsConfig.AuthProfileId,
+                "DeepSeek authentication",
+                "DeepSeek API key from the process environment or workspace-scoped OS secret store.",
                 CapabilityStatus.Ready,
                 [],
                 generation: 1,
-                []));
-            items.Add(new CapabilityContribution(
+                []),
+            new(
                 CapabilityKind.Provider,
-                providerId,
-                providerId,
-                "Built-in OpenAI-compatible provider.",
+                ModelsConfig.ProviderId,
+                "DeepSeek",
+                "Built-in DeepSeek Responses provider.",
                 CapabilityStatus.Ready,
                 [],
                 generation: 1,
-                []));
-            foreach (var modelId in provider.Models.Keys.Order(StringComparer.Ordinal))
-            {
-                items.Add(new CapabilityContribution(
-                    CapabilityKind.Model,
-                    $"{providerId}/{modelId}",
-                    modelId,
-                    "Built-in provider model.",
-                    CapabilityStatus.Ready,
-                    [],
-                    generation: 1,
-                    []));
-            }
-        }
+                []),
+            new(
+                CapabilityKind.Model,
+                $"{ModelsConfig.ProviderId}/{ModelsConfig.FlashModelId}",
+                ModelsConfig.FlashModelId,
+                "DeepSeek V4 Flash.",
+                CapabilityStatus.Ready,
+                [],
+                generation: 1,
+                []),
+        ];
 
         var digest = Convert.ToHexString(
                 SHA256.HashData(Encoding.UTF8.GetBytes(string.Join(
@@ -286,8 +281,14 @@ internal sealed class ProviderRegistry
         return new ProviderModelRegistration(
             providerId,
             modelId,
-            new Uri(provider.BaseUrl.TrimEnd('/') + "/", UriKind.Absolute),
-            $"core/{providerId}",
+            new Uri(
+                string.Equals(providerId, ModelsConfig.ProviderId, StringComparison.Ordinal)
+                    ? ModelsConfig.BaseUrl + "/"
+                    : provider.BaseUrl.TrimEnd('/') + "/",
+                UriKind.Absolute),
+            string.Equals(providerId, ModelsConfig.ProviderId, StringComparison.Ordinal)
+                ? ModelsConfig.AuthProfileId
+                : $"core/{providerId}",
             ProviderAuthPlacement.Bearer,
             model.TokenizerProfileId,
             model.TokenizerProfileVersion,
@@ -301,47 +302,6 @@ internal sealed class ProviderRegistry
             TimeSpan.FromSeconds(120),
             TimeSpan.FromSeconds(120),
             legacyApiKey);
-    }
-
-    private ProviderModelRegistration ResolveExternal(
-        ExternalProvider provider,
-        ExternalProviderModel model)
-    {
-        var tokenizer = TokenizerProfiles.TryGetForModel(model.Id, out var builtIn)
-            ? builtIn!.CreateTokenizer(_bundledTokenizerBaseDirectory)
-            : TokenizerProfiles.CreateCustomTokenizer(
-                model.TokenizerProfileId,
-                Path.GetFullPath(model.TokenizerPath!, _customTokenizerBaseDirectory),
-                model.TokenizerSha256!);
-        var profile = TokenizerProfiles.TryGetForModel(model.Id, out var builtInProfile)
-            ? builtInProfile
-            : null;
-        var placement = provider.AuthProfileId is null
-            ? ProviderAuthPlacement.None
-            : _declarations!.AuthProfiles.TryGetValue(
-                provider.AuthProfileId,
-                out var auth)
-                ? auth.Placement
-                : throw new AgentPreparationException(
-                    AgentErrorCodes.ProviderAuthenticationFailed,
-                    "Provider authentication is unavailable.");
-        return new ProviderModelRegistration(
-            provider.Id,
-            model.Id,
-            provider.BaseUri,
-            provider.AuthProfileId,
-            placement,
-            model.TokenizerProfileId,
-            model.TokenizerProfileVersion,
-            profile?.ChatTemplateId ?? "openai-compatible-chat",
-            profile?.ChatTemplateVersion ?? "1",
-            model.ContextWindowTokens,
-            model.MaxOutputTokens,
-            ConfigurationHash(provider, model),
-            tokenizer,
-            model.SupportsToolCalls,
-            provider.ResponseHeaderTimeout,
-            provider.StreamIdleTimeout);
     }
 
     private static string ConfigurationHash(
@@ -366,27 +326,6 @@ internal sealed class ProviderRegistry
             .ToLowerInvariant();
     }
 
-    private static string ConfigurationHash(
-        ExternalProvider provider,
-        ExternalProviderModel model)
-    {
-        var canonical = string.Join(
-            '\n',
-            provider.Id,
-            model.Id,
-            provider.BaseUri.AbsoluteUri.TrimEnd('/'),
-            provider.AuthProfileId ?? string.Empty,
-            model.TokenizerProfileId,
-            model.TokenizerProfileVersion,
-            model.ContextWindowTokens,
-            model.MaxOutputTokens,
-            model.TokenizerSha256 ?? string.Empty,
-            provider.ResponseHeaderTimeout.Ticks,
-            provider.StreamIdleTimeout.Ticks);
-        return Convert.ToHexString(
-                SHA256.HashData(Encoding.UTF8.GetBytes(canonical)))
-            .ToLowerInvariant();
-    }
 }
 
 internal enum AgentInvocationDraftDisposition

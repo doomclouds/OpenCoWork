@@ -82,6 +82,47 @@ public sealed class AgentFactoryTests
     }
 
     [Fact]
+    public void Provider_catalog_only_exposes_DeepSeek_Flash_with_fixed_endpoint()
+    {
+        var directory = Path.Combine(
+            Path.GetTempPath(),
+            $"opencowork-provider-catalog-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        try
+        {
+            var registry = new ProviderRegistry(
+                new ModelsConfig(),
+                TokenizerBaseDirectory,
+                directory,
+                new ProviderDeclarationCatalog(new OpenCoWorkPaths(directory), _ => null));
+
+            var registration = registry.Resolve("deepseek", "deepseek-v4-flash");
+
+            Assert.Equal(new Uri("https://api.deepseek.com/"), registration.BaseUri);
+            Assert.Equal("auth/deepseek", registration.AuthProfileId);
+            Assert.Equal(1_048_576, registration.ContextWindowTokens);
+            Assert.Equal(393_216, registration.MaxOutputTokens);
+            Assert.Throws<AgentPreparationException>(() =>
+                registry.Resolve("deepseek", "deepseek-v4-pro"));
+            Assert.Throws<AgentPreparationException>(() =>
+                registry.Resolve("token-plan", "qwen3.8-max-preview"));
+            Assert.Equal(
+                [
+                    (CapabilityKind.AuthProfile, "auth/deepseek"),
+                    (CapabilityKind.Provider, "deepseek"),
+                    (CapabilityKind.Model, "deepseek/deepseek-v4-flash"),
+                ],
+                registry.CreateCoreContributions().Items
+                    .Select(item => (item.Kind, item.Id))
+                    .ToArray());
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
     public void Custom_tokenizer_is_local_sha_pinned_and_uses_the_same_tiktoken_engine()
     {
         var directory = Path.Combine(

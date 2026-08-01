@@ -1,3 +1,4 @@
+using OpenCoWork.Abstractions;
 using OpenCoWork.Core.Agents;
 using OpenCoWork.Core.Capabilities;
 using OpenCoWork.Core.Configuration;
@@ -10,77 +11,59 @@ namespace OpenCoWork.Core.Tests;
 public sealed class ProviderAuthTests
 {
     [Fact]
-    public void External_provider_reuses_existing_model_and_tokenizer_runtime()
+    public void DeepSeek_auth_prefers_environment_then_uses_workspace_scoped_secret_store()
     {
-        var (workspace, user) = CreateDirectories();
+        var (workspace, _) = CreateDirectories();
         try
         {
+            const string environmentSecret = "environment-secret-value";
+            const string storedSecret = "stored-secret-value";
+            var environment = new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["DEEPSEEK_API_KEY"] = environmentSecret,
+            };
             var paths = new OpenCoWorkPaths(workspace);
             Directory.CreateDirectory(paths.OpenCoWorkDirectory);
-            File.WriteAllText(
-                Path.Combine(paths.OpenCoWorkDirectory, "auth.json"),
-                """
-                {
-                  "schemaVersion": 1,
-                  "profiles": [{
-                    "id": "auth/acme",
-                    "kind": "apiKey",
-                    "source": { "kind": "environment", "name": "ACME_API_KEY" },
-                    "placement": { "kind": "header", "name": "X-Api-Key" }
-                  }]
-                }
-                """);
-            File.WriteAllText(
-                Path.Combine(paths.OpenCoWorkDirectory, "providers.json"),
-                """
-                {
-                  "schemaVersion": 1,
-                  "providers": [{
-                    "id": "workspace/acme",
-                    "protocol": "openaiCompatible",
-                    "baseUrl": "https://api.example.test/v1",
-                    "authProfileId": "auth/acme",
-                    "timeouts": {
-                      "responseHeaderMs": 30000,
-                      "streamIdleMs": 60000
-                    },
-                    "models": [{
-                      "id": "qwen3.8-max-preview",
-                      "capabilities": ["streaming", "toolCalls", "usage"],
-                      "tokenizerProfileId": "qwen-o200k",
-                      "tokenizerProfileVersion": "1",
-                      "contextWindowTokens": 983616,
-                      "maxOutputTokens": 131072,
-                      "tokenizerPath": null,
-                      "tokenizerSha256": null
-                    }]
-                  }]
-                }
-                """);
-            var declarations = new ProviderDeclarationCatalog(
-                paths,
-                name => name == "ACME_API_KEY" ? "secret" : null);
-            var registry = new ProviderRegistry(
-                new ModelsConfig(),
-                AppContext.BaseDirectory,
-                workspace,
-                declarations);
+            var store = new InMemoryOsSecretStore();
+            var redactor = new SecretRedactor([]);
+            var auth = new ProviderAuthService(
+                new ProviderDeclarationCatalog(paths, _ => null),
+                store,
+                redactor,
+                name => environment.GetValueOrDefault(name),
+                paths);
+            auth.Set("auth/deepseek", storedSecret);
 
-            var provider = registry.Resolve(
-                "workspace/acme",
-                "qwen3.8-max-preview");
+            using (var lease = auth.Acquire("auth/deepseek"))
+            {
+                Assert.Equal(environmentSecret, lease.Secret);
+                Assert.DoesNotContain(
+                    environmentSecret,
+                    redactor.RedactText(environmentSecret),
+                    StringComparison.Ordinal);
+            }
 
-            Assert.Equal("auth/acme", provider.AuthProfileId);
-            Assert.Equal(ProviderAuthPlacementKind.Header, provider.AuthPlacement.Kind);
-            Assert.Equal("X-Api-Key", provider.AuthPlacement.HeaderName);
-            Assert.True(provider.SupportsToolCalls);
-            Assert.Equal(TimeSpan.FromSeconds(30), provider.ResponseHeaderTimeout);
-            Assert.Equal(TimeSpan.FromSeconds(60), provider.StreamIdleTimeout);
-            Assert.Contains(
-                declarations.Contributions.SelectMany(set => set.Items),
-                item => item.Kind == OpenCoWork.Abstractions.CapabilityKind.Provider &&
-                        item.Id == "workspace/acme" &&
-                        item.Status == OpenCoWork.Abstractions.CapabilityStatus.Ready);
+            environment.Clear();
+            using (var lease = auth.Acquire("auth/deepseek"))
+            {
+                Assert.Equal(storedSecret, lease.Secret);
+            }
+
+            var otherWorkspace = Path.Combine(Path.GetDirectoryName(workspace)!, "other");
+            Directory.CreateDirectory(otherWorkspace);
+            var otherPaths = new OpenCoWorkPaths(otherWorkspace);
+            var isolated = new ProviderAuthService(
+                new ProviderDeclarationCatalog(otherPaths, _ => null),
+                store,
+                new SecretRedactor([]),
+                _ => null,
+                otherPaths);
+            Assert.Throws<AgentPreparationException>(
+                () => isolated.Acquire("auth/deepseek"));
+
+            auth.Clear("auth/deepseek");
+            Assert.Throws<AgentPreparationException>(
+                () => auth.Acquire("auth/deepseek"));
         }
         finally
         {
@@ -89,7 +72,7 @@ public sealed class ProviderAuthTests
     }
 
     [Fact]
-    public void Secret_is_resolved_for_each_lease_and_registered_only_while_active()
+    public void Workspace_auth_profiles_remain_available_for_non_provider_capabilities()
     {
         var (workspace, _) = CreateDirectories();
         try
@@ -118,7 +101,6 @@ public sealed class ProviderAuthTests
                 paths,
                 name => environment.GetValueOrDefault(name));
             var auth = new ProviderAuthService(
-                new ModelsConfig(),
                 declarations,
                 new InMemoryOsSecretStore(),
                 redactor,
@@ -147,7 +129,7 @@ public sealed class ProviderAuthTests
     }
 
     [Fact]
-    public void Invalid_model_is_isolated_without_hiding_valid_sibling()
+    public void Legacy_workspace_provider_file_is_rejected_before_model_resolution()
     {
         var (workspace, _) = CreateDirectories();
         try
@@ -168,40 +150,28 @@ public sealed class ProviderAuthTests
                       "responseHeaderMs": 30000,
                       "streamIdleMs": 60000
                     },
-                    "models": [
-                      {
-                        "id": "qwen3.8-max-preview",
-                        "capabilities": ["streaming", "usage"],
-                        "tokenizerProfileId": "qwen-o200k",
-                        "tokenizerProfileVersion": "1",
-                        "contextWindowTokens": 983616,
-                        "maxOutputTokens": 131072,
-                        "tokenizerPath": null,
-                        "tokenizerSha256": null
-                      },
-                      {
-                        "id": "broken",
-                        "capabilities": ["magic"],
-                        "tokenizerProfileId": "broken",
-                        "tokenizerProfileVersion": "1",
-                        "contextWindowTokens": 0,
-                        "maxOutputTokens": 1,
-                        "tokenizerPath": null,
-                        "tokenizerSha256": null
-                      }
-                    ]
+                    "models": []
                   }]
                 }
                 """);
 
             var declarations = new ProviderDeclarationCatalog(paths, _ => null);
+            var registry = new ProviderRegistry(
+                new ModelsConfig(),
+                AppContext.BaseDirectory,
+                workspace,
+                declarations);
 
-            Assert.Single(declarations.Providers["workspace/acme"].Models);
             Assert.Contains(
                 declarations.Contributions.SelectMany(set => set.Items),
-                item => item.Kind == OpenCoWork.Abstractions.CapabilityKind.Model &&
-                        item.Id.EndsWith("/broken", StringComparison.Ordinal) &&
-                        item.Status == OpenCoWork.Abstractions.CapabilityStatus.Faulted);
+                item => item.Kind == OpenCoWork.Abstractions.CapabilityKind.Provider &&
+                        item.Status == OpenCoWork.Abstractions.CapabilityStatus.Faulted &&
+                        item.DiagnosticCodes.Contains(
+                            "provider.legacyConfigurationUnsupported",
+                            StringComparer.Ordinal));
+            var error = Assert.Throws<AgentPreparationException>(() =>
+                registry.Resolve("deepseek", "deepseek-v4-flash"));
+            Assert.Equal(AgentErrorCodes.ContextInputInvalid, error.Code);
         }
         finally
         {

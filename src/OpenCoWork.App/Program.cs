@@ -651,7 +651,7 @@ namespace OpenCoWork.App
                             await OpenCoWorkProtocolServer.RunAcpStdioAsync(
                                 sessions,
                                 paths.WorkspaceRoot,
-                                models.DefaultProvider,
+                                ModelsConfig.ProviderId,
                                 models.DefaultModel,
                                 protocolInput,
                                 protocolOutput,
@@ -662,7 +662,7 @@ namespace OpenCoWork.App
                             await OpenCoWorkProtocolServer.RunAcpJsonLinesAsync(
                                 sessions,
                                 paths.WorkspaceRoot,
-                                models.DefaultProvider,
+                                ModelsConfig.ProviderId,
                                 models.DefaultModel,
                                 input,
                                 output,

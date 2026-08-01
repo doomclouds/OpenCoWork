@@ -217,7 +217,6 @@ public sealed class LspCapabilityIntegrationTests
         var files = new CapabilityFileStore(
             new CapabilityPersistencePaths(paths, user));
         var auth = new ProviderAuthService(
-            new ModelsConfig(),
             new ProviderDeclarationCatalog(paths),
             new InMemoryOsSecretStore(),
             new SecretRedactor([]),

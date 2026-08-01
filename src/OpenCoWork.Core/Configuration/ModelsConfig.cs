@@ -8,55 +8,84 @@ namespace OpenCoWork.Core.Configuration;
 [ConfigSection("models")]
 public sealed record ModelsConfig : IValidatableObject
 {
-    [Required]
-    public string DefaultProvider { get; init; } = string.Empty;
+    public const string ProviderId = "deepseek";
+    public const string FlashModelId = "deepseek-v4-flash";
+    public const string AuthProfileId = "auth/deepseek";
+    public const string ApiKeyEnvironmentVariable = "DEEPSEEK_API_KEY";
+    public const string BaseUrl = "https://api.deepseek.com";
 
     [Required]
-    public string DefaultModel { get; init; } = string.Empty;
+    [RegularExpression("^deepseek-v4-flash$")]
+    public string DefaultModel { get; init; } = FlashModelId;
 
     [Required]
-    public Dictionary<string, ProviderConfig> Providers { get; init; } =
-        new(StringComparer.Ordinal);
+    [RegularExpression("^(low|high|max)$")]
+    public string ReasoningEffort { get; init; } = "high";
+
+    internal string DefaultProvider { get; init; } = ProviderId;
+
+    internal Dictionary<string, ProviderConfig> Providers { get; init; } =
+        BuiltInProviders();
 
     public IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
     {
-        if (!Providers.TryGetValue(DefaultProvider, out var provider))
+        if (!string.Equals(DefaultModel, FlashModelId, StringComparison.Ordinal))
         {
             yield return Invalid(
-                "Default provider must reference an exact configured provider ID.",
-                nameof(DefaultProvider));
-        }
-        else if (!provider.Models.ContainsKey(DefaultModel))
-        {
-            yield return Invalid(
-                "Default model must reference an exact model ID on the default provider.",
+                $"Default model must be '{FlashModelId}'.",
                 nameof(DefaultModel));
         }
 
-        foreach (var (providerId, candidate) in Providers.OrderBy(
-                     pair => pair.Key,
-                     StringComparer.Ordinal))
+        if (ReasoningEffort is not ("low" or "high" or "max"))
         {
-            if (string.IsNullOrWhiteSpace(providerId) ||
-                !string.Equals(providerId, providerId.Trim(), StringComparison.Ordinal))
-            {
-                yield return Invalid(
-                    "Provider IDs must be non-empty and must not contain outer whitespace.",
-                    $"Providers.{providerId}");
-            }
-
-            foreach (var failure in candidate.Validate(providerId))
-            {
-                yield return failure;
-            }
+            yield return Invalid(
+                "Reasoning effort must be 'low', 'high', or 'max'.",
+                nameof(ReasoningEffort));
         }
+
+        if (!string.Equals(DefaultProvider, ProviderId, StringComparison.Ordinal) ||
+            !Providers.TryGetValue(ProviderId, out var provider) ||
+            Providers.Count != 1 ||
+            !provider.Models.ContainsKey(FlashModelId) ||
+            provider.Models.Count != 1)
+        {
+            yield return Invalid(
+                "Only the built-in DeepSeek Flash provider is supported.",
+                nameof(DefaultModel));
+        }
+    }
+
+    private static Dictionary<string, ProviderConfig> BuiltInProviders()
+    {
+        var profile = TokenizerProfiles.GetRequiredForModel(FlashModelId);
+        return new Dictionary<string, ProviderConfig>(StringComparer.Ordinal)
+        {
+            [ProviderId] = new()
+            {
+                BaseUrl = BaseUrl,
+                ApiKey = new ProviderApiKeyConfig
+                {
+                    Environment = ApiKeyEnvironmentVariable,
+                },
+                Models = new Dictionary<string, ModelConfig>(StringComparer.Ordinal)
+                {
+                    [FlashModelId] = new()
+                    {
+                        TokenizerProfileId = profile.Id,
+                        TokenizerProfileVersion = profile.Version,
+                        ContextWindowTokens = profile.ContextWindowTokens,
+                        MaxOutputTokens = profile.MaxOutputTokens,
+                    },
+                },
+            },
+        };
     }
 
     private static ValidationResult Invalid(string message, string member) =>
         new(message, [member]);
 }
 
-public sealed record ProviderConfig
+internal sealed record ProviderConfig
 {
     [Required]
     public string BaseUrl { get; init; } = string.Empty;
@@ -111,14 +140,14 @@ public sealed record ProviderConfig
     }
 }
 
-public sealed record ProviderApiKeyConfig
+internal sealed record ProviderApiKeyConfig
 {
     [Required]
     [RegularExpression("^[A-Za-z_][A-Za-z0-9_]*$")]
     public string Environment { get; init; } = string.Empty;
 }
 
-public sealed record ModelConfig
+internal sealed record ModelConfig
 {
     [Required]
     public string TokenizerProfileId { get; init; } = string.Empty;

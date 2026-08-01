@@ -1,6 +1,6 @@
 # OpenCoWork M9 DeepSeek Responses Provider 实施计划
 
-**Status:** Planned；实施前真实协议探针 Gate 尚未执行，M9 仍为 Not Started。
+**Status:** In Progress；Gate 0 与 Outcome 1 已完成，下一步为 Outcome 2。
 
 **Goal:** 用 DeepSeek 官方 Responses API 的专用最小实现替换现有通用
 OpenAI-compatible Chat Completions 与千问 Token Plan 路径；首发只支持
@@ -39,8 +39,7 @@ Provider 证据：
 
 ## 当前实现基线
 
-- `dev` 当前 Git 基线为 `56351ce`；M9 Design 与 Acceptance Catalog 调整尚未形成
-  实施基线提交；
+- `dev` 的 M9 Design/Plan 实施基线为 `17afb9b`；
 - 当前产品仍由 `OpenAiCompatibleChatClient` 发送 `chat/completions`，以
   `ChatCompletionMessage`、独立 Usage Event 和 `[DONE]` 表达 Provider 传输；
 - `ModelsConfig` 仍允许 `defaultProvider`、自定义 Provider/Base URL/API Key、

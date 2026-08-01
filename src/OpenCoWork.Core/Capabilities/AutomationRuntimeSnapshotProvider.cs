@@ -59,7 +59,6 @@ internal sealed class AutomationRuntimeSnapshotProvider(
         var catalog = capabilities.CurrentCatalog;
         if (catalog.RuntimeState is not (
                 CapabilityRuntimeState.Ready or CapabilityRuntimeState.Degraded) ||
-            string.IsNullOrWhiteSpace(models.DefaultProvider) ||
             string.IsNullOrWhiteSpace(models.DefaultModel))
         {
             return Failure(
@@ -168,7 +167,7 @@ internal sealed class AutomationRuntimeSnapshotProvider(
         return new AutomationRuntimeCaptureResult(
             new AutomationRuntimeSnapshot(
                 trust,
-                models.DefaultProvider,
+                ModelsConfig.ProviderId,
                 models.DefaultModel,
                 permission,
                 snapshots),

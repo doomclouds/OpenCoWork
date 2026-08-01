@@ -238,7 +238,6 @@ public sealed class McpCapabilityIntegrationTests
         var tools = new ToolRuntime(paths);
         var declarations = new ProviderDeclarationCatalog(paths);
         var auth = new ProviderAuthService(
-            new ModelsConfig(),
             declarations,
             new InMemoryOsSecretStore(),
             new SecretRedactor([]),

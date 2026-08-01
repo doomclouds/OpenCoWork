@@ -9,8 +9,8 @@ Milestone standard: [README.md](README.md)
 - Status: In Progress
 - Progress: 7/12
 - Done: 7
-- In progress: 2
-- Not started: 3
+- In progress: 3
+- Not started: 2
 - Deferred: 0
 - Split: 0
 
@@ -71,7 +71,7 @@ Milestone standard: [README.md](README.md)
   - Related archive: None yet.
   - Completion signal: Outcome 1-9 与 Outcome 10 自动化、双 RID 交叉发布、osx-arm64 真机验收已通过；M8-ACC-001..002、004..007、009 为 Passed，003、008 与完整 M8 等待 win-x64 真机。
 - [ ] 10. M9 - DeepSeek Responses Provider
-  - Status: Not Started
+  - Status: In Progress
   - Related spec: docs/superpowers/specs/2026-08-01-open-cowork-m9-deepseek-responses-provider-design.md (Design Freeze; 2026-08-01 用户确认)
   - Related plan: docs/superpowers/plans/2026-08-01-open-cowork-m9-deepseek-responses-provider-implementation-plan.md (Planned; real protocol probe Gate pending)
   - Related archive: None yet.

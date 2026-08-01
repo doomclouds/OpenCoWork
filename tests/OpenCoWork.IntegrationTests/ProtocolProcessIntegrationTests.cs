@@ -15,22 +15,8 @@ public sealed class ProtocolProcessIntegrationTests
             "enabled": true
           },
           "models": {
-            "defaultProvider": "test",
-            "defaultModel": "qwen3.8-max-preview",
-            "providers": {
-              "test": {
-                "baseUrl": "https://example.test/v1",
-                "apiKey": { "environment": "OPENCOWORK_TEST_API_KEY" },
-                "models": {
-                  "qwen3.8-max-preview": {
-                    "tokenizerProfileId": "qwen-o200k",
-                    "tokenizerProfileVersion": "1",
-                    "contextWindowTokens": 983616,
-                    "maxOutputTokens": 131072
-                  }
-                }
-              }
-            }
+            "defaultModel": "deepseek-v4-flash",
+            "reasoningEffort": "high"
           }
         }
         """;
@@ -171,8 +157,8 @@ public sealed class ProtocolProcessIntegrationTests
                 name = "M7 Process Profile",
                 description = "Wire 1.2 process test.",
                 instructions = "Return concise results.",
-                providerId = "test",
-                modelId = "qwen3.8-max-preview",
+                providerId = "deepseek",
+                modelId = "deepseek-v4-flash",
                 skillAllowlist = Array.Empty<string>(),
                 toolAllowlist = Array.Empty<string>(),
             };

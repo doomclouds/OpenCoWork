@@ -13,7 +13,7 @@ public sealed class ConfigurationPipelineTests
         typeof(ModelsConfig),
         static () => new ModelsConfig(),
         """
-        {"type":"object","additionalProperties":true}
+        {"type":"object","properties":{"defaultModel":{"type":"string"},"reasoningEffort":{"type":"string"}},"required":["defaultModel","reasoningEffort"],"additionalProperties":false}
         """);
 
     private static readonly ConfigSectionDescriptor[] Descriptors =
@@ -258,30 +258,23 @@ public sealed class ConfigurationPipelineTests
     }
 
     [Fact]
-    public void Models_configuration_uses_exact_named_ids_and_rejects_unsafe_endpoints()
+    public void Models_configuration_only_accepts_DeepSeek_Flash_and_reasoning_effort()
     {
+        var defaults = ConfigLoader.Load(new ConfigLoadRequest([ModelsDescriptor]));
+
+        Assert.True(defaults.Validation.IsValid);
+        var defaultModels = defaults.Snapshot!.GetRequiredSection<ModelsConfig>();
+        Assert.Equal("deepseek-v4-flash", defaultModels.DefaultModel);
+        Assert.Equal("high", defaultModels.ReasoningEffort);
+
         using var files = new TempDirectory();
         var valid = files.Write(
             "models.jsonc",
             """
             {
               "models": {
-                "defaultProvider": "token-plan",
-                "defaultModel": "qwen3.8-max-preview",
-                "providers": {
-                  "token-plan": {
-                    "baseUrl": "https://token-plan.example/compatible-mode/v1",
-                    "apiKey": { "environment": "QWEN_TOKEN_PLAN_API_KEY" },
-                    "models": {
-                      "qwen3.8-max-preview": {
-                        "tokenizerProfileId": "qwen-o200k",
-                        "tokenizerProfileVersion": "1",
-                        "contextWindowTokens": 983616,
-                        "maxOutputTokens": 131072
-                      }
-                    }
-                  }
-                }
+                "defaultModel": "deepseek-v4-flash",
+                "reasoningEffort": "max"
               }
             }
             """);
@@ -298,16 +291,12 @@ public sealed class ConfigurationPipelineTests
                 loaded.Validation.Diagnostics.Select(item =>
                     $"{item.Code}:{item.Path}:{item.Message}")));
         var models = loaded.Snapshot!.GetRequiredSection<ModelsConfig>();
-        Assert.Equal(
-            "qwen3.8-max-preview",
-            models.Providers["token-plan"].Models.Keys.Single());
+        Assert.Equal("deepseek-v4-flash", models.DefaultModel);
+        Assert.Equal("max", models.ReasoningEffort);
 
         var invalid = files.Write(
-            "unsafe.jsonc",
-            File.ReadAllText(valid).Replace(
-                "https://token-plan.example/compatible-mode/v1",
-                "http://token-plan.example/compatible-mode/v1",
-                StringComparison.Ordinal));
+            "invalid-effort.jsonc",
+            """{"models":{"reasoningEffort":"medium"}}""");
         var rejected = ConfigLoader.Load(new ConfigLoadRequest([ModelsDescriptor])
         {
             WorkspaceConfigPath = invalid,
@@ -315,74 +304,53 @@ public sealed class ConfigurationPipelineTests
         Assert.False(rejected.Validation.IsValid);
         Assert.Contains(
             rejected.Validation.Diagnostics,
-            item => item.Message.Contains("HTTPS", StringComparison.Ordinal));
+            item => item.Path == "models" &&
+                    item.Message.Contains("reasoning", StringComparison.OrdinalIgnoreCase));
 
-        var drifted = files.Write(
-            "drifted.jsonc",
-            File.ReadAllText(valid).Replace(
-                "\"contextWindowTokens\": 983616",
-                "\"contextWindowTokens\": 983615",
-                StringComparison.Ordinal));
-        var driftRejected = ConfigLoader.Load(new ConfigLoadRequest([ModelsDescriptor])
+        var unsupported = files.Write(
+            "unsupported-model.jsonc",
+            """{"models":{"defaultModel":"deepseek-v4-pro"}}""");
+        var unsupportedResult = ConfigLoader.Load(new ConfigLoadRequest([ModelsDescriptor])
         {
-            WorkspaceConfigPath = drifted,
+            WorkspaceConfigPath = unsupported,
         });
-        Assert.False(driftRejected.Validation.IsValid);
+        Assert.False(unsupportedResult.Validation.IsValid);
         Assert.Contains(
-            driftRejected.Validation.Diagnostics,
-            item => item.Message.Contains(
-                "Tokenizer Profile",
-                StringComparison.Ordinal));
+            unsupportedResult.Validation.Diagnostics,
+            item => item.Path == "models" &&
+                    item.Message.Contains("deepseek-v4-flash", StringComparison.Ordinal));
     }
 
     [Fact]
-    public void Provider_credentials_are_captured_once_and_only_selected_missing_secret_fails()
+    public void Legacy_provider_configuration_is_a_migration_error_even_without_strict_mode()
     {
-        const string frozenSecret = "provider-secret-6548d2";
-        var environment = new Dictionary<string, string>(StringComparer.Ordinal)
-        {
-            ["TOKEN_PLAN_KEY"] = frozenSecret,
-        };
-        var models = new ModelsConfig
-        {
-            DefaultProvider = "token-plan",
-            DefaultModel = "qwen3.8-max-preview",
-            Providers = new Dictionary<string, ProviderConfig>(StringComparer.Ordinal)
+        using var files = new TempDirectory();
+        var legacy = files.Write(
+            "legacy-models.jsonc",
+            """
             {
-                ["token-plan"] = Provider("TOKEN_PLAN_KEY"),
-                ["deepseek"] = Provider("DEEPSEEK_KEY"),
-            },
-        };
+              "models": {
+                "defaultProvider": "token-plan",
+                "providers": { "token-plan": { "baseUrl": "https://example.test" } }
+              }
+            }
+            """);
 
-        var credentials = FrozenProviderCredentials.Capture(
-            models,
-            name => environment.GetValueOrDefault(name));
-        environment["TOKEN_PLAN_KEY"] = "rotated-secret";
+        var loaded = ConfigLoader.Load(new ConfigLoadRequest([ModelsDescriptor])
+        {
+            WorkspaceConfigPath = legacy,
+            Strict = false,
+        });
 
-        Assert.Equal(frozenSecret, credentials.GetRequired("token-plan"));
-        Assert.Throws<InvalidOperationException>(
-            () => credentials.GetRequired("deepseek"));
+        Assert.False(loaded.Validation.IsValid);
+        Assert.Null(loaded.Snapshot);
+        var diagnostics = loaded.Validation.Diagnostics.Where(item =>
+            item.Path is "models.defaultProvider" or "models.providers").ToArray();
+        Assert.Equal(2, diagnostics.Length);
+        Assert.All(
+            diagnostics,
+            item => Assert.Equal("OCWCFG010", item.Code));
     }
-
-    private static ProviderConfig Provider(string environmentVariable) =>
-        new()
-        {
-            BaseUrl = "https://example.test/v1",
-            ApiKey = new ProviderApiKeyConfig
-            {
-                Environment = environmentVariable,
-            },
-            Models = new Dictionary<string, ModelConfig>(StringComparer.Ordinal)
-            {
-                ["qwen3.8-max-preview"] = new()
-                {
-                    TokenizerProfileId = "qwen-o200k",
-                    TokenizerProfileVersion = "1",
-                    ContextWindowTokens = 983_616,
-                    MaxOutputTokens = 131_072,
-                },
-            },
-        };
 
     [Fact]
     public void Load_applies_frozen_priority_and_tracks_the_winning_source()

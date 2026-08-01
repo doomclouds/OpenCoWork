@@ -31,11 +31,7 @@ public sealed class AutomationRuntimeSnapshotTests
             var catalog = new WorkspaceCapabilityRuntime(
                 [WorkspaceCapabilityRuntime.CreateCoreContributions(tools)]);
             await catalog.StartAsync(TestContext.Current.CancellationToken);
-            var models = new ModelsConfig
-            {
-                DefaultProvider = "provider-a",
-                DefaultModel = "model-a",
-            };
+            var models = new ModelsConfig();
             var toolConfig = new ToolsConfig
             {
                 Effects = new ToolEffectPoliciesConfig
@@ -95,8 +91,8 @@ public sealed class AutomationRuntimeSnapshotTests
                 TestContext.Current.CancellationToken);
 
             Assert.True(captured.IsSuccess, captured.Error?.Code);
-            Assert.Equal("provider-a", captured.Value!.ProviderId);
-            Assert.Equal("model-a", captured.Value.ModelId);
+            Assert.Equal("deepseek", captured.Value!.ProviderId);
+            Assert.Equal("deepseek-v4-flash", captured.Value.ModelId);
             Assert.Contains(
                 read.Definition.Id.SourceToolId,
                 captured.Value.Permissions.Tools);
