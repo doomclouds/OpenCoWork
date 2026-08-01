@@ -363,7 +363,25 @@ public sealed partial class CoWorkService
                 foreach (var missionId in awaitingMissionIds)
                 {
                     var mission = await LoadMissionAsync(connection, missionId, token);
-                    if (mission?.LeaderThreadId is null ||
+                    if (mission?.LeaderThreadId is null)
+                    {
+                        continue;
+                    }
+
+                    var leader = mission.Members.Single(member =>
+                        member.Role == CoWorkMemberRole.Leader);
+                    if (await ScalarAsync<long>(
+                            connection,
+                            transaction,
+                            """
+                            SELECT count(*) FROM agent_runs
+                            WHERE mission_id = $missionId
+                              AND member_id = $memberId
+                              AND status IN ('pending', 'starting', 'running');
+                            """,
+                            token,
+                            ("$missionId", missionId),
+                            ("$memberId", leader.MemberId)) != 0 ||
                         await ScalarAsync<long>(
                             connection,
                             transaction,
@@ -401,8 +419,6 @@ public sealed partial class CoWorkService
                         continue;
                     }
 
-                    var leader = mission.Members.Single(member =>
-                        member.Role == CoWorkMemberRole.Leader);
                     var runId = Guid.CreateVersion7(_timeProvider.GetUtcNow());
                     var workspace = new ExecutionWorkspaceDescriptor(
                         CoWorkWorkspaceMode.Project,

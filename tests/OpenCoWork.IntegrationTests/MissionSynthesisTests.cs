@@ -7,6 +7,82 @@ namespace OpenCoWork.IntegrationTests;
 public sealed class MissionSynthesisTests
 {
     [Fact]
+    public async Task Synthesis_waits_for_the_active_leader_run()
+    {
+        var executor = new GatedMissionExecutor();
+        await using var workspace = await CoWorkTestWorkspace.CreateAsync(executor: executor);
+        var token = TestContext.Current.CancellationToken;
+        var setup = await MissionTestData.CreateAsync(
+            workspace,
+            CoWorkWorkspaceMode.Project,
+            20_000,
+            ("leader", CoWorkMemberRole.Leader, Array.Empty<string>()),
+            ("worker", CoWorkMemberRole.Member, Array.Empty<string>()));
+        var task = await MissionTestData.AddTaskAsync(
+            workspace,
+            setup.Mission,
+            "done",
+            setup.Members["worker"].MemberId,
+            required: true,
+            requiresReview: false,
+            dependsOn: [],
+            token);
+        await workspace.Store.WriteAsync(
+            async (connection, transaction, cancellationToken) =>
+            {
+                await using var command = connection.CreateCommand();
+                command.Transaction = transaction;
+                command.CommandText =
+                    """
+                    UPDATE mission_tasks
+                    SET status = 'completed',
+                        completed_utc = $now,
+                        updated_utc = $now
+                    WHERE mission_task_id = $taskId;
+                    """;
+                var now = command.CreateParameter();
+                now.ParameterName = "$now";
+                now.Value = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                command.Parameters.Add(now);
+                var taskId = command.CreateParameter();
+                taskId.ParameterName = "$taskId";
+                taskId.Value = task.TaskId.ToString("D");
+                command.Parameters.Add(taskId);
+                return await command.ExecuteNonQueryAsync(cancellationToken);
+            },
+            token);
+        var mission = await MissionTestData.GetMissionAsync(
+            workspace,
+            setup.Mission.MissionId,
+            token);
+        _ = await workspace.Service.ActivateMissionAsync(
+            new MissionCommandRequest(
+                MissionTestData.Command(mission.Revision),
+                mission.MissionId),
+            token);
+
+        await workspace.Service.ReconcilePendingAsync(token);
+
+        Assert.Equal(
+            0,
+            await MissionTestData.CountAsync(
+                workspace.Store,
+                """
+                SELECT count(*) FROM agent_runs
+                WHERE mission_id = $id AND run_kind = 'leaderSynthesis';
+                """,
+                token,
+                ("$id", mission.MissionId)));
+
+        executor.Release();
+        _ = await MissionTestData.ReconcileUntilAsync(
+            workspace,
+            mission.MissionId,
+            candidate => candidate.Status == CoWorkMissionStatus.Completed,
+            token);
+    }
+
+    [Fact]
     public async Task Required_completion_and_optional_failure_synthesize_once_from_bounded_input()
     {
         var executor = new MissionCompletionExecutor("optional");
