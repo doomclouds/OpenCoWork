@@ -227,7 +227,8 @@ public sealed record AutomationRunSnapshot(
     string ModelId,
     AutomationPermissionSnapshot Permissions,
     IReadOnlyList<AutomationCapabilitySnapshot> Capabilities,
-    Guid? AttentionId = null);
+    Guid? AttentionId = null,
+    Guid? CorrelationId = null);
 
 public sealed record AutomationWorkspaceTrustSnapshot(
     bool IsTrusted,
@@ -315,7 +316,8 @@ public sealed record StartAutomationRunRequest(
     string AutomationId,
     JsonElement Inputs,
     Guid CommandId,
-    long ExpectedRevision);
+    long ExpectedRevision,
+    Guid? CorrelationId = null);
 
 public sealed record ListAutomationRunsRequest(
     AutomationActorContext Actor,

@@ -1148,6 +1148,12 @@ internal sealed class AgentRuntimeExecutor : ISessionExecutor
     {
         ArgumentNullException.ThrowIfNull(context);
         ArgumentNullException.ThrowIfNull(sink);
+        using var turnActivity = OpenCoWorkTelemetry.StartActivity(
+            OpenCoWorkTelemetry.SessionTurn,
+            System.Diagnostics.ActivityKind.Internal,
+            context.Turn.CorrelationId,
+            context.Thread.ThreadId,
+            context.Turn.TurnId);
         ToolLoopCheckpoint? resumeCheckpoint;
         try
         {
@@ -1368,7 +1374,8 @@ internal sealed class AgentRuntimeExecutor : ISessionExecutor
                             ProviderInvocationPurpose.Response);
                         await foreach (var item in Stream(
                                            draft.Provider,
-                                           providerSecretLease)(request, invocationToken)
+                                           providerSecretLease,
+                                           context)(request, invocationToken)
                                            .WithCancellation(invocationToken))
                         {
                             switch (item)
@@ -1651,7 +1658,8 @@ internal sealed class AgentRuntimeExecutor : ISessionExecutor
                                         ExecutionWorkspace:
                                         context.Thread.ExecutionWorkspace,
                                         CoWorkProvenance:
-                                        context.Thread.CoWorkProvenance),
+                                        context.Thread.CoWorkProvenance,
+                                        CorrelationId: context.Turn.CorrelationId),
                                     sink,
                                     invocationToken);
                                 ActivateDeferredTools(
@@ -1737,6 +1745,7 @@ internal sealed class AgentRuntimeExecutor : ISessionExecutor
                                 cancellationToken);
                         }
 
+                        turnActivity?.SetStatus(System.Diagnostics.ActivityStatusCode.Ok);
                         await sink.EmitAsync(
                             new CompleteTurnIntent(),
                             cancellationToken);
@@ -2031,7 +2040,8 @@ internal sealed class AgentRuntimeExecutor : ISessionExecutor
                     ExecutionWorkspace:
                     session.Thread.ExecutionWorkspace,
                     CoWorkProvenance:
-                    session.Thread.CoWorkProvenance),
+                    session.Thread.CoWorkProvenance,
+                    CorrelationId: session.Turn.CorrelationId),
                 sink,
                 cancellationToken);
             ActivateDeferredTools(
@@ -2433,7 +2443,7 @@ internal sealed class AgentRuntimeExecutor : ISessionExecutor
                     draft.Snapshot.InvocationId,
                     attempt,
                     ProviderInvocationPurpose.Compaction);
-                await foreach (var item in Stream(draft.Provider, providerSecret)(
+                await foreach (var item in Stream(draft.Provider, providerSecret, session)(
                                    request,
                                    invocationToken)
                                    .WithCancellation(invocationToken))
@@ -2552,8 +2562,69 @@ internal sealed class AgentRuntimeExecutor : ISessionExecutor
 
     private DeepSeekResponseStream Stream(
         ProviderModelRegistration provider,
-        SecretLease secret) =>
-        _clients(provider, secret.Secret!);
+        SecretLease secret,
+        AgentSession session) =>
+        (request, cancellationToken) => TraceProviderAsync(
+            provider,
+            secret,
+            session,
+            request,
+            cancellationToken);
+
+    private async IAsyncEnumerable<DeepSeekResponseEvent> TraceProviderAsync(
+        ProviderModelRegistration provider,
+        SecretLease secret,
+        AgentSession session,
+        DeepSeekResponsesRequest request,
+        [System.Runtime.CompilerServices.EnumeratorCancellation]
+        CancellationToken cancellationToken)
+    {
+        using var activity = OpenCoWorkTelemetry.StartActivity(
+            OpenCoWorkTelemetry.ProviderResponses,
+            System.Diagnostics.ActivityKind.Client,
+            session.Turn.CorrelationId,
+            session.Thread.ThreadId,
+            session.Turn.TurnId);
+        activity?.SetTag(OpenCoWorkTelemetry.ProviderIdTag, provider.ProviderId);
+        activity?.SetTag(OpenCoWorkTelemetry.ModelIdTag, provider.ModelId);
+        activity?.SetTag(
+            OpenCoWorkTelemetry.PurposeTag,
+            request.Purpose.ToString().ToLowerInvariant());
+        try
+        {
+            await foreach (var item in _clients(provider, secret.Secret!)(
+                               request,
+                               cancellationToken).WithCancellation(cancellationToken))
+            {
+                if (item is DeepSeekTerminalEvent
+                    {
+                        Status: DeepSeekTerminalStatus.Failed,
+                    } failed)
+                {
+                    activity?.SetStatus(System.Diagnostics.ActivityStatusCode.Error);
+                    activity?.SetTag(
+                        OpenCoWorkTelemetry.ErrorCodeTag,
+                        failed.ErrorCode ?? AgentErrorCodes.ProviderResponseFailed);
+                }
+                yield return item;
+            }
+            if (activity is { Status: System.Diagnostics.ActivityStatusCode.Unset })
+            {
+                activity.SetStatus(System.Diagnostics.ActivityStatusCode.Ok);
+            }
+        }
+        finally
+        {
+            if (activity is { Status: System.Diagnostics.ActivityStatusCode.Unset } &&
+                cancellationToken.IsCancellationRequested)
+            {
+                activity.SetStatus(System.Diagnostics.ActivityStatusCode.Error);
+                activity.SetTag(
+                    OpenCoWorkTelemetry.ErrorCodeTag,
+                    ToolErrorCodes.Cancelled);
+            }
+        }
+    }
 
     private static CompactionSelection? SelectCompaction(
         AgentSession session,
@@ -2802,6 +2873,11 @@ internal sealed class AgentRuntimeExecutor : ISessionExecutor
         SessionError error,
         CancellationToken cancellationToken)
     {
+        System.Diagnostics.Activity.Current?.SetStatus(
+            System.Diagnostics.ActivityStatusCode.Error);
+        System.Diagnostics.Activity.Current?.SetTag(
+            OpenCoWorkTelemetry.ErrorCodeTag,
+            error.Code);
         if (reasoningItemId != Guid.Empty)
         {
             await sink.EmitAsync(

@@ -7,15 +7,16 @@ namespace OpenCoWork.IntegrationTests;
 public sealed class DirectSubAgentTests
 {
     [Fact]
-    public async Task Spawn_list_message_followup_and_recursive_cancel_are_persistent()
+    public async Task CoWorkCorrelation_spawn_list_message_followup_and_cancel_are_persistent()
     {
         await using var workspace = await CoWorkTestWorkspace.CreateAsync();
         var cancellationToken = TestContext.Current.CancellationToken;
         var profile = await CreateProfileAsync(workspace, "direct", cancellationToken);
 
+        var correlationId = Guid.CreateVersion7();
         var spawned = await workspace.Service.SpawnSubAgentAsync(
             new SpawnSubAgentRequest(
-                Command(),
+                Command() with { CorrelationId = correlationId },
                 workspace.OriginThreadId,
                 profile.ProfileId,
                 "Inspect the runtime.",
@@ -27,6 +28,7 @@ public sealed class DirectSubAgentTests
         var firstRun = spawned.Value!;
         Assert.NotEqual(Guid.Empty, firstRun.ThreadId);
         Assert.Equal(CoWorkAgentRunKind.Direct, firstRun.Kind);
+        Assert.Equal(correlationId, firstRun.CorrelationId);
 
         var children = await workspace.Service.ListSubAgentChildrenAsync(
             new SubAgentQueryRequest(

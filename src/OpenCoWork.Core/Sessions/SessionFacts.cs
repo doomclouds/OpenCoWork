@@ -94,7 +94,8 @@ internal sealed record TurnStartedFact(
     Guid? UserItemId,
     string? Text,
     string RequestSha256,
-    AgentMode EffectiveAgentMode = AgentMode.Agent);
+    AgentMode EffectiveAgentMode = AgentMode.Agent,
+    Guid? CorrelationId = null);
 
 internal sealed record TurnSteeredFact(
     Guid TurnId,

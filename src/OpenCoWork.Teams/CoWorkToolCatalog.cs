@@ -612,7 +612,8 @@ internal static class CoWorkToolCatalog
         new(
             context.ToolInvocationId,
             actor,
-            OptionalInt64(context.Arguments, "expectedRevision"));
+            OptionalInt64(context.Arguments, "expectedRevision"),
+            context.CorrelationId);
 
     private static ToolBindingResult Denied() =>
         ToolBindingResult.Failure(new SessionError(

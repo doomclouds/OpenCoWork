@@ -314,7 +314,7 @@ public sealed class RuntimeCompositionIntegrationTests
     }
 
     [Fact]
-    public async Task GatewayInbound_dispatches_into_the_real_session_queue_with_correlation()
+    public async Task GatewayCorrelation_dispatches_into_the_real_session_queue()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var root = Path.Combine(

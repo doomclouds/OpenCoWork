@@ -64,6 +64,11 @@ public sealed class GatewayService : IChannelInboundSink
         ChannelInboundRequest request,
         CancellationToken cancellationToken = default)
     {
+        ArgumentNullException.ThrowIfNull(request);
+        using var activity = OpenCoWorkTelemetry.StartActivity(
+            OpenCoWorkTelemetry.GatewayReceive,
+            System.Diagnostics.ActivityKind.Server,
+            channelId: request.ChannelId);
         Validate(request);
         var duplicate = await FindReceiptAsync(
             request.ChannelId,
@@ -72,6 +77,10 @@ public sealed class GatewayService : IChannelInboundSink
             cancellationToken);
         if (duplicate is not null)
         {
+            activity?.SetTag(
+                OpenCoWorkTelemetry.CorrelationIdTag,
+                duplicate.CorrelationId.ToString("D"));
+            activity?.SetStatus(System.Diagnostics.ActivityStatusCode.Ok);
             return duplicate;
         }
 
@@ -161,6 +170,10 @@ public sealed class GatewayService : IChannelInboundSink
             Changed?.Invoke();
         }
 
+        activity?.SetTag(
+            OpenCoWorkTelemetry.CorrelationIdTag,
+            receipt.CorrelationId.ToString("D"));
+        activity?.SetStatus(System.Diagnostics.ActivityStatusCode.Ok);
         return receipt;
     }
 
@@ -203,6 +216,12 @@ public sealed class GatewayService : IChannelInboundSink
             return false;
         }
 
+        using var activity = OpenCoWorkTelemetry.StartActivity(
+            OpenCoWorkTelemetry.GatewayDispatch,
+            System.Diagnostics.ActivityKind.Consumer,
+            candidate.CorrelationId,
+            threadId: candidate.ThreadId,
+            channelId: candidate.ChannelId);
         try
         {
             var threadId = candidate.ThreadId ?? await EnsureThreadAsync(candidate, now, cancellationToken);
@@ -239,6 +258,7 @@ public sealed class GatewayService : IChannelInboundSink
                 now,
                 cancellationToken);
             _faultInjector?.Invoke(GatewayInboundFaultPoint.DeliveredCommitted);
+            activity?.SetStatus(System.Diagnostics.ActivityStatusCode.Ok);
             return true;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -247,11 +267,14 @@ public sealed class GatewayService : IChannelInboundSink
         }
         catch (Exception error)
         {
+            var errorCode = error is ChannelServiceException channelError
+                ? channelError.Code
+                : ChannelErrorCodes.Unavailable;
+            activity?.SetStatus(System.Diagnostics.ActivityStatusCode.Error);
+            activity?.SetTag(OpenCoWorkTelemetry.ErrorCodeTag, errorCode);
             await MarkFailedAsync(
                 candidate.InboundMessageId,
-                error is ChannelServiceException channelError
-                    ? channelError.Code
-                    : ChannelErrorCodes.Unavailable,
+                errorCode,
                 error is not ChannelServiceException serviceError || serviceError.Retryable,
                 candidate.AttemptCount + 1,
                 now,

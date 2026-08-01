@@ -4,6 +4,7 @@ using OpenCoWork.Abstractions;
 using OpenCoWork.Core.Agents;
 using OpenCoWork.Core.Configuration;
 using OpenCoWork.Core.Logging;
+using OpenCoWork.Core.Operations;
 using OpenCoWork.Core.State;
 using OpenCoWork.Core.Tools;
 using OpenCoWork.Core.Workspaces;
@@ -35,6 +36,7 @@ public static class OpenCoWorkSessionExtensions
         });
         services.TryAddSingleton<IWorkspaceStateStore>(serviceProvider =>
             serviceProvider.GetRequiredService<StateRuntime>());
+        services.TryAddSingleton<IOperationsQueryService, OperationsQueryService>();
         services.TryAddSingleton<ProjectWriterLeaseService>();
         services.TryAddSingleton<IProjectWriterLeaseService>(serviceProvider =>
             serviceProvider.GetRequiredService<ProjectWriterLeaseService>());

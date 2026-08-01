@@ -94,6 +94,18 @@ internal static class StateMigrations
         );
         """;
 
+    private const string VersionNineSql =
+        """
+        ALTER TABLE turns
+            ADD COLUMN correlation_id TEXT NULL CHECK (
+                correlation_id IS NULL OR (
+                    length(correlation_id) = 36 AND
+                    correlation_id = lower(correlation_id) AND
+                    correlation_id GLOB '????????-????-7???-[89ab]???-????????????' AND
+                    length(replace(correlation_id, '-', '')) = 32 AND
+                    replace(correlation_id, '-', '') NOT GLOB '*[^0-9a-f]*'));
+        """;
+
     private const string VersionTwoSql =
         """
         CREATE TABLE threads (
@@ -739,7 +751,7 @@ internal static class StateMigrations
     internal static readonly IReadOnlyList<StateMigration> Current =
     [
         .. VersionEightOnly,
-        new(9, "SELECT 1;"),
+        new(9, VersionNineSql),
     ];
 }
 

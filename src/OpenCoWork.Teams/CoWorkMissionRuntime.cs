@@ -679,6 +679,7 @@ public sealed partial class CoWorkService
                 run_kind, status, profile_snapshot_json,
                 workspace_mode, workspace_access, workspace_json,
                 budget_limit_tokens, budget_reserved_tokens, budget_used_tokens,
+                correlation_id,
                 attempt, lease_owner, lease_expires_utc,
                 error_code, diagnostic, created_utc, updated_utc, completed_utc)
             VALUES (
@@ -687,6 +688,9 @@ public sealed partial class CoWorkService
                 $kind, 'pending', $profile,
                 $workspaceMode, $workspaceAccess, $workspace,
                 $budgetLimit, $reservation, 0,
+                (SELECT correlation_id FROM turns
+                 WHERE thread_id = $parentThreadId AND correlation_id IS NOT NULL
+                 ORDER BY created_utc DESC, turn_id DESC LIMIT 1),
                 $attempt, NULL, NULL,
                 NULL, NULL, $now, $now, NULL);
             """,

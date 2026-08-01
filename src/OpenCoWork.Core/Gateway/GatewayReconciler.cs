@@ -691,6 +691,13 @@ internal sealed class GatewayReconciler
                            ?? throw new ChannelServiceException(
                                ChannelErrorCodes.DeliveryFailed,
                                "Outbox envelope is invalid.");
+            using var activity = OpenCoWorkTelemetry.StartActivity(
+                OpenCoWorkTelemetry.GatewayOutboxSend,
+                System.Diagnostics.ActivityKind.Producer,
+                envelope.CorrelationId,
+                envelope.ThreadId,
+                envelope.TurnId,
+                channelId: channel.Id);
             using var lease = _credentials.Acquire(channel);
             var secret = Encoding.UTF8.GetBytes(lease.Secret!);
             ChannelSendResult result;
@@ -726,6 +733,10 @@ internal sealed class GatewayReconciler
             _faultInjector?.Invoke(GatewayOutboxFaultPoint.SendCompleted);
             if (!result.Succeeded)
             {
+                activity?.SetStatus(System.Diagnostics.ActivityStatusCode.Error);
+                activity?.SetTag(
+                    OpenCoWorkTelemetry.ErrorCodeTag,
+                    result.ErrorCode ?? ChannelErrorCodes.DeliveryFailed);
                 await MarkFailedAsync(
                     runtimeInstanceId,
                     candidate.OutboxMessageId,
@@ -744,6 +755,7 @@ internal sealed class GatewayReconciler
                 now,
                 cancellationToken);
             _faultInjector?.Invoke(GatewayOutboxFaultPoint.SentCommitted);
+            activity?.SetStatus(System.Diagnostics.ActivityStatusCode.Ok);
             return true;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)

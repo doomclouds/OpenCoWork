@@ -180,6 +180,37 @@ public sealed class StateMigrationV9Tests
     }
 
     [Fact]
+    public async Task Core_v9_owns_turn_correlation_without_the_gateway_contributor()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        using var files = new TempWorkspace();
+        var state = new StateRuntime(
+            files.Paths,
+            TimeSpan.FromSeconds(2),
+            [
+                .. TeamsStateMigrationContributors.Create(),
+                .. AutomationsStateMigrationContributors.Create(),
+            ]);
+
+        await state.InitializeAsync(cancellationToken);
+        await using var connection =
+            await state.OpenReadWriteConnectionAsync(cancellationToken);
+
+        Assert.Contains(
+            "correlation_id",
+            await ReadStringsAsync(
+                connection,
+                "SELECT name FROM pragma_table_info('turns');",
+                cancellationToken));
+        Assert.Equal(
+            0L,
+            await ScalarAsync<long>(
+                connection,
+                "SELECT count(*) FROM sqlite_schema WHERE name = 'operations_state';",
+                cancellationToken));
+    }
+
+    [Fact]
     public async Task Missing_operations_singleton_fails_restart_validation()
     {
         var cancellationToken = TestContext.Current.CancellationToken;

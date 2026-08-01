@@ -312,7 +312,8 @@ public sealed record ToolInvocationContext(
     EffectiveSkillSnapshot? Skills = null,
     IReadOnlyList<ToolDefinitionId>? ActivatedDeferredTools = null,
     ExecutionWorkspaceDescriptor? ExecutionWorkspace = null,
-    CoWorkThreadProvenance? CoWorkProvenance = null);
+    CoWorkThreadProvenance? CoWorkProvenance = null,
+    Guid? CorrelationId = null);
 
 public sealed class ToolBindingResult
 {

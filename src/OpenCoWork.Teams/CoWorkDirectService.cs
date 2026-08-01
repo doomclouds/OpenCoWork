@@ -710,6 +710,7 @@ public sealed partial class CoWorkService
                     InferWorkspaceAccess(profile),
                     scopeLimit,
                     reservation,
+                    request.Command.CorrelationId,
                     now,
                     token);
                 await InsertDirectInputAsync(
@@ -834,6 +835,7 @@ public sealed partial class CoWorkService
                     first.WorkspaceAccess,
                     budget.TokenLimit,
                     reservation,
+                    request.Command.CorrelationId,
                     now,
                     token);
                 await InsertDirectInputAsync(
@@ -1305,6 +1307,12 @@ public sealed partial class CoWorkService
             return false;
         }
 
+        using var activity = OpenCoWorkTelemetry.StartActivity(
+            OpenCoWorkTelemetry.CoWorkAgentRun,
+            System.Diagnostics.ActivityKind.Internal,
+            run.CorrelationId,
+            threadId: run.ThreadId,
+            agentRunId: run.AgentRunId);
         _dispatchFaultInjector?.Invoke(CoWorkDispatchFaultPoint.BeforeSubmitTurn);
         var submitted = await _sessions.EnqueueInputAsync(
             new EnqueueInputRequest(
@@ -1312,7 +1320,8 @@ public sealed partial class CoWorkService
                 intent.DispatchIntentId,
                 expectedSequence,
                 text,
-                TurnAdmission.QueueIfBusy),
+                TurnAdmission.QueueIfBusy,
+                run.CorrelationId),
             cancellationToken);
         if (submitted.Value is null)
         {
@@ -1324,6 +1333,7 @@ public sealed partial class CoWorkService
             return true;
         }
 
+        activity?.SetStatus(System.Diagnostics.ActivityStatusCode.Ok);
         _dispatchFaultInjector?.Invoke(CoWorkDispatchFaultPoint.AfterSubmitTurn);
         await _store.WriteAsync(
             async (connection, transaction, token) =>
@@ -2478,6 +2488,7 @@ public sealed partial class CoWorkService
         CoWorkWorkspaceAccess access,
         long budgetLimit,
         long reservation,
+        Guid? correlationId,
         long now,
         CancellationToken cancellationToken) =>
         _ = await ExecuteSqlAsync(
@@ -2490,6 +2501,7 @@ public sealed partial class CoWorkService
                 run_kind, status, profile_snapshot_json,
                 workspace_mode, workspace_access, workspace_json,
                 budget_limit_tokens, budget_reserved_tokens, budget_used_tokens,
+                correlation_id,
                 attempt, lease_owner, lease_expires_utc,
                 error_code, diagnostic, created_utc, updated_utc, completed_utc)
             VALUES (
@@ -2498,6 +2510,7 @@ public sealed partial class CoWorkService
                 'direct', 'pending', $profile,
                 $workspaceMode, $workspaceAccess, $workspace,
                 $budgetLimit, $reservation, 0,
+                $correlationId,
                 $attempt, NULL, NULL,
                 NULL, NULL, $now, $now, NULL);
             """,
@@ -2512,6 +2525,7 @@ public sealed partial class CoWorkService
             ("$workspace", JsonSerializer.Serialize(workspace, JsonOptions)),
             ("$budgetLimit", budgetLimit),
             ("$reservation", reservation),
+            ("$correlationId", correlationId),
             ("$attempt", attempt),
             ("$now", now));
 
@@ -3083,7 +3097,7 @@ public sealed partial class CoWorkService
                    mission_id, mission_task_id, member_id,
                    attempt, profile_snapshot_json, workspace_json, workspace_access,
                    budget_reserved_tokens, budget_used_tokens, error_code,
-                   created_utc, updated_utc
+                   created_utc, updated_utc, correlation_id
             FROM agent_runs
             WHERE agent_run_id = $id;
             """;
@@ -3117,6 +3131,9 @@ public sealed partial class CoWorkService
         var errorCode = reader.IsDBNull(14) ? null : reader.GetString(14);
         var createdAt = FromUnixMilliseconds(reader.GetInt64(15));
         var updatedAt = FromUnixMilliseconds(reader.GetInt64(16));
+        Guid? correlationId = reader.IsDBNull(17)
+            ? null
+            : Guid.Parse(reader.GetString(17));
         await reader.DisposeAsync();
 
         var budget = await LoadRootBudgetAsync(connection, agentRunId, cancellationToken)
@@ -3162,7 +3179,8 @@ public sealed partial class CoWorkService
             used,
             errorCode,
             createdAt,
-            updatedAt);
+            updatedAt,
+            correlationId);
     }
 
     private static async ValueTask<BudgetScopeSnapshot?> LoadRootBudgetAsync(

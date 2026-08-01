@@ -113,15 +113,6 @@ internal sealed class GatewayStateMigrationContributor
 
     private const string Sql =
         """
-        ALTER TABLE turns
-            ADD COLUMN correlation_id TEXT NULL CHECK (
-                correlation_id IS NULL OR (
-                    length(correlation_id) = 36 AND
-                    correlation_id = lower(correlation_id) AND
-                    correlation_id GLOB '????????-????-7???-[89ab]???-????????????' AND
-                    length(replace(correlation_id, '-', '')) = 32 AND
-                    replace(correlation_id, '-', '') NOT GLOB '*[^0-9a-f]*'));
-
         CREATE TABLE operations_state (
             id INTEGER NOT NULL PRIMARY KEY CHECK (id = 1),
             workspace_id TEXT NOT NULL UNIQUE CHECK (

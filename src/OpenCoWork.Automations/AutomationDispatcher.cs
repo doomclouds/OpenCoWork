@@ -253,6 +253,12 @@ public sealed class AutomationDispatcher(
     {
         await RenewClaimAsync(intent, cancellationToken);
         var run = await ReadRunAsync(intent.RunId, cancellationToken);
+        using var activity = OpenCoWorkTelemetry.StartActivity(
+            OpenCoWorkTelemetry.AutomationRun,
+            System.Diagnostics.ActivityKind.Internal,
+            run.CorrelationId,
+            threadId: run.ThreadId,
+            automationRunId: run.RunId);
         if (run.ThreadId is null)
         {
             throw Terminal(
@@ -306,13 +312,15 @@ public sealed class AutomationDispatcher(
                 intent.IntentId,
                 expectedSequence,
                 prepared.RenderedPrompt,
-                TurnAdmission.QueueIfBusy),
+                TurnAdmission.QueueIfBusy,
+                run.CorrelationId),
             cancellationToken);
         if (result.Value is null)
         {
             throw SessionFailure(result.Error);
         }
 
+        activity?.SetStatus(System.Diagnostics.ActivityStatusCode.Ok);
         faultInjector?.Invoke(AutomationDispatchFaultPoint.AfterTurnSubmitted);
         await CompleteTurnAsync(intent, cancellationToken);
         _ = await preparedTurns.DeleteAsync(
@@ -566,6 +574,7 @@ public sealed class AutomationDispatcher(
                            thread_id, worktree_id, base_commit_sha,
                            project_writer_lease_id,
                            project_writer_lease_expires_utc,
+                           correlation_id,
                            (
                                SELECT request_sha256
                                FROM automation_command_receipts
@@ -619,7 +628,8 @@ public sealed class AutomationDispatcher(
                     reader.IsDBNull(14)
                         ? null
                         : DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(14)),
-                    reader.IsDBNull(15) ? null : reader.GetString(15));
+                    reader.IsDBNull(15) ? null : Guid.Parse(reader.GetString(15)),
+                    reader.IsDBNull(16) ? null : reader.GetString(16));
             },
             cancellationToken);
         return run ?? throw Terminal(
@@ -1228,6 +1238,7 @@ public sealed class AutomationDispatcher(
         string? BaseCommitSha,
         Guid? ProjectWriterLeaseId,
         DateTimeOffset? ProjectWriterLeaseExpiresAtUtc,
+        Guid? CorrelationId,
         string? RequestSha256);
 
     private sealed class DispatchFailure(

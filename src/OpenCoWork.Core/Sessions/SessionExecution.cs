@@ -470,7 +470,8 @@ internal sealed partial class SessionService
                 timestamp,
                 CompletedAt: null,
                 Error: null,
-                effectiveAgentMode);
+                effectiveAgentMode,
+                queuedInput?.CorrelationId);
             var requestSha256 = RequestHash(
                 Wire(SessionEventType.TurnStarted),
                 new
@@ -483,6 +484,9 @@ internal sealed partial class SessionService
                         : Wire(queuedInput.QueueItemId),
                     queuedInput?.Text,
                     EffectiveAgentMode = effectiveAgentMode,
+                    CorrelationId = queuedInput?.CorrelationId is { } correlationId
+                        ? Wire(correlationId)
+                        : null,
                 });
             var userItem = queuedInput is null
                 ? null
@@ -518,7 +522,8 @@ internal sealed partial class SessionService
                     userItem?.ItemId,
                     queuedInput?.Text,
                     RequestSha256: requestSha256,
-                    effectiveAgentMode),
+                    effectiveAgentMode,
+                    queuedInput?.CorrelationId),
                 SessionEventType.TurnStarted,
                 cancellationToken,
                 new SessionEventPayload(
@@ -2575,7 +2580,8 @@ internal sealed partial class SessionService
                         entry.Timestamp,
                         CompletedAt: null,
                         Error: null,
-                        started.EffectiveAgentMode);
+                        started.EffectiveAgentMode,
+                        started.CorrelationId);
                     if (started.UserItemId is { } userItemId &&
                         started.Text is { } userText)
                     {
@@ -2821,7 +2827,8 @@ internal sealed partial class SessionService
                         entry.Timestamp,
                         CompletedAt: null,
                         Error: null,
-                        started.EffectiveAgentMode);
+                        started.EffectiveAgentMode,
+                        started.CorrelationId);
                     turns[started.TurnId] = turn;
                     if (started.QueueItemId is { } scheduledQueueItemId &&
                         started.UserItemId is { } userItemId &&

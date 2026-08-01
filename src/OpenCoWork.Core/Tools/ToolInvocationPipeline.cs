@@ -101,6 +101,20 @@ internal sealed class ToolInvocationPipeline : IToolInvocationPipeline
     {
         ArgumentNullException.ThrowIfNull(context);
         ArgumentNullException.ThrowIfNull(sink);
+        using var activity = OpenCoWorkTelemetry.StartActivity(
+            OpenCoWorkTelemetry.ToolInvoke,
+            System.Diagnostics.ActivityKind.Internal,
+            context.CorrelationId,
+            context.ThreadId,
+            context.TurnId);
+        activity?.SetTag(OpenCoWorkTelemetry.ToolIdTag, context.ProviderToolName);
+        using var scope = _logger.BeginScope(new Dictionary<string, object?>
+        {
+            ["correlationId"] = context.CorrelationId,
+            ["threadId"] = context.ThreadId,
+            ["turnId"] = context.TurnId,
+            ["toolInvocationId"] = context.ToolInvocationId,
+        });
 
         Record(ToolInvocationStage.SnapshotLookup);
         var registration = ResolveRegistration(context);
@@ -762,6 +776,17 @@ internal sealed class ToolInvocationPipeline : IToolInvocationPipeline
                 Guid.CreateVersion7(_timeProvider.GetUtcNow()),
                 result),
             CancellationToken.None);
+
+        var activity = System.Diagnostics.Activity.Current;
+        if (result.Status == ToolInvocationStatus.Completed)
+        {
+            activity?.SetStatus(System.Diagnostics.ActivityStatusCode.Ok);
+        }
+        else if (result.Error is { } error)
+        {
+            activity?.SetStatus(System.Diagnostics.ActivityStatusCode.Error);
+            activity?.SetTag(OpenCoWorkTelemetry.ErrorCodeTag, error.Code);
+        }
 
         Record(ToolInvocationStage.TerminalHook);
         if (_terminal is not null)

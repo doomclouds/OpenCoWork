@@ -61,7 +61,7 @@ public sealed class AutomationServiceTests
     }
 
     [Fact]
-    public async Task Manual_start_freezes_run_and_replays_command_receipt()
+    public async Task AutomationCorrelation_freezes_run_and_replays_command_receipt()
     {
         await using var fixture = await Fixture.CreateAsync();
         await fixture.WriteAsync("nightly-maintenance", enabled: true, scheduled: true);
@@ -71,12 +71,14 @@ public sealed class AutomationServiceTests
             TestContext.Current.CancellationToken);
         using var inputs = JsonDocument.Parse("""{"task":"focused"}""");
         var commandId = Guid.CreateVersion7();
+        var correlationId = Guid.CreateVersion7();
         var request = new StartAutomationRunRequest(
             Host,
             "nightly-maintenance",
             inputs.RootElement.Clone(),
             commandId,
-            definition.Value!.Summary.Revision);
+            definition.Value!.Summary.Revision,
+            correlationId);
 
         var created = await fixture.Service.StartRunAsync(
             request,
@@ -85,6 +87,7 @@ public sealed class AutomationServiceTests
         Assert.True(created.IsSuccess, created.Error?.Code);
         Assert.False(created.IsReplay);
         Assert.Equal(commandId, created.Value!.Summary.RunId);
+        Assert.Equal(correlationId, created.Value.CorrelationId);
         Assert.Equal(AutomationRunStatus.Pending, created.Value.Summary.Status);
         Assert.Equal("provider-a", created.Value.ProviderId);
         Assert.Equal("model-a", created.Value.ModelId);

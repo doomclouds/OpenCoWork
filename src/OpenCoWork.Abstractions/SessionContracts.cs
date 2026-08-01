@@ -333,7 +333,8 @@ public sealed record TurnSnapshot(
     DateTimeOffset UpdatedAt,
     DateTimeOffset? CompletedAt,
     SessionError? Error,
-    AgentMode EffectiveAgentMode = AgentMode.Agent);
+    AgentMode EffectiveAgentMode = AgentMode.Agent,
+    Guid? CorrelationId = null);
 
 public sealed record SessionItemSnapshot(
     Guid ItemId,

@@ -1580,7 +1580,14 @@ internal sealed class SessionProjection
         var scheduled = fact.QueueItemId is not null ||
                         fact.UserItemId is not null ||
                         fact.Text is not null;
-        Guid? correlationId = null;
+        Guid? correlationId = fact.CorrelationId;
+        if (correlationId is { } persistedCorrelationId)
+        {
+            SessionIds.RequireVersion7(
+                persistedCorrelationId,
+                nameof(fact.CorrelationId),
+                "Correlation ID");
+        }
         if (scheduled &&
             (fact.QueueItemId is null ||
              fact.UserItemId is null ||
@@ -1620,7 +1627,14 @@ internal sealed class SessionProjection
                     SessionErrorCodes.JournalCorrupt,
                     "Scheduled turn mode does not match its queued input.");
             }
-            correlationId = queuedInput.CorrelationId;
+            if (correlationId is not null &&
+                correlationId != queuedInput.CorrelationId)
+            {
+                throw ProjectionError(
+                    SessionErrorCodes.JournalCorrupt,
+                    "Scheduled turn correlation does not match its queued input.");
+            }
+            correlationId ??= queuedInput.CorrelationId;
 
             await ExecuteRequiredAsync(
                 connection,

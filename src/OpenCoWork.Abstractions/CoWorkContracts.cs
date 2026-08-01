@@ -193,7 +193,8 @@ public sealed record CoWorkActorContext(
 public sealed record CoWorkCommandContext(
     Guid CommandId,
     CoWorkActorContext Actor,
-    long? ExpectedRevision);
+    long? ExpectedRevision,
+    Guid? CorrelationId = null);
 
 public sealed record CoWorkError(
     string Code,
@@ -319,7 +320,8 @@ public sealed record AgentRunSnapshot(
     long UsedTokens,
     string? ErrorCode,
     DateTimeOffset CreatedAt,
-    DateTimeOffset UpdatedAt);
+    DateTimeOffset UpdatedAt,
+    Guid? CorrelationId = null);
 
 public sealed record DirectSubAgentSnapshot(
     Guid ChildThreadId,

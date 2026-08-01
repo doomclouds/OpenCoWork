@@ -269,7 +269,8 @@ internal sealed class AutomationService(
     {
         if (!ValidActor(request.Actor) ||
             request.Actor.Kind != AutomationActorKind.Host ||
-            request.CommandId.Version != 7)
+            request.CommandId.Version != 7 ||
+            request.CorrelationId is { Version: not 7 })
         {
             return await Failure<AutomationRunSnapshot>(
                 AutomationErrorCodes.PermissionDenied,
@@ -981,6 +982,7 @@ internal sealed class AutomationService(
             """
             INSERT INTO automation_runs (
                 automation_run_id, automation_id, trigger_kind,
+                correlation_id,
                 trigger_idempotency_key, scheduled_occurrence_utc, status,
                 definition_snapshot_json, inputs_sha256, rendered_prompt_sha256,
                 prepared_turn_id, workspace_mode, workspace_access,
@@ -993,6 +995,7 @@ internal sealed class AutomationService(
                 completed_utc)
             VALUES (
                 $runId, $automationId, $triggerKind,
+                $correlationId,
                 $idempotencyKey, $scheduledOccurrence, 'pending',
                 $definition, $inputsSha, $promptSha,
                 $preparedTurnId, $workspaceMode, $workspaceAccess,
@@ -1009,6 +1012,7 @@ internal sealed class AutomationService(
             ("$automationId", request.AutomationId),
             ("$triggerKind",
                 trigger.Kind == AutomationTriggerKind.Manual ? "manual" : "cron"),
+            ("$correlationId", request.CorrelationId?.ToString("D")),
             ("$idempotencyKey", trigger.IdempotencyKey),
             ("$scheduledOccurrence", trigger.ScheduledForUtc is null
                 ? null
@@ -1098,7 +1102,8 @@ internal sealed class AutomationService(
             captured.ProviderId,
             captured.ModelId,
             captured.Permissions,
-            captured.Capabilities);
+            captured.Capabilities,
+            CorrelationId: request.CorrelationId);
         await ExecuteAsync(
             connection,
             transaction,
@@ -1662,6 +1667,7 @@ internal sealed class AutomationService(
                    safe_summary, error_code, diagnostic, thread_id, worktree_id,
                    run_deadline_utc, attention_deadline_utc, provider_id, model_id,
                    permission_snapshot_json, capability_snapshot_json,
+                   correlation_id,
                    (
                        SELECT interaction_id
                        FROM pending_interactions
@@ -1694,11 +1700,12 @@ internal sealed class AutomationService(
                            ?? throw new InvalidDataException(
                                "Automation capability snapshot is invalid.");
         var errorCode = reader.IsDBNull(10) ? null : reader.GetString(10);
+        var correlationId = GuidOrNull(reader, 20);
         Guid? attentionId = summary.AttentionKind == AutomationAttentionKind.OutcomeUnknown
             ? DerivedId(summary.RunId, 0xa8)
-            : reader.IsDBNull(20)
+            : reader.IsDBNull(21)
                 ? null
-                : Guid.Parse(reader.GetString(20));
+                : Guid.Parse(reader.GetString(21));
         return new AutomationRunSnapshot(
             summary,
             reader.IsDBNull(9) ? null : reader.GetString(9),
@@ -1723,7 +1730,8 @@ internal sealed class AutomationService(
             reader.GetString(17),
             permissions,
             capabilities,
-            attentionId);
+            attentionId,
+            correlationId);
     }
 
     private static AutomationRunSummary ReadRunSummary(DbDataReader reader) =>

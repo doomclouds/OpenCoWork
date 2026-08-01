@@ -114,7 +114,7 @@ public sealed class SessionQueueTests
     }
 
     [Fact]
-    public async Task Active_idle_enqueue_is_journaled_before_turn_start_and_reaches_executor()
+    public async Task Correlation_is_journaled_before_turn_start_and_reaches_executor()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         using var files = new TempWorkspace();
@@ -131,13 +131,15 @@ public sealed class SessionQueueTests
             cancellationToken,
             executor);
         var thread = await CreateThreadAsync(service, cancellationToken);
+        var correlationId = Guid.CreateVersion7();
 
         var queued = await service.EnqueueInputAsync(
             new EnqueueInputRequest(
                 thread.ThreadId,
                 Guid.CreateVersion7(),
                 thread.CurrentSequence,
-                "run now"),
+                "run now",
+                CorrelationId: correlationId),
             cancellationToken);
         var replay = await journal.ReplayAsync(
             ThreadJournalLocation.Active,
@@ -156,6 +158,7 @@ public sealed class SessionQueueTests
             cancellationToken);
 
         Assert.NotEqual(SessionCommandStatus.Rejected, queued.Status);
+        Assert.Equal(correlationId, context.Turn.CorrelationId);
         Assert.Contains(
             context.ModelHistory,
             item => item.Content is TextItemContent { Text: "run now" });
