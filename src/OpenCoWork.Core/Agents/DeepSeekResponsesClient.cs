@@ -17,7 +17,14 @@ internal sealed record DeepSeekResponsesRequest(
     IReadOnlyList<JsonElement> Input,
     int MaxOutputTokens,
     string ReasoningEffort,
-    IReadOnlyList<DeepSeekResponsesTool> Tools);
+    IReadOnlyList<DeepSeekResponsesTool> Tools,
+    Guid InvocationId = default,
+    int AttemptNumber = 1,
+    ProviderInvocationPurpose Purpose = ProviderInvocationPurpose.Response);
+
+internal delegate IAsyncEnumerable<DeepSeekResponseEvent> DeepSeekResponseStream(
+    DeepSeekResponsesRequest request,
+    CancellationToken cancellationToken);
 
 internal abstract record DeepSeekResponsesTool;
 
@@ -128,6 +135,25 @@ internal sealed class DeepSeekResponsesClient
     private readonly TimeSpan _responseHeaderTimeout;
     private readonly TimeSpan _streamIdleTimeout;
     private readonly TimeProvider _timeProvider;
+
+    internal static HttpClient CreateSharedHttpClient()
+    {
+        var handler = new SocketsHttpHandler
+        {
+            AllowAutoRedirect = false,
+            AutomaticDecompression =
+                DecompressionMethods.GZip |
+                DecompressionMethods.Deflate |
+                DecompressionMethods.Brotli,
+            ConnectTimeout = TimeSpan.FromSeconds(15),
+            ResponseDrainTimeout = TimeSpan.FromSeconds(2),
+            UseCookies = false,
+        };
+        return new HttpClient(handler)
+        {
+            Timeout = Timeout.InfiniteTimeSpan,
+        };
+    }
 
     internal DeepSeekResponsesClient(
         HttpClient httpClient,
@@ -435,13 +461,13 @@ internal sealed class DeepSeekResponsesClient
             exception.HttpRequestError == HttpRequestError.SecureConnectionError ||
             exception.InnerException is AuthenticationException)
         {
-            throw new ChatCompletionException(
+            throw new ProviderException(
                 AgentErrorCodes.ProviderTlsFailure,
                 "Provider TLS validation failed.");
         }
         catch (HttpRequestException)
         {
-            throw new ChatCompletionException(
+            throw new ProviderException(
                 AgentErrorCodes.ProviderServerUnavailable,
                 "Provider transport failed.",
                 isTransient: true);
@@ -477,7 +503,7 @@ internal sealed class DeepSeekResponsesClient
                 (AgentErrorCodes.ProviderServerUnavailable, false),
             _ => (AgentErrorCodes.ProviderInvalidRequest, false),
         };
-        throw new ChatCompletionException(
+        throw new ProviderException(
             code,
             $"Provider request failed with HTTP {(int)status}.",
             status,
@@ -503,7 +529,7 @@ internal sealed class DeepSeekResponsesClient
 
             if (buffer.Length + read > maximumBytes)
             {
-                throw new ChatCompletionException(
+                throw new ProviderException(
                     AgentErrorCodes.ProviderOutputTooLarge,
                     "Provider error response exceeded the size limit.");
             }
@@ -554,12 +580,12 @@ internal sealed class DeepSeekResponsesClient
         }
     }
 
-    private static ChatCompletionException InvalidStream() =>
+    private static ProviderException InvalidStream() =>
         new(
             AgentErrorCodes.ProviderInvalidStream,
             "Provider returned an invalid streaming response.");
 
-    private static ChatCompletionException ProviderTimeout() =>
+    private static ProviderException ProviderTimeout() =>
         new(
             AgentErrorCodes.ProviderTimeout,
             "Provider response timed out.",
@@ -625,7 +651,7 @@ internal sealed class DeepSeekResponsesClient
                     _ => throw InvalidStream(),
                 };
             }
-            catch (ChatCompletionException)
+            catch (ProviderException)
             {
                 throw;
             }
@@ -772,7 +798,7 @@ internal sealed class DeepSeekResponsesClient
                     var raw = item.GetRawText();
                     if (StrictUtf8.GetByteCount(raw) > MaximumReplayItemBytes)
                     {
-                        throw new ChatCompletionException(
+                        throw new ProviderException(
                             AgentErrorCodes.ProviderOutputTooLarge,
                             "Provider web search replay item exceeded the size limit.");
                     }
@@ -842,7 +868,7 @@ internal sealed class DeepSeekResponsesClient
             _outputBytes = checked(_outputBytes + StrictUtf8.GetByteCount(delta));
             if (_outputBytes > MaximumOutputBytes)
             {
-                throw new ChatCompletionException(
+                throw new ProviderException(
                     AgentErrorCodes.ProviderOutputTooLarge,
                     "Provider output exceeded the size limit.");
             }
@@ -1104,7 +1130,7 @@ internal sealed class DeepSeekResponsesClient
             var valueBytes = StrictUtf8.GetByteCount(value);
             if (target.ValueBytes + valueBytes > maximumBytes)
             {
-                throw new ChatCompletionException(
+                throw new ProviderException(
                     AgentErrorCodes.ProviderOutputTooLarge,
                     "Provider tool input exceeded the size limit.");
             }

@@ -123,6 +123,35 @@ public sealed class AgentFactoryTests
     }
 
     [Fact]
+    public void Responses_history_replays_reasoning_only_for_the_active_turn()
+    {
+        var timestamp = DateTimeOffset.UtcNow;
+        var priorTurnId = Guid.CreateVersion7(timestamp);
+        var activeTurnId = Guid.CreateVersion7(timestamp.AddTicks(1));
+        SessionItemSnapshot Reasoning(Guid turnId, string text, long sequence) =>
+            new(
+                Guid.CreateVersion7(timestamp.AddTicks(sequence + 1)),
+                turnId,
+                SessionItemType.Reasoning,
+                SessionItemStatus.Completed,
+                new TextItemContent(text),
+                sequence,
+                timestamp,
+                timestamp);
+
+        var input = ProviderResponsesHistory.Build(
+            [
+                Reasoning(priorTurnId, "prior reasoning", 1),
+                Reasoning(activeTurnId, "current reasoning", 2),
+            ],
+            activeTurnId);
+
+        var reasoning = Assert.Single(input);
+        Assert.Equal("reasoning", reasoning.GetProperty("type").GetString());
+        Assert.Equal("current reasoning", reasoning.GetProperty("content").GetString());
+    }
+
+    [Fact]
     public void Custom_tokenizer_is_local_sha_pinned_and_uses_the_same_tiktoken_engine()
     {
         var directory = Path.Combine(
@@ -353,34 +382,10 @@ public sealed class AgentFactoryTests
         Directory.CreateDirectory(directory);
         try
         {
-            var models = new ModelsConfig
-            {
-                ReasoningEffort = "max",
-                Providers = new Dictionary<string, ProviderConfig>(StringComparer.Ordinal)
-                {
-                    ["token-plan"] = new()
-                    {
-                        BaseUrl = "https://example.test/v1",
-                        ApiKey = new ProviderApiKeyConfig
-                        {
-                            Environment = "TOKEN_PLAN_KEY",
-                        },
-                        Models = new Dictionary<string, ModelConfig>(StringComparer.Ordinal)
-                        {
-                            ["qwen3.8-max-preview"] = new()
-                            {
-                                TokenizerProfileId = "qwen-o200k",
-                                TokenizerProfileVersion = "1",
-                                ContextWindowTokens = 983_616,
-                                MaxOutputTokens = 131_072,
-                            },
-                        },
-                    },
-                },
-            };
+            var models = new ModelsConfig { ReasoningEffort = "max" };
             var credentials = FrozenProviderCredentials.Capture(
                 models,
-                name => name == "TOKEN_PLAN_KEY" ? secret : null);
+                name => name == ModelsConfig.ApiKeyEnvironmentVariable ? secret : null);
             var paths = new OpenCoWorkPaths(directory);
             var tools = new ToolRuntime();
             var capabilities = new WorkspaceCapabilityRuntime(
@@ -467,8 +472,8 @@ public sealed class AgentFactoryTests
                     timestamp,
                     SessionProjectionState.Ready,
                     diagnostic: null,
-                    "token-plan",
-                    "qwen3.8-max-preview",
+                    ModelsConfig.ProviderId,
+                    ModelsConfig.FlashModelId,
                     AgentMode.Agent),
                 new TurnSnapshot(
                     currentTurnId,
@@ -499,33 +504,35 @@ public sealed class AgentFactoryTests
             Assert.Equal(firstJson, secondJson);
             Assert.Equal(
                 [
-                    ChatCompletionMessageRole.System,
-                    ChatCompletionMessageRole.User,
-                    ChatCompletionMessageRole.Assistant,
-                    ChatCompletionMessageRole.Tool,
-                    ChatCompletionMessageRole.User,
+                    "message",
+                    "message",
+                    "function_call",
+                    "function_call_output",
+                    "message",
                 ],
-                first.Messages.Select(message => message.Role));
+                first.Input.Select(item => item.GetProperty("type").GetString()));
             var assistantToolCall = Assert.Single(
-                first.Messages,
-                message => message.ToolCalls is not null);
-            Assert.Equal("Earlier answer", assistantToolCall.Content);
-            Assert.Equal("call-1", Assert.Single(assistantToolCall.ToolCalls!).Id);
+                first.Input,
+                item => item.GetProperty("type").GetString() == "function_call");
+            Assert.Equal("Earlier answer", first.Input[1].GetProperty("content").GetString());
+            Assert.Equal("call-1", assistantToolCall.GetProperty("call_id").GetString());
             Assert.Equal(
                 "call-1",
                 Assert.Single(
-                    first.Messages,
-                    message => message.Role == ChatCompletionMessageRole.Tool)
-                    .ToolCallId);
+                    first.Input,
+                    item => item.GetProperty("type").GetString() ==
+                            "function_call_output")
+                    .GetProperty("call_id").GetString());
             Assert.Single(
-                first.Messages,
-                message => message.Content == "Current question");
+                first.Input,
+                item => item.TryGetProperty("content", out var content) &&
+                        content.GetString() == "Current question");
             Assert.Equal(22, first.Tools.Count);
             Assert.NotNull(first.Snapshot.Tools);
             Assert.Equal(capabilities.CurrentCatalog.Revision, first.Snapshot.CapabilityRevision);
             Assert.Empty(first.Snapshot.Skills!.Items);
             Assert.Equal(
-                first.Tools.Select(tool => tool.ProviderName),
+                first.Tools.OfType<DeepSeekFunctionTool>().Select(tool => tool.Name),
                 first.Snapshot.Tools!.CanonicalToProviderNames.Values.Order());
             Assert.DoesNotContain(secret, firstJson, StringComparison.Ordinal);
             Assert.DoesNotContain(secret, first.ResponsePrompt.SystemMessage, StringComparison.Ordinal);
@@ -535,7 +542,40 @@ public sealed class AgentFactoryTests
                 first.InputTokenCount >
                 AgentFactory.CountPromptTokens(
                     first.Provider.Tokenizer,
-                    first.Messages));
+                    first.ResponsePrompt.SystemMessage,
+                    first.Input));
+
+            var lowModels = new ModelsConfig { ReasoningEffort = "low" };
+            var lowFactory = new AgentFactory(
+                new ProviderRegistry(
+                    lowModels,
+                    FrozenProviderCredentials.Capture(
+                        lowModels,
+                        name => name == ModelsConfig.ApiKeyEnvironmentVariable
+                            ? secret
+                            : null),
+                    TokenizerBaseDirectory,
+                    directory),
+                paths,
+                tools,
+                new ToolsConfig(),
+                capabilities);
+            var resumed = new AgentSession(
+                session.Thread,
+                session.Turn,
+                session.ModelHistory,
+                invocation: first.Snapshot);
+            Assert.Equal(
+                "max",
+                lowFactory.Create(resumed, invocationId, instructions: null)
+                    .Provider.ReasoningEffort);
+            Assert.Equal(
+                "low",
+                lowFactory.Create(
+                        session,
+                        Guid.CreateVersion7(),
+                        instructions: null)
+                    .Provider.ReasoningEffort);
 
             await capabilities.RefreshAsync(
                 [

@@ -104,7 +104,7 @@ internal sealed class BoundedSseReader(
                 _bodyBytes = checked(_bodyBytes + _count);
                 if (_bodyBytes > MaximumBodyBytes)
                 {
-                    throw new ChatCompletionException(
+                    throw new ProviderException(
                         AgentErrorCodes.ProviderOutputTooLarge,
                         "Provider response exceeded the size limit.");
                 }
@@ -142,12 +142,12 @@ internal sealed class BoundedSseReader(
     private static ReadOnlySpan<byte> TrimCarriageReturn(ReadOnlySpan<byte> line) =>
         !line.IsEmpty && line[^1] == (byte)'\r' ? line[..^1] : line;
 
-    private static ChatCompletionException InvalidStream() =>
+    private static ProviderException InvalidStream() =>
         new(
             AgentErrorCodes.ProviderInvalidStream,
             "Provider returned an invalid streaming response.");
 
-    private static ChatCompletionException ProviderTimeout() =>
+    private static ProviderException ProviderTimeout() =>
         new(
             AgentErrorCodes.ProviderTimeout,
             "Provider response timed out.",

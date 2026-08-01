@@ -36,7 +36,7 @@ public sealed class DeferredToolTests
             registration => registration.Exposure == ToolExposure.Deferred));
         Assert.DoesNotContain(
             runtime.CreateProviderDefinitions(snapshot, activated),
-            tool => tool.ProviderName.StartsWith("plugin_acme_tools", StringComparison.Ordinal));
+            tool => tool.Name.StartsWith("plugin_acme_tools", StringComparison.Ordinal));
 
         var search = Assert.Single(
             snapshot.Registrations,
@@ -71,7 +71,7 @@ public sealed class DeferredToolTests
         Assert.Equal(
             8,
             runtime.CreateProviderDefinitions(snapshot, activated).Count(
-                tool => tool.ProviderName.StartsWith(
+                tool => tool.Name.StartsWith(
                     "plugin_acme_tools",
                     StringComparison.Ordinal)));
     }

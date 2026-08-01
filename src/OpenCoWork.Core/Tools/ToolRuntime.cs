@@ -6,6 +6,7 @@ using System.Text.RegularExpressions;
 using Json.Schema;
 using Json.Schema.Keywords;
 using OpenCoWork.Abstractions;
+using OpenCoWork.Core.Agents;
 using OpenCoWork.Core.Configuration;
 using OpenCoWork.Core.Workspaces;
 
@@ -445,11 +446,11 @@ internal sealed partial class ToolRuntime
                        StringComparison.Ordinal));
     }
 
-    public IReadOnlyList<ChatCompletionToolDefinition> CreateProviderDefinitions(
+    public IReadOnlyList<DeepSeekFunctionTool> CreateProviderDefinitions(
         EffectiveToolSnapshot snapshot) =>
         CreateProviderDefinitions(snapshot, []);
 
-    public IReadOnlyList<ChatCompletionToolDefinition> CreateProviderDefinitions(
+    public IReadOnlyList<DeepSeekFunctionTool> CreateProviderDefinitions(
         EffectiveToolSnapshot snapshot,
         IReadOnlyCollection<ToolDefinitionId> activatedDeferredTools)
     {
@@ -463,7 +464,7 @@ internal sealed partial class ToolRuntime
             .Select(registration =>
             {
                 var canonical = CanonicalName(registration.Definition.Name);
-                return new ChatCompletionToolDefinition(
+                return new DeepSeekFunctionTool(
                     snapshot.CanonicalToProviderNames[canonical],
                     registration.Definition.Description,
                     registration.Definition.InputSchema);

@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using OpenCoWork.Abstractions;
 
 namespace OpenCoWork.Core.Agents;
@@ -111,10 +112,10 @@ internal static class CompactionCheckpointIntegrity
     private static string ToolAwareSourceMessagesSha256(
         IReadOnlyList<SessionItemSnapshot> source)
     {
-        IReadOnlyList<ChatCompletionMessage> messages;
+        IReadOnlyList<JsonElement> input;
         try
         {
-            messages = ProviderMessageHistory.Build(source);
+            input = ProviderResponsesHistory.Build(source);
         }
         catch (AgentPreparationException exception)
         {
@@ -124,16 +125,47 @@ internal static class CompactionCheckpointIntegrity
         }
 
         var canonical = new StringBuilder();
-        foreach (var message in messages)
+        for (var index = 0; index < input.Count; index++)
         {
-            Append(canonical, message.Role.ToString().ToLowerInvariant());
-            Append(canonical, NormalizeLf(message.Content));
-            Append(canonical, message.ToolCallId ?? string.Empty);
-            foreach (var call in message.ToolCalls ?? [])
+            var item = input[index];
+            var type = item.GetProperty("type").GetString();
+            if (type == "message")
             {
-                Append(canonical, call.Id);
-                Append(canonical, call.Name);
-                Append(canonical, call.Arguments);
+                Append(canonical, item.GetProperty("role").GetString()!);
+                Append(canonical, NormalizeLf(item.GetProperty("content").GetString()!));
+                Append(canonical, string.Empty);
+                while (index + 1 < input.Count &&
+                       input[index + 1].GetProperty("type").GetString() ==
+                       "function_call")
+                {
+                    var call = input[++index];
+                    Append(canonical, call.GetProperty("call_id").GetString()!);
+                    Append(canonical, call.GetProperty("name").GetString()!);
+                    Append(canonical, call.GetProperty("arguments").GetString()!);
+                }
+            }
+            else if (type == "function_call")
+            {
+                Append(canonical, "assistant");
+                Append(canonical, string.Empty);
+                Append(canonical, string.Empty);
+                do
+                {
+                    var call = input[index];
+                    Append(canonical, call.GetProperty("call_id").GetString()!);
+                    Append(canonical, call.GetProperty("name").GetString()!);
+                    Append(canonical, call.GetProperty("arguments").GetString()!);
+                    index++;
+                }
+                while (index < input.Count &&
+                       input[index].GetProperty("type").GetString() == "function_call");
+                index--;
+            }
+            else if (type == "function_call_output")
+            {
+                Append(canonical, "tool");
+                Append(canonical, NormalizeLf(item.GetProperty("output").GetString()!));
+                Append(canonical, item.GetProperty("call_id").GetString()!);
             }
 
             canonical.Append('\n');

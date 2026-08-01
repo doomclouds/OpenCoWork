@@ -37,6 +37,7 @@ public sealed class CompactionTests
                 ],
                 client.Requests.Select(request => request.Purpose));
             Assert.Equal([1, 2], client.Requests.Select(request => request.AttemptNumber));
+            Assert.All(client.Requests, request => Assert.Equal("high", request.ReasoningEffort));
             Assert.Empty(client.Requests[0].Tools);
             Assert.Equal(22, client.Requests[1].Tools.Count);
             var checkpoint = Assert.Single(
@@ -45,13 +46,13 @@ public sealed class CompactionTests
             Assert.Equal(2, checkpoint.SchemaVersion);
             Assert.Equal("opencowork.compaction.v2", checkpoint.SummaryPromptVersion);
             Assert.Equal(2, checkpoint.SourceStartSequence);
-            Assert.Equal(4, checkpoint.SourceEndSequence);
+            Assert.Equal(8, checkpoint.SourceEndSequence);
             Assert.Equal(CompactionClient.Summary, checkpoint.Summary);
             Assert.Equal(
                 CompactionCheckpointIntegrity.SourceMessagesSha256(
                     session.ModelHistory,
                     2,
-                    4,
+                    8,
                     schemaVersion: 2),
                 checkpoint.SourceMessagesSha256);
             Assert.Equal(
@@ -63,13 +64,15 @@ public sealed class CompactionTests
                     .OfType<RecordProviderUsageIntent>()
                     .Select(intent => intent.Usage.Purpose));
             Assert.DoesNotContain(
-                client.Requests[^1].Messages,
-                message => message.Content.Contains(
+                client.Requests[^1].Input,
+                item => item.TryGetProperty("content", out var content) &&
+                        content.GetString()!.Contains(
                     "first-old-history",
                     StringComparison.Ordinal));
             Assert.Contains(
-                client.Requests[^1].Messages,
-                message => message.Content.Contains(
+                client.Requests[^1].Input,
+                item => item.TryGetProperty("content", out var content) &&
+                        content.GetString()!.Contains(
                     CompactionClient.Summary,
                     StringComparison.Ordinal));
             Assert.IsType<CompleteTurnIntent>(sink.Intents[^1]);
@@ -105,7 +108,7 @@ public sealed class CompactionTests
                     2,
                     4),
                 "opencowork.compaction.v1",
-                "qwen-o200k",
+                "deepseek-v4-flash",
                 "1",
                 tokenizer.CountTokens(CompactionClient.Summary));
             var client = new CompactionClient();
@@ -122,11 +125,11 @@ public sealed class CompactionTests
                 item => item.Purpose == ProviderInvocationPurpose.Compaction);
             Assert.Contains(
                 "Previous authoritative summary:",
-                request.Messages[^1].Content,
+                request.Input[^1].GetProperty("content").GetString()!,
                 StringComparison.Ordinal);
             Assert.DoesNotContain(
                 "first-old-history",
-                request.Messages[^1].Content,
+                request.Input[^1].GetProperty("content").GetString()!,
                 StringComparison.Ordinal);
             var checkpoint = Assert.Single(
                     sink.Intents.OfType<RecordCompactionCheckpointIntent>())
@@ -165,11 +168,11 @@ public sealed class CompactionTests
                     request.Purpose == ProviderInvocationPurpose.Compaction);
             Assert.Contains(
                 "ToolCall call-1 file__list",
-                compactionRequest.Messages[^1].Content,
+                compactionRequest.Input[^1].GetProperty("content").GetString()!,
                 StringComparison.Ordinal);
             Assert.Contains(
-                "ToolCallId call-1",
-                compactionRequest.Messages[^1].Content,
+                "ToolCallOutput call-1",
+                compactionRequest.Input[^1].GetProperty("content").GetString()!,
                 StringComparison.Ordinal);
             var checkpoint = Assert.Single(
                     sink.Intents.OfType<RecordCompactionCheckpointIntent>())
@@ -233,7 +236,7 @@ public sealed class CompactionTests
     }
 
     [Fact]
-    public async Task Prompt_too_long_compacts_once_inside_the_three_call_budget()
+    public async Task Generic_context_400_does_not_trigger_reactive_compaction()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var directory = Path.Combine(
@@ -252,15 +255,11 @@ public sealed class CompactionTests
                     cancellationToken);
 
             Assert.Equal(
-                [
-                    ProviderInvocationPurpose.Response,
-                    ProviderInvocationPurpose.Compaction,
-                    ProviderInvocationPurpose.Response,
-                ],
+                [ProviderInvocationPurpose.Response],
                 client.Requests.Select(request => request.Purpose));
-            Assert.Equal([1, 2, 3], client.Requests.Select(request => request.AttemptNumber));
-            Assert.Single(sink.Intents.OfType<RecordCompactionCheckpointIntent>());
-            Assert.IsType<CompleteTurnIntent>(sink.Intents[^1]);
+            Assert.Empty(sink.Intents.OfType<RecordCompactionCheckpointIntent>());
+            var failure = Assert.IsType<FailTurnIntent>(sink.Intents[^1]);
+            Assert.Equal(AgentErrorCodes.ProviderInvalidRequest, failure.Error.Code);
         }
         finally
         {
@@ -296,7 +295,7 @@ public sealed class CompactionTests
     }
 
     [Fact]
-    public async Task Compaction_never_creates_a_fourth_provider_call()
+    public async Task Compaction_retry_and_response_stay_inside_three_call_budget()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var directory = Path.Combine(
@@ -306,20 +305,25 @@ public sealed class CompactionTests
         try
         {
             var client = new CompactionClient(
-                promptTooLongOnFirstResponse: true,
                 transientOnFirstCompaction: true);
             var sink = new RecordingSink();
 
             await Executor(directory, client)
                 .ExecuteAsync(
-                    Session(priorTurnCount: 1, historyRepeats: 240_000),
+                    Session(),
                     sink,
                     cancellationToken);
 
             Assert.Equal(3, client.Requests.Count);
+            Assert.Equal(
+                [
+                    ProviderInvocationPurpose.Compaction,
+                    ProviderInvocationPurpose.Compaction,
+                    ProviderInvocationPurpose.Response,
+                ],
+                client.Requests.Select(request => request.Purpose));
             Assert.Single(sink.Intents.OfType<RecordCompactionCheckpointIntent>());
-            var failure = Assert.IsType<FailTurnIntent>(sink.Intents[^1]);
-            Assert.Equal(AgentErrorCodes.ContextCompactionFailed, failure.Error.Code);
+            Assert.IsType<CompleteTurnIntent>(sink.Intents[^1]);
         }
         finally
         {
@@ -394,7 +398,12 @@ public sealed class CompactionTests
             1,
             3,
             schemaVersion: 2);
-        Assert.Equal(64, hash.Length);
+        var resultEnvelope = ProviderResponsesHistory.ToolResultEnvelope(
+            Assert.IsType<ToolResultItemContent>(result.Content).Result);
+        var oldV2Canonical =
+            "9:assistant|8:checking|0:|6:call-1|10:file__list|14:{\"path\":\"src\"}|\n" +
+            $"4:tool|{Encoding.UTF8.GetByteCount(resultEnvelope)}:{resultEnvelope}|6:call-1|\n";
+        Assert.Equal(Sha256(oldV2Canonical), hash);
         Assert.Throws<InvalidDataException>(() =>
             CompactionCheckpointIntegrity.SourceMessagesSha256(
                 history,
@@ -402,37 +411,14 @@ public sealed class CompactionTests
                 3,
                 schemaVersion: 1));
         Assert.Throws<AgentPreparationException>(() =>
-            ProviderMessageHistory.Build([agent, call]));
+            ProviderResponsesHistory.Build([agent, call]));
     }
 
     private static AgentRuntimeExecutor Executor(
         string directory,
-        IChatCompletionClient client)
+        IResponsesTestClient client)
     {
-        var models = new ModelsConfig
-        {
-            Providers = new Dictionary<string, ProviderConfig>(StringComparer.Ordinal)
-            {
-                ["token-plan"] = new()
-                {
-                    BaseUrl = "https://example.test/v1",
-                    ApiKey = new ProviderApiKeyConfig
-                    {
-                        Environment = "TOKEN_PLAN_KEY",
-                    },
-                    Models = new Dictionary<string, ModelConfig>(StringComparer.Ordinal)
-                    {
-                        ["qwen3.8-max-preview"] = new()
-                        {
-                            TokenizerProfileId = "qwen-o200k",
-                            TokenizerProfileVersion = "1",
-                            ContextWindowTokens = 983_616,
-                            MaxOutputTokens = 131_072,
-                        },
-                    },
-                },
-            },
-        };
+        var models = new ModelsConfig();
         var paths = new OpenCoWorkPaths(directory);
         return new AgentRuntimeExecutor(
             new AgentFactory(
@@ -445,7 +431,7 @@ public sealed class CompactionTests
                     directory),
                 paths),
             paths,
-            _ => client);
+            _ => client.StreamAsync);
     }
 
     private static AgentSession Session(
@@ -503,8 +489,8 @@ public sealed class CompactionTests
                 timestamp,
                 SessionProjectionState.Ready,
                 diagnostic: null,
-                "token-plan",
-                "qwen3.8-max-preview",
+                ModelsConfig.ProviderId,
+                ModelsConfig.FlashModelId,
                 AgentMode.Agent),
             new TurnSnapshot(
                 currentTurnId,
@@ -541,7 +527,7 @@ public sealed class CompactionTests
         TokenizerProfiles.BuiltIn
             .Single(profile =>
                 profile.ModelIds.Contains(
-                    "qwen3.8-max-preview",
+                    ModelsConfig.FlashModelId,
                     StringComparer.Ordinal))
             .CreateTokenizer(AppContext.BaseDirectory);
 
@@ -610,10 +596,20 @@ public sealed class CompactionTests
                 SHA256.HashData(Encoding.UTF8.GetBytes(value)))
             .ToLowerInvariant();
 
+    private interface IResponsesTestClient
+    {
+        IAsyncEnumerable<DeepSeekResponseEvent> StreamAsync(
+            DeepSeekResponsesRequest request,
+            CancellationToken cancellationToken = default);
+    }
+
+    private static DeepSeekTextDeltaEvent Output(string value) =>
+        new("0:message-1", DeepSeekTextKind.Output, value);
+
     private sealed class CompactionClient(
         bool promptTooLongOnFirstResponse = false,
         bool invalidSummary = false,
-        bool transientOnFirstCompaction = false) : IChatCompletionClient
+        bool transientOnFirstCompaction = false) : IResponsesTestClient
     {
         public const string Summary =
             """
@@ -629,10 +625,10 @@ public sealed class CompactionTests
             - Continue the current turn.
             """;
 
-        public List<ChatCompletionRequest> Requests { get; } = [];
+        public List<DeepSeekResponsesRequest> Requests { get; } = [];
 
-        public async IAsyncEnumerable<ChatCompletionEvent> StreamAsync(
-            ChatCompletionRequest request,
+        public async IAsyncEnumerable<DeepSeekResponseEvent> StreamAsync(
+            DeepSeekResponsesRequest request,
             [EnumeratorCancellation] CancellationToken cancellationToken = default)
         {
             Requests.Add(request);
@@ -643,10 +639,9 @@ public sealed class CompactionTests
                 Requests.Count(item =>
                     item.Purpose == ProviderInvocationPurpose.Response) == 1)
             {
-                throw new ChatCompletionException(
+                throw new ProviderException(
                     AgentErrorCodes.ProviderInvalidRequest,
-                    "prompt too long",
-                    isPromptTooLong: true);
+                    "prompt too long");
             }
 
             if (request.Purpose == ProviderInvocationPurpose.Compaction)
@@ -655,27 +650,26 @@ public sealed class CompactionTests
                     Requests.Count(item =>
                         item.Purpose == ProviderInvocationPurpose.Compaction) == 1)
                 {
-                    throw new ChatCompletionException(
+                    throw new ProviderException(
                         AgentErrorCodes.ProviderServerUnavailable,
                         "transient",
                         retryAfter: TimeSpan.Zero,
                         isTransient: true);
                 }
 
-                yield return new ChatCompletionContentDeltaEvent(
+                yield return Output(
                     invalidSummary ? "preamble\n" + Summary : Summary);
-                yield return new ChatCompletionUsageEvent(
-                    new ChatCompletionUsage(900, 80, 980));
+                yield return new DeepSeekTerminalEvent(
+                    DeepSeekTerminalStatus.Completed,
+                    new DeepSeekResponsesUsage(900, 0, 80, 0, 980));
             }
             else
             {
-                yield return new ChatCompletionContentDeltaEvent("answer");
-                yield return new ChatCompletionUsageEvent(
-                    new ChatCompletionUsage(900, 1, 901));
+                yield return Output("answer");
+                yield return new DeepSeekTerminalEvent(
+                    DeepSeekTerminalStatus.Completed,
+                    new DeepSeekResponsesUsage(900, 0, 1, 0, 901));
             }
-
-            yield return new ChatCompletionCompletedEvent(
-                ChatCompletionFinishReason.Stop);
         }
     }
 

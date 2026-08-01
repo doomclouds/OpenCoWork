@@ -16,76 +16,9 @@ public sealed class AgentContractTests
     };
 
     [Fact]
-    public void Chat_completion_contract_is_provider_neutral_and_streaming_only()
+    public void Provider_failures_expose_only_stable_diagnostics()
     {
-        var requestProperties = typeof(ChatCompletionRequest)
-            .GetProperties()
-            .Select(property => property.Name)
-            .Order(StringComparer.Ordinal)
-            .ToArray();
-
-        Assert.Equal(
-            [
-                nameof(ChatCompletionRequest.AttemptNumber),
-                nameof(ChatCompletionRequest.InvocationId),
-                nameof(ChatCompletionRequest.MaxOutputTokens),
-                nameof(ChatCompletionRequest.Messages),
-                nameof(ChatCompletionRequest.ModelId),
-                nameof(ChatCompletionRequest.Purpose),
-                nameof(ChatCompletionRequest.Tools),
-            ],
-            requestProperties);
-        Assert.Equal(
-            typeof(IAsyncEnumerable<ChatCompletionEvent>),
-            typeof(IChatCompletionClient)
-                .GetMethod(nameof(IChatCompletionClient.StreamAsync))!
-                .ReturnType);
-        Assert.DoesNotContain(
-            requestProperties,
-            name => name.Contains("Provider", StringComparison.Ordinal) ||
-                    name.Contains("Secret", StringComparison.Ordinal) ||
-                    name.Contains("Raw", StringComparison.Ordinal));
-    }
-
-    [Fact]
-    public void Agent_contracts_expose_only_normalized_events_and_stable_diagnostics()
-    {
-        Assert.Equal(
-            [
-                ChatCompletionFinishReason.Stop,
-                ChatCompletionFinishReason.Length,
-                ChatCompletionFinishReason.ContentFilter,
-                ChatCompletionFinishReason.ToolCall,
-                ChatCompletionFinishReason.Unknown,
-            ],
-            Enum.GetValues<ChatCompletionFinishReason>());
-        Assert.Equal(
-            [
-                typeof(ChatCompletionContentDeltaEvent),
-                typeof(ChatCompletionReasoningDeltaEvent),
-                typeof(ChatCompletionToolCallDeltaEvent),
-                typeof(ChatCompletionToolCallCompletedEvent),
-                typeof(ChatCompletionUsageEvent),
-                typeof(ChatCompletionCompletedEvent),
-            ],
-            typeof(ChatCompletionEvent).Assembly
-                .GetTypes()
-                .Where(type => type.BaseType == typeof(ChatCompletionEvent))
-                .OrderBy(type => type.Name, StringComparer.Ordinal)
-                .OrderBy(type => Array.IndexOf(
-                    new[]
-                    {
-                        nameof(ChatCompletionContentDeltaEvent),
-                        nameof(ChatCompletionReasoningDeltaEvent),
-                        nameof(ChatCompletionToolCallDeltaEvent),
-                        nameof(ChatCompletionToolCallCompletedEvent),
-                        nameof(ChatCompletionUsageEvent),
-                        nameof(ChatCompletionCompletedEvent),
-                    },
-                    type.Name))
-                .ToArray());
-
-        var exception = new ChatCompletionException(
+        var exception = new ProviderException(
             AgentErrorCodes.ProviderRateLimited,
             "Provider rate limit reached.",
             HttpStatusCode.TooManyRequests,
@@ -95,7 +28,6 @@ public sealed class AgentContractTests
         Assert.Equal(HttpStatusCode.TooManyRequests, exception.StatusCode);
         Assert.Equal(TimeSpan.FromSeconds(2), exception.RetryAfter);
         Assert.True(exception.IsTransient);
-        Assert.False(exception.IsPromptTooLong);
 
         Assert.Equal(
             20,
@@ -105,9 +37,6 @@ public sealed class AgentContractTests
         Assert.Equal("provider.invalidStream", AgentErrorCodes.ProviderInvalidStream);
         Assert.Equal("provider.responseFailed", AgentErrorCodes.ProviderResponseFailed);
         Assert.Equal("context.compactionFailed", AgentErrorCodes.ContextCompactionFailed);
-        Assert.Contains(
-            ChatCompletionMessageRole.Tool,
-            Enum.GetValues<ChatCompletionMessageRole>());
     }
 
     [Fact]

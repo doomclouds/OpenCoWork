@@ -20,15 +20,9 @@ public sealed class ProviderReleaseValidationTests(ITestOutputHelper output)
     private static readonly ProviderCase[] Paths =
     [
         new(
-            "deepseek-official",
-            "deepseek-v4-pro",
-            "OPENCOWORK_RELEASE_DEEPSEEK_BASE_URL",
-            "OPENCOWORK_RELEASE_DEEPSEEK_API_KEY"),
-        new(
-            "deepseek-official",
+            "deepseek",
             "deepseek-v4-flash",
-            "OPENCOWORK_RELEASE_DEEPSEEK_BASE_URL",
-            "OPENCOWORK_RELEASE_DEEPSEEK_API_KEY"),
+            "DEEPSEEK_API_KEY"),
     ];
 
     [Fact(Explicit = true)]
@@ -40,8 +34,6 @@ public sealed class ProviderReleaseValidationTests(ITestOutputHelper output)
         var secrets = new HashSet<string>(StringComparer.Ordinal);
         foreach (var path in Paths)
         {
-            var baseUrl =
-                Environment.GetEnvironmentVariable(path.BaseUrlVariable);
             var apiKey =
                 Environment.GetEnvironmentVariable(path.ApiKeyVariable);
             if (!string.IsNullOrEmpty(apiKey))
@@ -50,7 +42,6 @@ public sealed class ProviderReleaseValidationTests(ITestOutputHelper output)
             }
 
             if (!IsCommitSha(commitSha) ||
-                !TryGetBaseUri(baseUrl, out var baseUri) ||
                 string.IsNullOrWhiteSpace(apiKey))
             {
                 results.Add(Evidence(path, commitSha, ReleaseStatus.NotRun));
@@ -60,7 +51,6 @@ public sealed class ProviderReleaseValidationTests(ITestOutputHelper output)
             results.Add(await RunAsync(
                 path,
                 commitSha!,
-                baseUri!,
                 apiKey,
                 cancellationToken));
         }
@@ -95,7 +85,6 @@ public sealed class ProviderReleaseValidationTests(ITestOutputHelper output)
     private static async Task<ProviderReleaseEvidence> RunAsync(
         ProviderCase path,
         string commitSha,
-        Uri baseUri,
         string apiKey,
         CancellationToken cancellationToken)
     {
@@ -121,7 +110,7 @@ public sealed class ProviderReleaseValidationTests(ITestOutputHelper output)
                 cancellationToken);
             await File.WriteAllTextAsync(
                 paths.ConfigPath,
-                Config(path, baseUri),
+                Config(path),
                 cancellationToken);
 
             var probe = new ProviderProbe();
@@ -143,14 +132,16 @@ public sealed class ProviderReleaseValidationTests(ITestOutputHelper output)
                         return new AgentRuntimeExecutor(
                             serviceProvider.GetRequiredService<AgentFactory>(),
                             serviceProvider.GetRequiredService<OpenCoWorkPaths>(),
-                            registration => new AuditedChatClient(
-                                new OpenAiCompatibleChatClient(
+                            registration => new AuditedResponsesClient(
+                                new DeepSeekResponsesClient(
                                     serviceProvider.GetRequiredService<HttpClient>(),
-                                    registration.BaseUri,
-                                    registration.LegacyApiKey!,
-                                    timeProvider),
+                                    apiKey,
+                                    serviceProvider.GetRequiredService<OpenCoWork.Core.Logging.SecretRedactor>(),
+                                    registration.ResponseHeaderTimeout,
+                                    registration.StreamIdleTimeout,
+                                    timeProvider).StreamAsync,
                                 registration.Tokenizer,
-                                probe),
+                                probe).StreamAsync,
                             timeProvider);
                     }),
                 cancellationToken);
@@ -172,11 +163,10 @@ public sealed class ProviderReleaseValidationTests(ITestOutputHelper output)
                 probe.HasContent &&
                 !string.IsNullOrWhiteSpace(standardOutput.ToString()) &&
                 probe.Usage is
-                { PromptTokens: > 0, CompletionTokens: > 0, TotalTokens: > 0 } usage &&
+                { InputTokens: > 0, OutputTokens: > 0, TotalTokens: > 0 } usage &&
                 probe.UsageCount == 1 &&
-                probe.FinishReason is not null and
-                    not ChatCompletionFinishReason.Unknown &&
-                UsageMatches(probe.LocalPromptTokens, usage.PromptTokens) &&
+                probe.Status == DeepSeekTerminalStatus.Completed &&
+                UsageMatches(probe.LocalPromptTokens, usage.InputTokens) &&
                 reasoningCommitted &&
                 !secretFound)
             {
@@ -186,7 +176,7 @@ public sealed class ProviderReleaseValidationTests(ITestOutputHelper output)
                     ReleaseStatus.Pass,
                     timestamp,
                     usage,
-                    probe.FinishReason);
+                    probe.Status);
             }
         }
         catch (OperationCanceledException) when (
@@ -223,44 +213,20 @@ public sealed class ProviderReleaseValidationTests(ITestOutputHelper output)
             : result;
     }
 
-    private static string Config(ProviderCase path, Uri baseUri)
-    {
-        var profile = TokenizerProfiles.GetRequiredForModel(path.ModelId);
-        return JsonSerializer.Serialize(
+    private static string Config(ProviderCase path) =>
+        JsonSerializer.Serialize(
             new
             {
                 models = new
                 {
-                    defaultProvider = path.ProviderPath,
                     defaultModel = path.ModelId,
-                    providers = new Dictionary<string, object>(StringComparer.Ordinal)
-                    {
-                        [path.ProviderPath] = new
-                        {
-                            baseUrl = baseUri.AbsoluteUri.TrimEnd('/'),
-                            apiKey = new
-                            {
-                                environment = path.ApiKeyVariable,
-                            },
-                            models = new Dictionary<string, object>(StringComparer.Ordinal)
-                            {
-                                [path.ModelId] = new
-                                {
-                                    tokenizerProfileId = profile.Id,
-                                    tokenizerProfileVersion = profile.Version,
-                                    contextWindowTokens = profile.ContextWindowTokens,
-                                    maxOutputTokens = profile.MaxOutputTokens,
-                                },
-                            },
-                        },
-                    },
+                    reasoningEffort = "high",
                 },
             },
             new JsonSerializerOptions(JsonSerializerDefaults.Web)
             {
                 WriteIndented = true,
             });
-    }
 
     private static bool DirectoryContains(string root, byte[] value)
     {
@@ -294,8 +260,8 @@ public sealed class ProviderReleaseValidationTests(ITestOutputHelper output)
         string? commitSha,
         ReleaseStatus status,
         DateTimeOffset? timestamp = null,
-        ChatCompletionUsage? usage = null,
-        ChatCompletionFinishReason? finishReason = null) =>
+        DeepSeekResponsesUsage? usage = null,
+        DeepSeekTerminalStatus? terminalStatus = null) =>
         new(
             IsCommitSha(commitSha) ? commitSha! : "unavailable",
             RuntimeInformation.RuntimeIdentifier,
@@ -303,7 +269,7 @@ public sealed class ProviderReleaseValidationTests(ITestOutputHelper output)
             path.ModelId,
             timestamp ?? DateTimeOffset.UtcNow,
             usage,
-            finishReason,
+            terminalStatus,
             status);
 
     private static bool IsCommitSha(string? value) =>
@@ -311,26 +277,9 @@ public sealed class ProviderReleaseValidationTests(ITestOutputHelper output)
         value.All(character =>
             character is >= '0' and <= '9' or >= 'a' and <= 'f');
 
-    private static bool TryGetBaseUri(string? value, out Uri? uri)
-    {
-        if (Uri.TryCreate(value, UriKind.Absolute, out var parsed) &&
-            parsed.Scheme == Uri.UriSchemeHttps &&
-            string.IsNullOrEmpty(parsed.UserInfo) &&
-            string.IsNullOrEmpty(parsed.Query) &&
-            string.IsNullOrEmpty(parsed.Fragment))
-        {
-            uri = new Uri(parsed.AbsoluteUri.TrimEnd('/') + "/");
-            return true;
-        }
-
-        uri = null;
-        return false;
-    }
-
     private sealed record ProviderCase(
         string ProviderPath,
         string ModelId,
-        string BaseUrlVariable,
         string ApiKeyVariable)
     {
         public bool RequiresReasoningRepresentative =>
@@ -343,8 +292,8 @@ public sealed class ProviderReleaseValidationTests(ITestOutputHelper output)
         string ProviderPath,
         string ModelId,
         DateTimeOffset TimestampUtc,
-        ChatCompletionUsage? Usage,
-        ChatCompletionFinishReason? FinishReason,
+        DeepSeekResponsesUsage? Usage,
+        DeepSeekTerminalStatus? TerminalStatus,
         ReleaseStatus Status);
 
     private enum ReleaseStatus
@@ -370,55 +319,63 @@ public sealed class ProviderReleaseValidationTests(ITestOutputHelper output)
 
         public bool Completed { get; private set; }
 
-        public ChatCompletionUsage? Usage { get; private set; }
+        public DeepSeekResponsesUsage? Usage { get; private set; }
 
         public int UsageCount { get; private set; }
 
-        public ChatCompletionFinishReason? FinishReason { get; private set; }
+        public DeepSeekTerminalStatus? Status { get; private set; }
 
         public void Start(
             ModelTokenizer tokenizer,
-            ChatCompletionRequest request)
+            DeepSeekResponsesRequest request)
         {
             RequestCount++;
             LocalPromptTokens =
-                AgentFactory.CountPromptTokens(tokenizer, request.Messages);
+                AgentFactory.CountPromptTokens(
+                    tokenizer,
+                    request.Instructions,
+                    request.Input,
+                    request.Tools);
         }
 
-        public void Observe(ChatCompletionEvent item)
+        public void Observe(DeepSeekResponseEvent item)
         {
             switch (item)
             {
-                case ChatCompletionContentDeltaEvent { Delta.Length: > 0 }:
+                case DeepSeekTextDeltaEvent
+                    { Kind: DeepSeekTextKind.Output, Delta.Length: > 0 }:
                     HasContent = true;
                     break;
-                case ChatCompletionReasoningDeltaEvent reasoning:
+                case DeepSeekTextDeltaEvent
+                    { Kind: DeepSeekTextKind.Reasoning } reasoning:
                     _reasoningDeltas.Add(reasoning.Delta);
                     break;
-                case ChatCompletionUsageEvent usage:
-                    UsageCount++;
-                    Usage = usage.Usage;
-                    break;
-                case ChatCompletionCompletedEvent completed:
+                case DeepSeekTerminalEvent terminal:
                     Completed = true;
-                    FinishReason = completed.FinishReason;
+                    Status = terminal.Status;
+                    if (terminal.Usage is not null)
+                    {
+                        UsageCount++;
+                        Usage = terminal.Usage;
+                    }
+
                     break;
             }
         }
     }
 
-    private sealed class AuditedChatClient(
-        IChatCompletionClient inner,
+    private sealed class AuditedResponsesClient(
+        DeepSeekResponseStream inner,
         ModelTokenizer tokenizer,
-        ProviderProbe probe) : IChatCompletionClient
+        ProviderProbe probe)
     {
-        public async IAsyncEnumerable<ChatCompletionEvent> StreamAsync(
-            ChatCompletionRequest request,
+        public async IAsyncEnumerable<DeepSeekResponseEvent> StreamAsync(
+            DeepSeekResponsesRequest request,
             [EnumeratorCancellation] CancellationToken cancellationToken = default)
         {
             probe.Start(tokenizer, request);
             await foreach (var item in inner
-                               .StreamAsync(request, cancellationToken)
+                               (request, cancellationToken)
                                .WithCancellation(cancellationToken))
             {
                 probe.Observe(item);

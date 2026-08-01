@@ -52,7 +52,7 @@ public sealed class DeepSeekResponsesClientTests
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         await using var server = new LoopbackSseServer(CompleteFixture());
-        using var httpClient = OpenAiCompatibleChatClient.CreateSharedHttpClient();
+        using var httpClient = DeepSeekResponsesClient.CreateSharedHttpClient();
         var client = Client(httpClient, server.BaseUri);
 
         var events = await DrainAsync(
@@ -121,7 +121,7 @@ public sealed class DeepSeekResponsesClientTests
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         await using var server = new LoopbackSseServer(CompleteFixture(), gzip: true);
-        using var httpClient = OpenAiCompatibleChatClient.CreateSharedHttpClient();
+        using var httpClient = DeepSeekResponsesClient.CreateSharedHttpClient();
 
         var events = await DrainAsync(
             Client(httpClient, server.BaseUri).StreamAsync(Request(), cancellationToken),
@@ -226,7 +226,7 @@ public sealed class DeepSeekResponsesClientTests
         {
             Timeout = Timeout.InfiniteTimeSpan,
         };
-        var exception = await Assert.ThrowsAsync<ChatCompletionException>(() => DrainAsync(
+        var exception = await Assert.ThrowsAsync<ProviderException>(() => DrainAsync(
             Client(httpClient, new Uri("https://provider.example/"))
                 .StreamAsync(Request(), cancellationToken),
             cancellationToken));
@@ -253,7 +253,7 @@ public sealed class DeepSeekResponsesClientTests
             Timeout = Timeout.InfiniteTimeSpan,
         };
 
-        var exception = await Assert.ThrowsAsync<ChatCompletionException>(() => DrainAsync(
+        var exception = await Assert.ThrowsAsync<ProviderException>(() => DrainAsync(
             Client(httpClient, new Uri("https://provider.example/"))
                 .StreamAsync(Request(), cancellationToken),
             cancellationToken));
@@ -352,7 +352,7 @@ public sealed class DeepSeekResponsesClientTests
             Timeout = Timeout.InfiniteTimeSpan,
         };
 
-        var exception = await Assert.ThrowsAsync<ChatCompletionException>(() => DrainAsync(
+        var exception = await Assert.ThrowsAsync<ProviderException>(() => DrainAsync(
             Client(httpClient, new Uri("https://provider.example/"))
                 .StreamAsync(Request(), cancellationToken),
             cancellationToken));
@@ -383,7 +383,7 @@ public sealed class DeepSeekResponsesClientTests
             Timeout = Timeout.InfiniteTimeSpan,
         })
         {
-            var exception = await Assert.ThrowsAsync<ChatCompletionException>(() => DrainAsync(
+            var exception = await Assert.ThrowsAsync<ProviderException>(() => DrainAsync(
                 Client(invalidClient, new Uri("https://provider.example/"))
                     .StreamAsync(Request(), cancellationToken),
                 cancellationToken));
@@ -404,7 +404,7 @@ public sealed class DeepSeekResponsesClientTests
             Timeout = Timeout.InfiniteTimeSpan,
         };
 
-        var oversized = await Assert.ThrowsAsync<ChatCompletionException>(() => DrainAsync(
+        var oversized = await Assert.ThrowsAsync<ProviderException>(() => DrainAsync(
             Client(oversizedClient, new Uri("https://provider.example/"))
                 .StreamAsync(Request(), cancellationToken),
             cancellationToken));
@@ -423,7 +423,7 @@ public sealed class DeepSeekResponsesClientTests
                 stream,
                 TimeProvider.System,
                 TimeSpan.FromSeconds(30));
-            var bodyLimit = await Assert.ThrowsAsync<ChatCompletionException>(
+            var bodyLimit = await Assert.ThrowsAsync<ProviderException>(
                 () => reader.ReadEventAsync(cancellationToken).AsTask());
             Assert.Equal(AgentErrorCodes.ProviderOutputTooLarge, bodyLimit.Code);
         }
@@ -452,7 +452,7 @@ public sealed class DeepSeekResponsesClientTests
             Timeout = Timeout.InfiniteTimeSpan,
         })
         {
-            var replayLimit = await Assert.ThrowsAsync<ChatCompletionException>(() => DrainAsync(
+            var replayLimit = await Assert.ThrowsAsync<ProviderException>(() => DrainAsync(
                 Client(replayClient, new Uri("https://provider.example/"))
                     .StreamAsync(Request(), cancellationToken),
                 cancellationToken));
@@ -466,7 +466,7 @@ public sealed class DeepSeekResponsesClientTests
         {
             Timeout = Timeout.InfiniteTimeSpan,
         };
-        var errorLimit = await Assert.ThrowsAsync<ChatCompletionException>(() => DrainAsync(
+        var errorLimit = await Assert.ThrowsAsync<ProviderException>(() => DrainAsync(
             Client(errorClient, new Uri("https://provider.example/"))
                 .StreamAsync(Request(), cancellationToken),
             cancellationToken));
@@ -485,7 +485,7 @@ public sealed class DeepSeekResponsesClientTests
             Timeout = Timeout.InfiniteTimeSpan,
         })
         {
-            var contentType = await Assert.ThrowsAsync<ChatCompletionException>(() => DrainAsync(
+            var contentType = await Assert.ThrowsAsync<ProviderException>(() => DrainAsync(
                 Client(contentClient, new Uri("https://provider.example/"))
                     .StreamAsync(Request(), cancellationToken),
                 cancellationToken));
@@ -499,7 +499,7 @@ public sealed class DeepSeekResponsesClientTests
             Timeout = Timeout.InfiniteTimeSpan,
         })
         {
-            var tls = await Assert.ThrowsAsync<ChatCompletionException>(() => DrainAsync(
+            var tls = await Assert.ThrowsAsync<ProviderException>(() => DrainAsync(
                 Client(tlsClient, new Uri("https://provider.example/"))
                     .StreamAsync(Request(), cancellationToken),
                 cancellationToken));
@@ -512,7 +512,7 @@ public sealed class DeepSeekResponsesClientTests
         {
             Timeout = Timeout.InfiniteTimeSpan,
         };
-        var transport = await Assert.ThrowsAsync<ChatCompletionException>(() => DrainAsync(
+        var transport = await Assert.ThrowsAsync<ProviderException>(() => DrainAsync(
             Client(transportClient, new Uri("https://provider.example/"))
                 .StreamAsync(Request(), cancellationToken),
             cancellationToken));
@@ -529,7 +529,7 @@ public sealed class DeepSeekResponsesClientTests
             Timeout = Timeout.InfiniteTimeSpan,
         })
         {
-            var exception = await Assert.ThrowsAsync<ChatCompletionException>(() => DrainAsync(
+            var exception = await Assert.ThrowsAsync<ProviderException>(() => DrainAsync(
                 Client(
                     headerClient,
                     new Uri("https://provider.example/"),
@@ -550,7 +550,7 @@ public sealed class DeepSeekResponsesClientTests
         {
             Timeout = Timeout.InfiniteTimeSpan,
         };
-        var idle = await Assert.ThrowsAsync<ChatCompletionException>(() => DrainAsync(
+        var idle = await Assert.ThrowsAsync<ProviderException>(() => DrainAsync(
             Client(
                 idleClient,
                 new Uri("https://provider.example/"),

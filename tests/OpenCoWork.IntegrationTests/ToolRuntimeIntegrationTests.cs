@@ -33,7 +33,7 @@ public sealed class ToolRuntimeIntegrationTests
             var models = Models();
             var credentials = FrozenProviderCredentials.Capture(
                 models,
-                name => name == "TOOL_RUNTIME_KEY" ? "test-secret" : null);
+                name => name == "DEEPSEEK_API_KEY" ? "test-secret" : null);
             var tools = new ToolRuntime(paths);
             var redactor = new SecretRedactor(["test-secret"]);
             var client = new ShellApprovalClient();
@@ -47,7 +47,7 @@ public sealed class ToolRuntimeIntegrationTests
                     paths,
                     tools),
                 paths,
-                _ => client,
+                _ => client.StreamAsync,
                 toolPipeline: new ToolInvocationPipeline(tools, redactor),
                 redactor: redactor);
             using var host = OpenCoWorkCompositionRoot.Build(
@@ -67,8 +67,8 @@ public sealed class ToolRuntimeIntegrationTests
             var exitCode = await ChatCommandRunner.RunAsync(
                 host.Services,
                 requestedThreadId: null,
-                providerId: "token-plan",
-                modelId: "qwen3.8-max-preview",
+                providerId: ModelsConfig.ProviderId,
+                modelId: ModelsConfig.FlashModelId,
                 new StringReader("run it\nyes\n/exit\n"),
                 output,
                 error,
@@ -88,11 +88,11 @@ public sealed class ToolRuntimeIntegrationTests
             Assert.Equal(2, client.Requests.Count);
             Assert.Contains(
                 "cli-approved",
-                client.Requests[1].Messages[^1].Content,
+                client.Requests[1].Input[^1].GetProperty("output").GetString()!,
                 StringComparison.Ordinal);
             Assert.Contains(
                 "\"exitCode\":0",
-                client.Requests[1].Messages[^1].Content,
+                client.Requests[1].Input[^1].GetProperty("output").GetString()!,
                 StringComparison.Ordinal);
             await host.StopAsync(cancellationToken);
         }
@@ -124,7 +124,7 @@ public sealed class ToolRuntimeIntegrationTests
             var models = Models();
             var credentials = FrozenProviderCredentials.Capture(
                 models,
-                name => name == "TOOL_RUNTIME_KEY" ? "test-secret" : null);
+                name => name == "DEEPSEEK_API_KEY" ? "test-secret" : null);
             var providers = new ProviderRegistry(
                 models,
                 credentials,
@@ -139,7 +139,7 @@ public sealed class ToolRuntimeIntegrationTests
                     paths,
                     tools),
                 paths,
-                _ => client,
+                _ => client.StreamAsync,
                 toolPipeline: new ToolInvocationPipeline(
                     tools,
                     redactor),
@@ -159,8 +159,8 @@ public sealed class ToolRuntimeIntegrationTests
                     Guid.CreateVersion7(),
                     ExpectedSequence: 0,
                     DisplayName: "tool loop",
-                    ProviderId: "token-plan",
-                    ModelId: "qwen3.8-max-preview"),
+                    ProviderId: ModelsConfig.ProviderId,
+                    ModelId: ModelsConfig.FlashModelId),
                 cancellationToken);
             Assert.Null(created.Error);
             var thread = Assert.IsType<ThreadSnapshot>(created.Value);
@@ -187,16 +187,16 @@ public sealed class ToolRuntimeIntegrationTests
             Assert.Null(thread.ActiveTurnId);
             Assert.Equal(2, client.Requests.Count);
             Assert.Equal(
-                [ChatCompletionMessageRole.Assistant, ChatCompletionMessageRole.Tool],
-                client.Requests[1].Messages.TakeLast(2)
-                    .Select(message => message.Role));
+                ["function_call", "function_call_output"],
+                client.Requests[1].Input.TakeLast(2)
+                    .Select(item => item.GetProperty("type").GetString()));
             Assert.Contains(
                 "visible.txt",
-                client.Requests[1].Messages[^1].Content,
+                client.Requests[1].Input[^1].GetProperty("output").GetString()!,
                 StringComparison.Ordinal);
             Assert.DoesNotContain(
                 "\"status\":\"registered\"",
-                client.Requests[1].Messages[^1].Content,
+                client.Requests[1].Input[^1].GetProperty("output").GetString()!,
                 StringComparison.Ordinal);
             var history = (await service.ReadHistoryAsync(
                 new ReadHistoryRequest(
@@ -223,38 +223,26 @@ public sealed class ToolRuntimeIntegrationTests
         }
     }
 
-    private static ModelsConfig Models() =>
-        new()
-        {
-            Providers = new Dictionary<string, ProviderConfig>(StringComparer.Ordinal)
-            {
-                ["token-plan"] = new()
-                {
-                    BaseUrl = "https://example.test/v1",
-                    ApiKey = new ProviderApiKeyConfig
-                    {
-                        Environment = "TOOL_RUNTIME_KEY",
-                    },
-                    Models = new Dictionary<string, ModelConfig>(StringComparer.Ordinal)
-                    {
-                        ["qwen3.8-max-preview"] = new()
-                        {
-                            TokenizerProfileId = "qwen-o200k",
-                            TokenizerProfileVersion = "1",
-                            ContextWindowTokens = 983_616,
-                            MaxOutputTokens = 131_072,
-                        },
-                    },
-                },
-            },
-        };
+    private static ModelsConfig Models() => new();
 
-    private sealed class ToolLoopClient : IChatCompletionClient
+    private static DeepSeekTextDeltaEvent Output(string value) =>
+        new("0:message-1", DeepSeekTextKind.Output, value);
+
+    private static DeepSeekTerminalEvent Completed() =>
+        new(DeepSeekTerminalStatus.Completed, Usage: null);
+
+    private static DeepSeekFunctionCallCompletedEvent Function(
+        string callId,
+        string name,
+        string arguments) =>
+        new($"1:{callId}", callId, name, arguments);
+
+    private sealed class ToolLoopClient
     {
-        public List<ChatCompletionRequest> Requests { get; } = [];
+        public List<DeepSeekResponsesRequest> Requests { get; } = [];
 
-        public async IAsyncEnumerable<ChatCompletionEvent> StreamAsync(
-            ChatCompletionRequest request,
+        public async IAsyncEnumerable<DeepSeekResponseEvent> StreamAsync(
+            DeepSeekResponsesRequest request,
             [EnumeratorCancellation] CancellationToken cancellationToken = default)
         {
             Requests.Add(request);
@@ -262,33 +250,30 @@ public sealed class ToolRuntimeIntegrationTests
             cancellationToken.ThrowIfCancellationRequested();
             if (Requests.Count == 1)
             {
-                yield return new ChatCompletionToolCallCompletedEvent(
-                    0,
+                yield return Function(
                     "call-1",
                     "file__list",
                     """{"path":"."}""");
-                yield return new ChatCompletionCompletedEvent(
-                    ChatCompletionFinishReason.ToolCall);
+                yield return Completed();
                 yield break;
             }
 
-            yield return new ChatCompletionContentDeltaEvent("done");
-            yield return new ChatCompletionCompletedEvent(
-                ChatCompletionFinishReason.Stop);
+            yield return Output("done");
+            yield return Completed();
         }
     }
 
-    private sealed class ShellApprovalClient : IChatCompletionClient
+    private sealed class ShellApprovalClient
     {
         public static string Command =>
             OperatingSystem.IsWindows()
                 ? "[Console]::Out.Write('cli-approved')"
                 : "printf cli-approved";
 
-        public List<ChatCompletionRequest> Requests { get; } = [];
+        public List<DeepSeekResponsesRequest> Requests { get; } = [];
 
-        public async IAsyncEnumerable<ChatCompletionEvent> StreamAsync(
-            ChatCompletionRequest request,
+        public async IAsyncEnumerable<DeepSeekResponseEvent> StreamAsync(
+            DeepSeekResponsesRequest request,
             [EnumeratorCancellation] CancellationToken cancellationToken = default)
         {
             Requests.Add(request);
@@ -296,19 +281,16 @@ public sealed class ToolRuntimeIntegrationTests
             cancellationToken.ThrowIfCancellationRequested();
             if (Requests.Count == 1)
             {
-                yield return new ChatCompletionToolCallCompletedEvent(
-                    0,
+                yield return Function(
                     "shell-call-1",
                     "shell__run",
                     $$"""{"command":"{{Command}}"}""");
-                yield return new ChatCompletionCompletedEvent(
-                    ChatCompletionFinishReason.ToolCall);
+                yield return Completed();
                 yield break;
             }
 
-            yield return new ChatCompletionContentDeltaEvent("done");
-            yield return new ChatCompletionCompletedEvent(
-                ChatCompletionFinishReason.Stop);
+            yield return Output("done");
+            yield return Completed();
         }
     }
 }

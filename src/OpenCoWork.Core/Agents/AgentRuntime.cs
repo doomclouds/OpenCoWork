@@ -85,7 +85,7 @@ public static class OpenCoWorkAgentExtensions
                 terminal: hooks is null ? null : hooks.ToolTerminalAsync);
         });
         services.TryAddSingleton(static _ =>
-            OpenAiCompatibleChatClient.CreateSharedHttpClient());
+            DeepSeekResponsesClient.CreateSharedHttpClient());
         services.TryAddSingleton(serviceProvider =>
             new AgentRuntimeExecutor(
                 serviceProvider.GetRequiredService<AgentFactory>(),
@@ -343,7 +343,7 @@ internal enum AgentInvocationDraftDisposition
     CompactionRequired,
 }
 
-internal static class ProviderMessageHistory
+internal static class ProviderResponsesHistory
 {
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -351,8 +351,9 @@ internal static class ProviderMessageHistory
         Converters = { new JsonStringEnumConverter(JsonNamingPolicy.CamelCase) },
     };
 
-    public static IReadOnlyList<ChatCompletionMessage> Build(
+    public static IReadOnlyList<JsonElement> Build(
         IEnumerable<SessionItemSnapshot> source,
+        Guid? activeTurnId = null,
         bool allowIncompleteFinalToolGroup = false)
     {
         var items = source
@@ -361,6 +362,7 @@ internal static class ProviderMessageHistory
                 item.Type is
                     SessionItemType.UserMessage or
                     SessionItemType.AgentMessage or
+                    SessionItemType.Reasoning or
                     SessionItemType.ToolCall or
                     SessionItemType.ToolResult)
             .OrderBy(item => item.Sequence)
@@ -375,23 +377,26 @@ internal static class ProviderMessageHistory
             .Select(content => content.AgentMessageItemId!.Value)
             .ToHashSet();
         var consumedResults = new HashSet<Guid>();
-        var messages = new List<ChatCompletionMessage>();
+        var input = new List<JsonElement>();
         for (var index = 0; index < items.Length; index++)
         {
             var item = items[index];
             switch (item.Type)
             {
                 case SessionItemType.UserMessage:
-                    messages.Add(new ChatCompletionMessage(
-                        ChatCompletionMessageRole.User,
-                        Text(item)));
+                    input.Add(Message("user", Text(item)));
                     break;
                 case SessionItemType.AgentMessage:
                     if (!linkedAgentIds.Contains(item.ItemId))
                     {
-                        messages.Add(new ChatCompletionMessage(
-                            ChatCompletionMessageRole.Assistant,
-                            Text(item)));
+                        input.Add(Message("assistant", Text(item)));
+                    }
+
+                    break;
+                case SessionItemType.Reasoning:
+                    if (item.TurnId == activeTurnId)
+                    {
+                        input.Add(Reasoning(Text(item)));
                     }
 
                     break;
@@ -408,7 +413,7 @@ internal static class ProviderMessageHistory
                         item,
                         index,
                         consumedResults,
-                        messages,
+                        input,
                         allowIncomplete);
                     break;
                 case SessionItemType.ToolResult:
@@ -421,7 +426,7 @@ internal static class ProviderMessageHistory
             }
         }
 
-        return messages.AsReadOnly();
+        return input.AsReadOnly();
     }
 
     public static string ToolResultEnvelope(ToolResultSnapshot result)
@@ -437,7 +442,7 @@ internal static class ProviderMessageHistory
         SessionItemSnapshot item,
         int itemIndex,
         HashSet<Guid> consumedResults,
-        List<ChatCompletionMessage> messages,
+        List<JsonElement> input,
         bool allowIncomplete)
     {
         if (item.Content is not ToolCallItemContent toolCall ||
@@ -464,16 +469,22 @@ internal static class ProviderMessageHistory
             content = Text(agentItem);
         }
 
-        messages.Add(new ChatCompletionMessage(
-            ChatCompletionMessageRole.Assistant,
-            content,
-            toolCall.Calls
-                .Select(call => new ChatCompletionToolCall(
-                    call.ProviderToolCallId,
-                    call.ProviderToolName,
-                    Encoding.UTF8.GetString(
-                        ThreadJournal.Canonicalize(call.Arguments))))
-                .ToArray()));
+        if (content.Length != 0)
+        {
+            input.Add(Message("assistant", content));
+        }
+
+        foreach (var call in toolCall.Calls)
+        {
+            input.Add(JsonSerializer.SerializeToElement(new
+            {
+                type = "function_call",
+                call_id = call.ProviderToolCallId,
+                name = call.ProviderToolName,
+                arguments = Encoding.UTF8.GetString(
+                    ThreadJournal.Canonicalize(call.Arguments)),
+            }));
+        }
 
         var resultIndex = 0;
         for (var index = itemIndex + 1;
@@ -493,10 +504,12 @@ internal static class ProviderMessageHistory
                     throw InvalidHistory();
                 }
 
-                messages.Add(new ChatCompletionMessage(
-                    ChatCompletionMessageRole.Tool,
-                    ToolResultEnvelope(result.Result),
-                    ToolCallId: result.Result.ProviderToolCallId));
+                input.Add(JsonSerializer.SerializeToElement(new
+                {
+                    type = "function_call_output",
+                    call_id = result.Result.ProviderToolCallId,
+                    output = ToolResultEnvelope(result.Result),
+                }));
                 consumedResults.Add(candidate.ItemId);
                 resultIndex++;
             }
@@ -520,6 +533,21 @@ internal static class ProviderMessageHistory
             ? text.Text
             : throw InvalidHistory();
 
+    private static JsonElement Message(string role, string content) =>
+        JsonSerializer.SerializeToElement(new
+        {
+            type = "message",
+            role,
+            content,
+        });
+
+    private static JsonElement Reasoning(string content) =>
+        JsonSerializer.SerializeToElement(new
+        {
+            type = "reasoning",
+            content,
+        });
+
     private static AgentPreparationException InvalidHistory() =>
         new(
             AgentErrorCodes.ContextInputInvalid,
@@ -532,8 +560,8 @@ internal sealed record AgentInvocationDraft(
     AgentInvocationSnapshot Snapshot,
     AgentPromptMaterialization ResponsePrompt,
     AgentPromptMaterialization CompactionPrompt,
-    IReadOnlyList<ChatCompletionMessage> Messages,
-    IReadOnlyList<ChatCompletionToolDefinition> Tools,
+    IReadOnlyList<JsonElement> Input,
+    IReadOnlyList<DeepSeekResponsesTool> Tools,
     int InputTokenCount,
     int UsableInputBudgetTokens);
 
@@ -645,6 +673,15 @@ internal sealed class AgentFactory(
                 "The frozen agent invocation no longer matches the runtime.");
         }
 
+        if (frozen is not null)
+        {
+            provider = provider with
+            {
+                ReasoningEffort = frozen.ReasoningEffort,
+                ConfigurationSha256 = frozen.ConfigurationSha256,
+            };
+        }
+
         if (session.CompactionCheckpoint is { } checkpoint &&
             !IsValidCheckpoint(
                 checkpoint,
@@ -669,23 +706,25 @@ internal sealed class AgentFactory(
                         state.ToolCallItemId == item.ItemId &&
                         state.CallIndex == callIndex &&
                         state.Invocation.CompletedAt is not null)));
-        var messages = BuildMessages(
+        var input = BuildInput(
             session,
-            responsePrompt.SystemMessage,
             hasIncompleteToolInvocation);
         var inputTokenCount = CountPromptTokens(
             provider.Tokenizer,
-            messages,
+            responsePrompt.SystemMessage,
+            input,
             tools);
         var usableInputBudget =
             provider.ContextWindowTokens - provider.MaxOutputTokens;
-        var currentMessages = ProviderMessageHistory.Build(
+        var currentInput = ProviderResponsesHistory.Build(
             session.ModelHistory.Where(item =>
                 item.TurnId == session.Turn.TurnId),
+            session.Turn.TurnId,
             hasIncompleteToolInvocation);
         var fixedInputCount = CountPromptTokens(
             provider.Tokenizer,
-            [messages[0], .. currentMessages],
+            responsePrompt.SystemMessage,
+            currentInput,
             tools);
         if (fixedInputCount > usableInputBudget)
         {
@@ -720,7 +759,7 @@ internal sealed class AgentFactory(
             snapshot,
             responsePrompt,
             compactionPrompt,
-            Array.AsReadOnly(messages),
+            Array.AsReadOnly(input),
             tools,
             inputTokenCount,
             usableInputBudget);
@@ -741,7 +780,7 @@ internal sealed class AgentFactory(
                     "The frozen tool snapshot is missing.")));
     }
 
-    internal IReadOnlyList<ChatCompletionToolDefinition> CreateProviderDefinitions(
+    internal IReadOnlyList<DeepSeekResponsesTool> CreateProviderDefinitions(
         AgentInvocationDraft draft,
         IReadOnlyCollection<ToolDefinitionId> activatedDeferredTools) =>
         draft.Provider.SupportsToolCalls
@@ -799,14 +838,6 @@ internal sealed class AgentFactory(
         frozen.ContextWindowTokens == provider.ContextWindowTokens &&
         frozen.MaxOutputTokens == provider.MaxOutputTokens &&
         string.Equals(
-            frozen.ReasoningEffort,
-            provider.ReasoningEffort,
-            StringComparison.Ordinal) &&
-        string.Equals(
-            frozen.ConfigurationSha256,
-            provider.ConfigurationSha256,
-            StringComparison.Ordinal) &&
-        string.Equals(
             frozen.ResponsePrompt.Version,
             responsePrompt.Snapshot.Version,
             StringComparison.Ordinal) &&
@@ -828,23 +859,21 @@ internal sealed class AgentFactory(
             frozen.Tools?.SnapshotSha256,
             StringComparison.Ordinal);
 
-    private static ChatCompletionMessage[] BuildMessages(
+    private static JsonElement[] BuildInput(
         AgentSession session,
-        string systemMessage,
         bool allowIncompleteFinalToolGroup)
     {
-        var messages = new List<ChatCompletionMessage>
-        {
-            new(ChatCompletionMessageRole.System, systemMessage),
-        };
+        var input = new List<JsonElement>();
         var sourceEndSequence =
             session.CompactionCheckpoint?.SourceEndSequence ?? long.MinValue;
         if (session.CompactionCheckpoint is { } checkpoint)
         {
-            messages.Add(new ChatCompletionMessage(
-                ChatCompletionMessageRole.Assistant,
-                "Conversation summary of earlier turns:\n" +
-                checkpoint.Summary));
+            input.Add(JsonSerializer.SerializeToElement(new
+            {
+                type = "message",
+                role = "assistant",
+                content = "Conversation summary of earlier turns:\n" + checkpoint.Summary,
+            }));
         }
 
         var currentUserMessageCount = 0;
@@ -864,24 +893,32 @@ internal sealed class AgentFactory(
             }
         }
 
-        messages.AddRange(ProviderMessageHistory.Build(
+        input.AddRange(ProviderResponsesHistory.Build(
             history,
+            session.Turn.TurnId,
             allowIncompleteFinalToolGroup));
         if (currentUserMessageCount != 1 ||
-            messages[^1].Role is not (
-                ChatCompletionMessageRole.User or
-                ChatCompletionMessageRole.Tool) &&
+            !IsRole(input[^1], "user") &&
+            !IsType(input[^1], "function_call_output") &&
             !(allowIncompleteFinalToolGroup &&
-              messages[^1].Role == ChatCompletionMessageRole.Assistant &&
-              messages[^1].ToolCalls is { Count: > 0 }))
+              IsType(input[^1], "function_call")))
         {
             throw new AgentPreparationException(
                 AgentErrorCodes.ContextInputInvalid,
                 "The current user input is missing or duplicated.");
         }
 
-        return [.. messages];
+        return [.. input];
     }
+
+    private static bool IsType(JsonElement item, string expected) =>
+        item.TryGetProperty("type", out var type) &&
+        string.Equals(type.GetString(), expected, StringComparison.Ordinal);
+
+    private static bool IsRole(JsonElement item, string expected) =>
+        IsType(item, "message") &&
+        item.TryGetProperty("role", out var role) &&
+        string.Equals(role.GetString(), expected, StringComparison.Ordinal);
 
     private static bool IsValidCheckpoint(
         CompactionCheckpointSnapshot checkpoint,
@@ -942,41 +979,37 @@ internal sealed class AgentFactory(
 
     internal static int CountPromptTokens(
         ModelTokenizer tokenizer,
-        IReadOnlyList<ChatCompletionMessage> messages,
-        IReadOnlyList<ChatCompletionToolDefinition>? tools = null)
+        string instructions,
+        IReadOnlyList<JsonElement> input,
+        IReadOnlyList<DeepSeekResponsesTool>? tools = null)
     {
-        var count = 3;
-        foreach (var message in messages)
+        var count = checked(
+            8 +
+            tokenizer.CountTokens("system") +
+            tokenizer.CountTokens(instructions));
+        foreach (var item in input)
         {
-            count = checked(
-                count +
-                5 +
-                tokenizer.CountTokens(message.Role.ToString().ToLowerInvariant()) +
-                tokenizer.CountTokens(message.Content));
-            if (message.ToolCallId is { } toolCallId)
-            {
-                count = checked(count + 2 + tokenizer.CountTokens(toolCallId));
-            }
-
-            foreach (var toolCall in message.ToolCalls ?? [])
-            {
-                count = checked(
-                    count +
-                    8 +
-                    tokenizer.CountTokens(toolCall.Id) +
-                    tokenizer.CountTokens(toolCall.Name) +
-                    tokenizer.CountTokens(toolCall.Arguments));
-            }
+            count = checked(count + 5 + tokenizer.CountTokens(item.GetRawText()));
         }
 
         foreach (var tool in tools ?? [])
         {
-            count = checked(
-                count +
-                10 +
-                tokenizer.CountTokens(tool.ProviderName) +
-                tokenizer.CountTokens(tool.Description) +
-                tokenizer.CountTokens(tool.InputSchema.GetRawText()));
+            count = tool switch
+            {
+                DeepSeekFunctionTool function => checked(
+                    count +
+                    10 +
+                    tokenizer.CountTokens(function.Name) +
+                    tokenizer.CountTokens(function.Description) +
+                    tokenizer.CountTokens(function.Parameters.GetRawText())),
+                DeepSeekApplyPatchTool => checked(
+                    count + 10 + tokenizer.CountTokens("apply_patch")),
+                DeepSeekWebSearchTool => checked(
+                    count + 10 + tokenizer.CountTokens("web_search")),
+                _ => throw new AgentPreparationException(
+                    AgentErrorCodes.ContextInputInvalid,
+                    "The provider tool projection is invalid."),
+            };
         }
 
         return count;
@@ -988,7 +1021,7 @@ internal sealed class AgentRuntimeExecutor : ISessionExecutor
     private static readonly TimeSpan InvocationTimeout = TimeSpan.FromMinutes(30);
     private readonly AgentFactory _factory;
     private readonly OpenCoWorkPaths _paths;
-    private readonly Func<ProviderModelRegistration, IChatCompletionClient> _clients;
+    private readonly Func<ProviderModelRegistration, string, DeepSeekResponseStream> _clients;
     private readonly IToolInvocationPipeline _toolPipeline;
     private readonly SecretRedactor _redactor;
     private readonly ProviderAuthService? _auth;
@@ -1005,14 +1038,13 @@ internal sealed class AgentRuntimeExecutor : ISessionExecutor
         : this(
             factory,
             paths,
-            provider => new OpenAiCompatibleChatClient(
+            (provider, secret) => new DeepSeekResponsesClient(
                 httpClient,
-                provider.BaseUri,
-                provider.LegacyApiKey,
-                provider.AuthPlacement,
+                secret,
+                redactor,
                 provider.ResponseHeaderTimeout,
                 provider.StreamIdleTimeout,
-                timeProvider),
+                timeProvider).StreamAsync,
             timeProvider,
             toolPipeline,
             redactor,
@@ -1023,11 +1055,31 @@ internal sealed class AgentRuntimeExecutor : ISessionExecutor
     internal AgentRuntimeExecutor(
         AgentFactory factory,
         OpenCoWorkPaths paths,
-        Func<ProviderModelRegistration, IChatCompletionClient> clients,
+        Func<ProviderModelRegistration, DeepSeekResponseStream> clients,
         TimeProvider? timeProvider = null,
         IToolInvocationPipeline? toolPipeline = null,
         SecretRedactor? redactor = null,
         ProviderAuthService? auth = null)
+        : this(
+            factory,
+            paths,
+            (provider, _) => clients(provider),
+            timeProvider,
+            toolPipeline,
+            redactor,
+            auth)
+    {
+        ArgumentNullException.ThrowIfNull(clients);
+    }
+
+    private AgentRuntimeExecutor(
+        AgentFactory factory,
+        OpenCoWorkPaths paths,
+        Func<ProviderModelRegistration, string, DeepSeekResponseStream> clients,
+        TimeProvider? timeProvider,
+        IToolInvocationPipeline? toolPipeline,
+        SecretRedactor? redactor,
+        ProviderAuthService? auth)
     {
         _factory = factory ?? throw new ArgumentNullException(nameof(factory));
         _paths = paths ?? throw new ArgumentNullException(nameof(paths));
@@ -1198,7 +1250,7 @@ internal sealed class AgentRuntimeExecutor : ISessionExecutor
                 }
             }
 
-            var messages = draft.Messages.ToList();
+            var input = draft.Input.ToList();
             var anyToolAttempted = false;
             if (pendingToolFrame is not null)
             {
@@ -1209,7 +1261,7 @@ internal sealed class AgentRuntimeExecutor : ISessionExecutor
                     pendingToolFrame,
                     resumeCheckpoint,
                     knownToolCalls,
-                    messages,
+                    input,
                     nextAttempt,
                     activityStarted,
                     invocationBudget,
@@ -1222,7 +1274,6 @@ internal sealed class AgentRuntimeExecutor : ISessionExecutor
                 }
             }
 
-            var reactiveCompactionUsed = false;
             while (true)
             {
                 var toolFrameCompleted = false;
@@ -1232,18 +1283,18 @@ internal sealed class AgentRuntimeExecutor : ISessionExecutor
                         draft,
                         activatedDeferredTools);
                     var attempt = nextAttempt++;
-                    var usageRecorded = false;
                     var stepVisible = false;
                     var content = new StringBuilder();
                     var reasoning = new StringBuilder();
                     var toolCalls =
-                        new List<ChatCompletionToolCallCompletedEvent>();
+                        new List<DeepSeekFunctionCallCompletedEvent>();
                     activeContentItemId = Guid.Empty;
                     activeReasoningItemId = Guid.Empty;
-                    ChatCompletionFinishReason? finishReason = null;
+                    DeepSeekTerminalEvent? terminal = null;
                     var inputTokenCount = AgentFactory.CountPromptTokens(
                         draft.Provider.Tokenizer,
-                        messages,
+                        draft.ResponsePrompt.SystemMessage,
+                        input,
                         providerTools);
                     if (inputTokenCount > draft.UsableInputBudgetTokens)
                     {
@@ -1258,24 +1309,28 @@ internal sealed class AgentRuntimeExecutor : ISessionExecutor
 
                     try
                     {
-                        var request = new ChatCompletionRequest(
+                        var request = new DeepSeekResponsesRequest(
                             draft.Provider.ModelId,
-                            messages,
+                            draft.ResponsePrompt.SystemMessage,
+                            input,
                             draft.Provider.MaxOutputTokens,
+                            draft.Snapshot.ReasoningEffort,
+                            providerTools,
                             draft.Snapshot.InvocationId,
                             attempt,
-                            ProviderInvocationPurpose.Response,
-                            providerTools);
-                        await foreach (var item in Client(
+                            ProviderInvocationPurpose.Response);
+                        await foreach (var item in Stream(
                                            draft.Provider,
-                                           providerSecretLease)
-                                           .StreamAsync(request, invocationToken)
+                                           providerSecretLease)(request, invocationToken)
                                            .WithCancellation(invocationToken))
                         {
                             switch (item)
                             {
-                                case ChatCompletionContentDeltaEvent delta
-                                    when delta.Delta.Length != 0:
+                                case DeepSeekTextDeltaEvent
+                                    {
+                                        Kind: DeepSeekTextKind.Output,
+                                        Delta.Length: > 0,
+                                    } delta:
                                     if (activeContentItemId == Guid.Empty)
                                     {
                                         activeContentItemId =
@@ -1298,8 +1353,11 @@ internal sealed class AgentRuntimeExecutor : ISessionExecutor
                                     content.Append(delta.Delta);
                                     stepVisible = true;
                                     break;
-                                case ChatCompletionReasoningDeltaEvent delta
-                                    when delta.Delta.Length != 0:
+                                case DeepSeekTextDeltaEvent
+                                    {
+                                        Kind: DeepSeekTextKind.Reasoning,
+                                        Delta.Length: > 0,
+                                    } delta:
                                     if (activeReasoningItemId == Guid.Empty)
                                     {
                                         activeReasoningItemId =
@@ -1322,26 +1380,41 @@ internal sealed class AgentRuntimeExecutor : ISessionExecutor
                                     reasoning.Append(delta.Delta);
                                     stepVisible = true;
                                     break;
-                                case ChatCompletionToolCallCompletedEvent toolCall:
+                                case DeepSeekFunctionCallCompletedEvent toolCall:
                                     toolCalls.Add(toolCall);
                                     break;
-                                case ChatCompletionUsageEvent usage:
-                                    await RecordUsageAsync(
-                                        sink,
-                                        draft.Snapshot.InvocationId,
-                                        attempt,
-                                        ProviderInvocationPurpose.Response,
-                                        usage.Usage,
-                                        cancellationToken);
-                                    usageRecorded = true;
+                                case DeepSeekTextCompletedEvent:
                                     break;
-                                case ChatCompletionCompletedEvent completed:
-                                    finishReason = completed.FinishReason;
+                                case DeepSeekTerminalEvent completed:
+                                    terminal = completed;
                                     break;
+                                case DeepSeekCustomToolCallCompletedEvent or
+                                    DeepSeekWebSearchEvent:
+                                    throw new ProviderException(
+                                        AgentErrorCodes.ProviderUnsupportedToolCall,
+                                        "Provider returned a tool call that is not enabled yet.");
                             }
                         }
 
-                        if (!usageRecorded)
+                        if (terminal is null)
+                        {
+                            throw new ProviderException(
+                                AgentErrorCodes.ProviderInvalidStream,
+                                "Provider returned no terminal response.");
+                        }
+
+                        if (terminal.Usage is { } usage)
+                        {
+                            await RecordUsageAsync(
+                                sink,
+                                draft.Snapshot.InvocationId,
+                                attempt,
+                                ProviderInvocationPurpose.Response,
+                                usage,
+                                cancellationToken);
+                        }
+
+                        else
                         {
                             var completionTokens =
                                 draft.Provider.Tokenizer.CountTokens(
@@ -1356,15 +1429,23 @@ internal sealed class AgentRuntimeExecutor : ISessionExecutor
                                 cancellationToken);
                         }
 
-                        if (finishReason == ChatCompletionFinishReason.ToolCall)
+                        if (terminal.Status == DeepSeekTerminalStatus.Failed)
                         {
-                            if (toolCalls.Count == 0)
-                            {
-                                throw new ChatCompletionException(
-                                    AgentErrorCodes.ProviderInvalidStream,
-                                    "Provider returned an incomplete tool call frame.");
-                            }
+                            await FailAsync(
+                                sink,
+                                activeContentItemId,
+                                activeReasoningItemId,
+                                new SessionError(
+                                    terminal.ErrorCode ?? AgentErrorCodes.ProviderResponseFailed,
+                                    terminal.ErrorDetail ?? "Provider response failed.",
+                                    IsRetryable: false),
+                                cancellationToken);
+                            return;
+                        }
 
+                        if (toolCalls.Count != 0 &&
+                            terminal.Status == DeepSeekTerminalStatus.Completed)
+                        {
                             if (activeReasoningItemId != Guid.Empty)
                             {
                                 await sink.EmitAsync(
@@ -1391,17 +1472,36 @@ internal sealed class AgentRuntimeExecutor : ISessionExecutor
                             await sink.EmitAsync(
                                 new RecordToolCallIntent(toolCallItemId, frame),
                                 cancellationToken);
-                            messages.Add(new ChatCompletionMessage(
-                                ChatCompletionMessageRole.Assistant,
-                                content.ToString(),
-                                frame.Calls
-                                    .Select(call => new ChatCompletionToolCall(
-                                        call.ProviderToolCallId,
-                                        call.ProviderToolName,
-                                        Encoding.UTF8.GetString(
-                                            ThreadJournal.Canonicalize(
-                                                call.Arguments))))
-                                    .ToArray()));
+                            if (reasoning.Length != 0)
+                            {
+                                input.Add(JsonSerializer.SerializeToElement(new
+                                {
+                                    type = "reasoning",
+                                    content = reasoning.ToString(),
+                                }));
+                            }
+
+                            if (content.Length != 0)
+                            {
+                                input.Add(JsonSerializer.SerializeToElement(new
+                                {
+                                    type = "message",
+                                    role = "assistant",
+                                    content = content.ToString(),
+                                }));
+                            }
+
+                            foreach (var call in frame.Calls)
+                            {
+                                input.Add(JsonSerializer.SerializeToElement(new
+                                {
+                                    type = "function_call",
+                                    call_id = call.ProviderToolCallId,
+                                    name = call.ProviderToolName,
+                                    arguments = Encoding.UTF8.GetString(
+                                        ThreadJournal.Canonicalize(call.Arguments)),
+                                }));
+                            }
                             for (var callIndex = 0;
                                  callIndex < frame.Calls.Count;
                                  callIndex++)
@@ -1481,10 +1581,12 @@ internal sealed class AgentRuntimeExecutor : ISessionExecutor
                                             result));
                                 }
 
-                                messages.Add(new ChatCompletionMessage(
-                                    ChatCompletionMessageRole.Tool,
-                                    ProviderMessageHistory.ToolResultEnvelope(result),
-                                    ToolCallId: call.ProviderToolCallId));
+                                input.Add(JsonSerializer.SerializeToElement(new
+                                {
+                                    type = "function_call_output",
+                                    call_id = call.ProviderToolCallId,
+                                    output = ProviderResponsesHistory.ToolResultEnvelope(result),
+                                }));
                             }
 
                             if (providerRound >= 64)
@@ -1501,21 +1603,21 @@ internal sealed class AgentRuntimeExecutor : ISessionExecutor
 
                         if (toolCalls.Count != 0)
                         {
-                            throw new ChatCompletionException(
+                            throw new ProviderException(
                                 AgentErrorCodes.ProviderInvalidStream,
-                                "Provider returned tool calls with an invalid finish reason.");
+                                "Provider returned tool calls with an invalid terminal status.");
                         }
 
-                        var error = FinishError(
-                            finishReason,
-                            content.Length != 0);
-                        if (error is not null)
+                        if (content.Length == 0)
                         {
                             await FailAsync(
                                 sink,
                                 activeContentItemId,
                                 activeReasoningItemId,
-                                error,
+                                new SessionError(
+                                    AgentErrorCodes.ProviderEmptyResponse,
+                                    "Provider returned no response content.",
+                                    IsRetryable: false),
                                 cancellationToken);
                             return;
                         }
@@ -1534,7 +1636,7 @@ internal sealed class AgentRuntimeExecutor : ISessionExecutor
                                 cancellationToken);
                         }
 
-                        if (finishReason == ChatCompletionFinishReason.Length)
+                        if (terminal.Status == DeepSeekTerminalStatus.Incomplete)
                         {
                             var noticeId =
                                 Guid.CreateVersion7(_timeProvider.GetUtcNow());
@@ -1554,49 +1656,8 @@ internal sealed class AgentRuntimeExecutor : ISessionExecutor
                             cancellationToken);
                         return;
                     }
-                    catch (ChatCompletionException exception)
+                    catch (ProviderException exception)
                     {
-                        if (!stepVisible &&
-                            !anyToolAttempted &&
-                            providerRound == 0 &&
-                            exception.IsPromptTooLong &&
-                            !reactiveCompactionUsed)
-                        {
-                            reactiveCompactionUsed = true;
-                            var compacted = await CompactAsync(
-                                session,
-                                draft,
-                                instructions,
-                                sink,
-                                nextAttempt,
-                                maximumAttempt: 3,
-                                targetPercent: 50,
-                                providerSecretLease,
-                                invocationToken,
-                                cancellationToken);
-                            if (compacted is null)
-                            {
-                                await FailCompactionAsync(
-                                    sink,
-                                    cancellationToken);
-                                return;
-                            }
-
-                            session = compacted.Session;
-                            draft = compacted.Draft;
-                            messages = draft.Messages.ToList();
-                            nextAttempt = compacted.NextAttempt;
-                            if (nextAttempt > 3)
-                            {
-                                await FailCompactionAsync(
-                                    sink,
-                                    cancellationToken);
-                                return;
-                            }
-
-                            break;
-                        }
-
                         if (!stepVisible &&
                             !anyToolAttempted &&
                             exception.IsTransient &&
@@ -1607,12 +1668,6 @@ internal sealed class AgentRuntimeExecutor : ISessionExecutor
                                 attempt,
                                 invocationToken);
                             continue;
-                        }
-
-                        if (!stepVisible && exception.IsPromptTooLong)
-                        {
-                            await FailCompactionAsync(sink, cancellationToken);
-                            return;
                         }
 
                         await FailAsync(
@@ -1809,7 +1864,7 @@ internal sealed class AgentRuntimeExecutor : ISessionExecutor
         PendingToolFrame frame,
         ToolLoopCheckpoint? resumeCheckpoint,
         Dictionary<string, KnownToolCall> knownToolCalls,
-        List<ChatCompletionMessage> messages,
+        List<JsonElement> input,
         int nextAttempt,
         long activityStarted,
         TimeSpan activityBudget,
@@ -1914,10 +1969,12 @@ internal sealed class AgentRuntimeExecutor : ISessionExecutor
                     known with { Result = result };
             }
 
-            messages.Add(new ChatCompletionMessage(
-                ChatCompletionMessageRole.Tool,
-                ProviderMessageHistory.ToolResultEnvelope(result),
-                ToolCallId: call.ProviderToolCallId));
+            input.Add(JsonSerializer.SerializeToElement(new
+            {
+                type = "function_call_output",
+                call_id = call.ProviderToolCallId,
+                output = ProviderResponsesHistory.ToolResultEnvelope(result),
+            }));
         }
 
         return anyToolAttempted;
@@ -2046,10 +2103,10 @@ internal sealed class AgentRuntimeExecutor : ISessionExecutor
     private ToolCallItemContent PreflightToolFrame(
         int providerRound,
         Guid? agentMessageItemId,
-        IReadOnlyList<ChatCompletionToolCallCompletedEvent> calls)
+        IReadOnlyList<DeepSeekFunctionCallCompletedEvent> calls)
     {
         if (calls.Count == 0 ||
-            calls.Select(call => call.Id)
+            calls.Select(call => call.CallId)
                 .Distinct(StringComparer.Ordinal)
                 .Count() != calls.Count)
         {
@@ -2060,8 +2117,7 @@ internal sealed class AgentRuntimeExecutor : ISessionExecutor
         for (var index = 0; index < calls.Count; index++)
         {
             var call = calls[index];
-            if (call.Index != index ||
-                string.IsNullOrWhiteSpace(call.Id) ||
+            if (string.IsNullOrWhiteSpace(call.CallId) ||
                 string.IsNullOrWhiteSpace(call.Name))
             {
                 throw InvalidToolFrame();
@@ -2090,14 +2146,14 @@ internal sealed class AgentRuntimeExecutor : ISessionExecutor
                 }
 
                 entries[index] = new ToolCallItemEntry(
-                    call.Id,
+                    call.CallId,
                     call.Name,
                     arguments,
                     Convert.ToHexString(SHA256.HashData(canonical))
                         .ToLowerInvariant(),
                     sensitiveInputDetected);
             }
-            catch (ChatCompletionException)
+            catch (ProviderException)
             {
                 throw;
             }
@@ -2220,7 +2276,7 @@ internal sealed class AgentRuntimeExecutor : ISessionExecutor
             payload);
     }
 
-    private static ChatCompletionException InvalidToolFrame() =>
+    private static ProviderException InvalidToolFrame() =>
         new(
             AgentErrorCodes.ProviderInvalidStream,
             "Provider returned an invalid tool call frame.");
@@ -2243,18 +2299,19 @@ internal sealed class AgentRuntimeExecutor : ISessionExecutor
             return null;
         }
 
-        var messages = new[]
+        var input = new[]
         {
-            new ChatCompletionMessage(
-                ChatCompletionMessageRole.System,
-                draft.CompactionPrompt.SystemMessage),
-            new ChatCompletionMessage(
-                ChatCompletionMessageRole.User,
-                CompactionInput(session.CompactionCheckpoint, selection.Items)),
+            JsonSerializer.SerializeToElement(new
+            {
+                type = "message",
+                role = "user",
+                content = CompactionInput(session.CompactionCheckpoint, selection.Items),
+            }),
         };
         var promptTokens = AgentFactory.CountPromptTokens(
             draft.Provider.Tokenizer,
-            messages);
+            draft.CompactionPrompt.SystemMessage,
+            input);
         var maxSummaryTokens = Math.Min(
             8192,
             checked((draft.UsableInputBudgetTokens + 9) / 10));
@@ -2268,46 +2325,58 @@ internal sealed class AgentRuntimeExecutor : ISessionExecutor
         {
             var attempt = nextAttempt++;
             var summary = new StringBuilder();
-            var usageRecorded = false;
-            ChatCompletionFinishReason? finishReason = null;
+            DeepSeekTerminalEvent? terminal = null;
             try
             {
-                var request = new ChatCompletionRequest(
+                var request = new DeepSeekResponsesRequest(
                     draft.Provider.ModelId,
-                    messages,
+                    draft.CompactionPrompt.SystemMessage,
+                    input,
                     maxSummaryTokens,
+                    draft.Snapshot.ReasoningEffort,
+                    Tools: [],
                     draft.Snapshot.InvocationId,
                     attempt,
                     ProviderInvocationPurpose.Compaction);
-                await foreach (var item in Client(draft.Provider, providerSecret)
-                                   .StreamAsync(request, invocationToken)
+                await foreach (var item in Stream(draft.Provider, providerSecret)(
+                                   request,
+                                   invocationToken)
                                    .WithCancellation(invocationToken))
                 {
                     switch (item)
                     {
-                        case ChatCompletionContentDeltaEvent delta:
+                        case DeepSeekTextDeltaEvent
+                            {
+                                Kind: DeepSeekTextKind.Output,
+                            } delta:
                             summary.Append(delta.Delta);
                             break;
-                        case ChatCompletionUsageEvent usage:
-                            await RecordUsageAsync(
-                                sink,
-                                draft.Snapshot.InvocationId,
-                                attempt,
-                                ProviderInvocationPurpose.Compaction,
-                                usage.Usage,
-                                cancellationToken);
-                            usageRecorded = true;
+                        case DeepSeekTextCompletedEvent:
                             break;
-                        case ChatCompletionCompletedEvent completed:
-                            finishReason = completed.FinishReason;
+                        case DeepSeekTerminalEvent completed:
+                            terminal = completed;
                             break;
+                        default:
+                            throw new ProviderException(
+                                AgentErrorCodes.ProviderInvalidStream,
+                                "Provider returned invalid compaction output.");
                     }
                 }
 
                 var normalizedSummary = NormalizeLf(summary.ToString());
                 var summaryTokens =
                     draft.Provider.Tokenizer.CountTokens(normalizedSummary);
-                if (!usageRecorded)
+                if (terminal?.Usage is { } usage)
+                {
+                    await RecordUsageAsync(
+                        sink,
+                        draft.Snapshot.InvocationId,
+                        attempt,
+                        ProviderInvocationPurpose.Compaction,
+                        usage,
+                        cancellationToken);
+                }
+                else
                 {
                     await RecordEstimatedUsageAsync(
                         sink,
@@ -2319,7 +2388,7 @@ internal sealed class AgentRuntimeExecutor : ISessionExecutor
                         cancellationToken);
                 }
 
-                if (finishReason != ChatCompletionFinishReason.Stop ||
+                if (terminal?.Status != DeepSeekTerminalStatus.Completed ||
                     summaryTokens > maxSummaryTokens ||
                     !CompactionCheckpointIntegrity.IsValidSummary(
                         normalizedSummary))
@@ -2372,7 +2441,7 @@ internal sealed class AgentRuntimeExecutor : ISessionExecutor
                     compactedDraft,
                     nextAttempt);
             }
-            catch (ChatCompletionException exception)
+            catch (ProviderException exception)
             {
                 if (!exception.IsTransient || nextAttempt > maximumAttempt)
                 {
@@ -2386,10 +2455,10 @@ internal sealed class AgentRuntimeExecutor : ISessionExecutor
         return null;
     }
 
-    private IChatCompletionClient Client(
+    private DeepSeekResponseStream Stream(
         ProviderModelRegistration provider,
         ProviderSecretLease secret) =>
-        _clients(provider with { LegacyApiKey = secret.Secret });
+        _clients(provider, secret.Secret!);
 
     private static CompactionSelection? SelectCompaction(
         AgentSession session,
@@ -2450,24 +2519,25 @@ internal sealed class AgentRuntimeExecutor : ISessionExecutor
     {
         const string summaryPrefix =
             "Conversation summary of earlier turns:\n";
-        var messages = new List<ChatCompletionMessage>
+        var input = new List<JsonElement>
         {
-            new(
-                ChatCompletionMessageRole.System,
-                draft.ResponsePrompt.SystemMessage),
-            new(
-                ChatCompletionMessageRole.Assistant,
-                summaryPrefix),
+            JsonSerializer.SerializeToElement(new
+            {
+                type = "message",
+                role = "assistant",
+                content = summaryPrefix,
+            }),
         };
-        messages.AddRange(
-            ProviderMessageHistory.Build(
+        input.AddRange(
+            ProviderResponsesHistory.Build(
                 session.ModelHistory.Where(item =>
                     item.Status == SessionItemStatus.Completed &&
                     item.Sequence > sourceEndSequence)));
         return checked(
             AgentFactory.CountPromptTokens(
                 draft.Provider.Tokenizer,
-                messages,
+                draft.ResponsePrompt.SystemMessage,
+                input,
                 draft.Tools) +
             Math.Min(
                 8192,
@@ -2486,25 +2556,30 @@ internal sealed class AgentRuntimeExecutor : ISessionExecutor
             result.Append("\n\n");
         }
 
-        foreach (var message in ProviderMessageHistory.Build(items))
+        foreach (var item in ProviderResponsesHistory.Build(items))
         {
-            result.Append(message.Role);
-            result.Append(":\n");
-            result.Append(NormalizeLf(message.Content));
-            foreach (var call in message.ToolCalls ?? [])
+            var type = item.GetProperty("type").GetString();
+            if (type == "message")
             {
-                result.Append("\nToolCall ");
-                result.Append(call.Id);
-                result.Append(' ');
-                result.Append(call.Name);
-                result.Append(' ');
-                result.Append(call.Arguments);
+                result.Append(item.GetProperty("role").GetString());
+                result.Append(":\n");
+                result.Append(NormalizeLf(item.GetProperty("content").GetString()!));
             }
-
-            if (message.ToolCallId is { } toolCallId)
+            else if (type == "function_call")
             {
-                result.Append("\nToolCallId ");
-                result.Append(toolCallId);
+                result.Append("ToolCall ");
+                result.Append(item.GetProperty("call_id").GetString());
+                result.Append(' ');
+                result.Append(item.GetProperty("name").GetString());
+                result.Append(' ');
+                result.Append(item.GetProperty("arguments").GetString());
+            }
+            else if (type == "function_call_output")
+            {
+                result.Append("ToolCallOutput ");
+                result.Append(item.GetProperty("call_id").GetString());
+                result.Append(' ');
+                result.Append(item.GetProperty("output").GetString());
             }
 
             result.Append("\n\n");
@@ -2514,7 +2589,7 @@ internal sealed class AgentRuntimeExecutor : ISessionExecutor
     }
 
     private async ValueTask DelayRetryAsync(
-        ChatCompletionException exception,
+        ProviderException exception,
         int attempt,
         CancellationToken cancellationToken)
     {
@@ -2535,7 +2610,7 @@ internal sealed class AgentRuntimeExecutor : ISessionExecutor
         Guid invocationId,
         int attempt,
         ProviderInvocationPurpose purpose,
-        ChatCompletionUsage usage,
+        DeepSeekResponsesUsage usage,
         CancellationToken cancellationToken) =>
         sink.EmitAsync(
             new RecordProviderUsageIntent(
@@ -2543,11 +2618,13 @@ internal sealed class AgentRuntimeExecutor : ISessionExecutor
                     invocationId,
                     attempt,
                     purpose,
-                    usage.PromptTokens,
-                    usage.CompletionTokens,
+                    usage.InputTokens,
+                    usage.OutputTokens,
                     usage.TotalTokens,
                     ProviderUsageSource.Provider,
-                    IsEstimate: false)),
+                    IsEstimate: false,
+                    usage.CachedInputTokens,
+                    usage.ReasoningOutputTokens)),
             cancellationToken);
 
     private static ValueTask RecordEstimatedUsageAsync(
@@ -2616,31 +2693,6 @@ internal sealed class AgentRuntimeExecutor : ISessionExecutor
         SessionItemSnapshot Item,
         ToolCallItemContent Content,
         IReadOnlyList<AgentToolInvocationSnapshot?> States);
-
-    private static SessionError? FinishError(
-        ChatCompletionFinishReason? finishReason,
-        bool hasContent) =>
-        finishReason switch
-        {
-            ChatCompletionFinishReason.Stop when hasContent => null,
-            ChatCompletionFinishReason.Length when hasContent => null,
-            ChatCompletionFinishReason.ContentFilter => new SessionError(
-                AgentErrorCodes.ProviderContentFiltered,
-                "Provider filtered the response.",
-                IsRetryable: false),
-            ChatCompletionFinishReason.ToolCall => new SessionError(
-                AgentErrorCodes.ProviderUnsupportedToolCall,
-                "Provider returned an unsupported tool call.",
-                IsRetryable: false),
-            _ when !hasContent => new SessionError(
-                AgentErrorCodes.ProviderEmptyResponse,
-                "Provider returned no response content.",
-                IsRetryable: false),
-            _ => new SessionError(
-                AgentErrorCodes.ProviderInvalidStream,
-                "Provider returned an invalid finish reason.",
-                IsRetryable: false),
-        };
 
     private static async ValueTask FailAsync(
         ISessionExecutionSink sink,

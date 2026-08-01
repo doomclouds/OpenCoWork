@@ -110,6 +110,79 @@ public sealed class AgentRuntimeExecutorTests
     }
 
     [Fact]
+    public async Task Incomplete_terminal_keeps_partial_output_usage_and_truncation_notice()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var directory = Path.Combine(
+            Path.GetTempPath(),
+            $"opencowork-incomplete-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        try
+        {
+            var sink = new RecordingSink();
+            await Executor(
+                    directory,
+                    "secret",
+                    _ => new ResponsesTerminalClient(
+                        DeepSeekTerminalStatus.Incomplete))
+                .ExecuteAsync(Session(), sink, cancellationToken);
+
+            var usage = Assert.Single(
+                sink.Intents.OfType<RecordProviderUsageIntent>()).Usage;
+            Assert.Equal((10, 2, 6, 3, 16),
+                (usage.PromptTokens,
+                    usage.CachedPromptTokens,
+                    usage.CompletionTokens,
+                    usage.ReasoningCompletionTokens,
+                    usage.TotalTokens));
+            Assert.Contains(
+                sink.Intents.OfType<StartItemIntent>(),
+                intent => intent.Type == SessionItemType.SystemNotice &&
+                          intent.Content is SystemNoticeContent notice &&
+                          notice.Message == "response.truncated");
+            Assert.IsType<CompleteTurnIntent>(sink.Intents[^1]);
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Failed_terminal_fails_active_items_with_the_stable_provider_error()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var directory = Path.Combine(
+            Path.GetTempPath(),
+            $"opencowork-failed-terminal-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        try
+        {
+            var sink = new RecordingSink();
+            await Executor(
+                    directory,
+                    "secret",
+                    _ => new ResponsesTerminalClient(
+                        DeepSeekTerminalStatus.Failed))
+                .ExecuteAsync(Session(), sink, cancellationToken);
+
+            var failed = Assert.IsType<FailTurnIntent>(sink.Intents[^1]);
+            Assert.Equal(AgentErrorCodes.ProviderResponseFailed, failed.Error.Code);
+            Assert.Equal(2, sink.Intents.OfType<FailItemIntent>().Count());
+            Assert.True(Assert.Single(
+                    sink.Intents.OfType<RecordProviderUsageIntent>())
+                .Usage.IsEstimate);
+            Assert.DoesNotContain(
+                sink.Intents,
+                intent => intent is CompleteTurnIntent);
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task Retries_only_before_the_first_visible_delta_is_committed()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
@@ -129,12 +202,14 @@ public sealed class AgentRuntimeExecutorTests
 
             Assert.Equal(2, beforeVisible.Attempts);
             Assert.IsType<CompleteTurnIntent>(beforeVisibleSink.Intents[^1]);
-            var estimatedUsage = Assert.Single(
-                beforeVisibleSink.Intents,
-                intent => intent is RecordProviderUsageIntent);
-            Assert.True(
-                Assert.IsType<RecordProviderUsageIntent>(estimatedUsage)
-                    .Usage.IsEstimate);
+            var estimatedUsage = Assert.IsType<RecordProviderUsageIntent>(
+                    Assert.Single(
+                        beforeVisibleSink.Intents,
+                        intent => intent is RecordProviderUsageIntent))
+                .Usage;
+            Assert.True(estimatedUsage.IsEstimate);
+            Assert.Equal(0, estimatedUsage.CachedPromptTokens);
+            Assert.Equal(0, estimatedUsage.ReasoningCompletionTokens);
 
             var afterVisible = new TransientClient(failAfterDelta: true);
             var afterVisibleSink = new RecordingSink();
@@ -182,15 +257,18 @@ public sealed class AgentRuntimeExecutorTests
             Assert.Equal([1, 2], client.Requests.Select(item => item.AttemptNumber));
             Assert.Equal(
                 [
-                    ChatCompletionMessageRole.Assistant,
-                    ChatCompletionMessageRole.Tool,
-                    ChatCompletionMessageRole.Tool,
+                    "message",
+                    "function_call",
+                    "function_call",
+                    "function_call_output",
+                    "function_call_output",
                 ],
-                client.Requests[1].Messages.TakeLast(3).Select(message => message.Role));
+                client.Requests[1].Input.TakeLast(5)
+                    .Select(item => item.GetProperty("type").GetString()));
             Assert.Equal(
                 ["call-1", "call-2"],
-                client.Requests[1].Messages.TakeLast(2)
-                    .Select(message => message.ToolCallId));
+                client.Requests[1].Input.TakeLast(2)
+                    .Select(item => item.GetProperty("call_id").GetString()));
 
             var toolCall = Assert.Single(
                 sink.Intents.OfType<RecordToolCallIntent>());
@@ -265,11 +343,11 @@ public sealed class AgentRuntimeExecutorTests
 
             Assert.Equal(2, client.Requests.Count);
             Assert.DoesNotContain(
-                client.Requests[0].Tools,
-                tool => tool.ProviderName == "plugin_acme_tools__echo");
+                client.Requests[0].Tools.OfType<DeepSeekFunctionTool>(),
+                tool => tool.Name == "plugin_acme_tools__echo");
             Assert.Contains(
-                client.Requests[1].Tools,
-                tool => tool.ProviderName == "plugin_acme_tools__echo");
+                client.Requests[1].Tools.OfType<DeepSeekFunctionTool>(),
+                tool => tool.Name == "plugin_acme_tools__echo");
             Assert.Single(
                 sink.Intents.OfType<RecordDeferredToolsActivatedIntent>());
             Assert.IsType<CompleteTurnIntent>(sink.Intents[^1]);
@@ -358,9 +436,9 @@ public sealed class AgentRuntimeExecutorTests
             Assert.Single(resumedClient.Requests);
             Assert.Equal(2, resumedClient.Requests[0].AttemptNumber);
             Assert.Equal(
-                [ChatCompletionMessageRole.Assistant, ChatCompletionMessageRole.Tool],
-                resumedClient.Requests[0].Messages.TakeLast(2)
-                    .Select(message => message.Role));
+                ["function_call", "function_call_output"],
+                resumedClient.Requests[0].Input.TakeLast(2)
+                    .Select(item => item.GetProperty("type").GetString()));
             Assert.DoesNotContain(
                 resumedSink.Intents,
                 intent => intent is RecordAgentInvocationSnapshotIntent);
@@ -627,7 +705,7 @@ public sealed class AgentRuntimeExecutorTests
                     directory,
                     "secret",
                     _ => new FinishClient(
-                        ChatCompletionFinishReason.Length,
+                        DeepSeekTerminalStatus.Incomplete,
                         content: "partial"))
                 .ExecuteAsync(Session(), sink, cancellationToken);
 
@@ -646,31 +724,9 @@ public sealed class AgentRuntimeExecutorTests
     }
 
     [Theory]
-    [InlineData(
-        ChatCompletionFinishReason.ContentFilter,
-        "partial",
-        null,
-        AgentErrorCodes.ProviderContentFiltered)]
-    [InlineData(
-        ChatCompletionFinishReason.ToolCall,
-        "partial",
-        null,
-        AgentErrorCodes.ProviderInvalidStream)]
-    [InlineData(
-        ChatCompletionFinishReason.Unknown,
-        "partial",
-        null,
-        AgentErrorCodes.ProviderInvalidStream)]
-    [InlineData(
-        ChatCompletionFinishReason.Stop,
-        null,
-        "thought",
-        AgentErrorCodes.ProviderEmptyResponse)]
-    public async Task Invalid_finish_states_fail_once(
-        ChatCompletionFinishReason finishReason,
-        string? content,
-        string? reasoning,
-        string expectedCode)
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Terminal_without_output_content_fails_once(bool incomplete)
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var directory = Path.Combine(
@@ -683,11 +739,15 @@ public sealed class AgentRuntimeExecutorTests
             await Executor(
                     directory,
                     "secret",
-                    _ => new FinishClient(finishReason, content, reasoning))
+                    _ => new FinishClient(
+                        incomplete
+                            ? DeepSeekTerminalStatus.Incomplete
+                            : DeepSeekTerminalStatus.Completed,
+                        reasoning: "thought"))
                 .ExecuteAsync(Session(), sink, cancellationToken);
 
             var failed = Assert.IsType<FailTurnIntent>(sink.Intents[^1]);
-            Assert.Equal(expectedCode, failed.Error.Code);
+            Assert.Equal(AgentErrorCodes.ProviderEmptyResponse, failed.Error.Code);
             Assert.Single(
                 sink.Intents,
                 intent => intent is CompleteTurnIntent or FailTurnIntent);
@@ -701,7 +761,7 @@ public sealed class AgentRuntimeExecutorTests
     private static AgentRuntimeExecutor Executor(
         string directory,
         string secret,
-        Func<ProviderModelRegistration, IChatCompletionClient> clients,
+        Func<ProviderModelRegistration, IResponsesTestClient> clients,
         TimeProvider? timeProvider = null,
         IToolInvocationPipeline? toolPipeline = null,
         ToolRuntime? toolRuntime = null)
@@ -710,7 +770,7 @@ public sealed class AgentRuntimeExecutorTests
         return new AgentRuntimeExecutor(
             Factory(directory, secret, toolRuntime),
             paths,
-            clients,
+            provider => clients(provider).StreamAsync,
             timeProvider,
             toolPipeline);
     }
@@ -724,7 +784,7 @@ public sealed class AgentRuntimeExecutorTests
         var models = Models();
         var credentials = FrozenProviderCredentials.Capture(
             models,
-            name => name == "TOKEN_PLAN_KEY" ? secret : null);
+            name => name == ModelsConfig.ApiKeyEnvironmentVariable ? secret : null);
         return new AgentFactory(
             new ProviderRegistry(
                 models,
@@ -736,30 +796,7 @@ public sealed class AgentRuntimeExecutorTests
     }
 
     private static ModelsConfig Models() =>
-        new()
-        {
-            Providers = new Dictionary<string, ProviderConfig>(StringComparer.Ordinal)
-            {
-                ["token-plan"] = new()
-                {
-                    BaseUrl = "https://example.test/v1",
-                    ApiKey = new ProviderApiKeyConfig
-                    {
-                        Environment = "TOKEN_PLAN_KEY",
-                    },
-                    Models = new Dictionary<string, ModelConfig>(StringComparer.Ordinal)
-                    {
-                        ["qwen3.8-max-preview"] = new()
-                        {
-                            TokenizerProfileId = "qwen-o200k",
-                            TokenizerProfileVersion = "1",
-                            ContextWindowTokens = 983_616,
-                            MaxOutputTokens = 131_072,
-                        },
-                    },
-                },
-            },
-        };
+        new();
 
     private static AgentSession Session(
         ExecutionWorkspaceDescriptor? executionWorkspace = null)
@@ -790,8 +827,8 @@ public sealed class AgentRuntimeExecutorTests
                 timestamp,
                 SessionProjectionState.Ready,
                 diagnostic: null,
-                "token-plan",
-                "qwen3.8-max-preview",
+                ModelsConfig.ProviderId,
+                ModelsConfig.FlashModelId,
                 AgentMode.Agent,
                 executionWorkspace),
             new TurnSnapshot(
@@ -1064,30 +1101,80 @@ public sealed class AgentRuntimeExecutorTests
                     IsEstimate: true)));
     }
 
-    private sealed class ScriptedClient : IChatCompletionClient
+    private interface IResponsesTestClient
     {
-        public async IAsyncEnumerable<ChatCompletionEvent> StreamAsync(
-            ChatCompletionRequest request,
+        IAsyncEnumerable<DeepSeekResponseEvent> StreamAsync(
+            DeepSeekResponsesRequest request,
+            CancellationToken cancellationToken = default);
+    }
+
+    private static DeepSeekTextDeltaEvent Output(string value) =>
+        new("0:message-1", DeepSeekTextKind.Output, value);
+
+    private static DeepSeekTextDeltaEvent Reasoning(string value) =>
+        new("1:reasoning-1", DeepSeekTextKind.Reasoning, value);
+
+    private static DeepSeekTerminalEvent Completed(
+        DeepSeekResponsesUsage? usage = null) =>
+        new(DeepSeekTerminalStatus.Completed, usage);
+
+    private static DeepSeekFunctionCallCompletedEvent Function(
+        string callId,
+        string name,
+        string arguments) =>
+        new($"2:{callId}", callId, name, arguments);
+
+    private sealed class ScriptedClient : IResponsesTestClient
+    {
+        public async IAsyncEnumerable<DeepSeekResponseEvent> StreamAsync(
+            DeepSeekResponsesRequest request,
             [EnumeratorCancellation] CancellationToken cancellationToken = default)
         {
             await Task.Yield();
             cancellationToken.ThrowIfCancellationRequested();
-            yield return new ChatCompletionContentDeltaEvent("answer");
-            yield return new ChatCompletionReasoningDeltaEvent("thought");
-            yield return new ChatCompletionUsageEvent(
-                new ChatCompletionUsage(20, 4, 24));
-            yield return new ChatCompletionCompletedEvent(
-                ChatCompletionFinishReason.Stop);
+            yield return Output("answer");
+            yield return Reasoning("thought");
+            yield return Completed(new DeepSeekResponsesUsage(20, 0, 4, 0, 24));
+        }
+    }
+
+    private sealed class ResponsesTerminalClient(DeepSeekTerminalStatus status)
+        : IResponsesTestClient
+    {
+        public async IAsyncEnumerable<DeepSeekResponseEvent> StreamAsync(
+            DeepSeekResponsesRequest request,
+            [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            await Task.Yield();
+            cancellationToken.ThrowIfCancellationRequested();
+            yield return new DeepSeekTextDeltaEvent(
+                "0:message-1",
+                DeepSeekTextKind.Output,
+                "partial");
+            yield return new DeepSeekTextDeltaEvent(
+                "1:reasoning-1",
+                DeepSeekTextKind.Reasoning,
+                "thought");
+            yield return status == DeepSeekTerminalStatus.Failed
+                ? new DeepSeekTerminalEvent(
+                    status,
+                    Usage: null,
+                    ErrorCode: AgentErrorCodes.ProviderResponseFailed,
+                    ErrorDetail: "provider failed")
+                : new DeepSeekTerminalEvent(
+                    status,
+                    new DeepSeekResponsesUsage(10, 2, 6, 3, 16),
+                    Reason: "max_output_tokens");
         }
     }
 
     private sealed class TransientClient(bool failAfterDelta)
-        : IChatCompletionClient
+        : IResponsesTestClient
     {
         public int Attempts { get; private set; }
 
-        public async IAsyncEnumerable<ChatCompletionEvent> StreamAsync(
-            ChatCompletionRequest request,
+        public async IAsyncEnumerable<DeepSeekResponseEvent> StreamAsync(
+            DeepSeekResponsesRequest request,
             [EnumeratorCancellation] CancellationToken cancellationToken = default)
         {
             Attempts++;
@@ -1095,7 +1182,7 @@ public sealed class AgentRuntimeExecutorTests
             cancellationToken.ThrowIfCancellationRequested();
             if (failAfterDelta)
             {
-                yield return new ChatCompletionContentDeltaEvent("visible");
+                yield return Output("visible");
                 throw Transient();
             }
 
@@ -1104,12 +1191,11 @@ public sealed class AgentRuntimeExecutorTests
                 throw Transient();
             }
 
-            yield return new ChatCompletionContentDeltaEvent("recovered");
-            yield return new ChatCompletionCompletedEvent(
-                ChatCompletionFinishReason.Stop);
+            yield return Output("recovered");
+            yield return Completed();
         }
 
-        private static ChatCompletionException Transient() =>
+        private static ProviderException Transient() =>
             new(
                 AgentErrorCodes.ProviderServerUnavailable,
                 "transient",
@@ -1117,15 +1203,15 @@ public sealed class AgentRuntimeExecutorTests
                 isTransient: true);
     }
 
-    private sealed class BlockingClient : IChatCompletionClient
+    private sealed class BlockingClient : IResponsesTestClient
     {
         public TaskCompletionSource Started { get; } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public int Attempts { get; private set; }
 
-        public async IAsyncEnumerable<ChatCompletionEvent> StreamAsync(
-            ChatCompletionRequest request,
+        public async IAsyncEnumerable<DeepSeekResponseEvent> StreamAsync(
+            DeepSeekResponsesRequest request,
             [EnumeratorCancellation] CancellationToken cancellationToken = default)
         {
             Attempts++;
@@ -1135,12 +1221,12 @@ public sealed class AgentRuntimeExecutorTests
         }
     }
 
-    private sealed class ToolLoopClient : IChatCompletionClient
+    private sealed class ToolLoopClient : IResponsesTestClient
     {
-        public List<ChatCompletionRequest> Requests { get; } = [];
+        public List<DeepSeekResponsesRequest> Requests { get; } = [];
 
-        public async IAsyncEnumerable<ChatCompletionEvent> StreamAsync(
-            ChatCompletionRequest request,
+        public async IAsyncEnumerable<DeepSeekResponseEvent> StreamAsync(
+            DeepSeekResponsesRequest request,
             [EnumeratorCancellation] CancellationToken cancellationToken = default)
         {
             Requests.Add(request);
@@ -1148,34 +1234,30 @@ public sealed class AgentRuntimeExecutorTests
             cancellationToken.ThrowIfCancellationRequested();
             if (Requests.Count == 1)
             {
-                yield return new ChatCompletionContentDeltaEvent("checking");
-                yield return new ChatCompletionToolCallCompletedEvent(
-                    0,
+                yield return Output("checking");
+                yield return Function(
                     "call-1",
                     "file__list",
                     """{"path":"src"}""");
-                yield return new ChatCompletionToolCallCompletedEvent(
-                    1,
+                yield return Function(
                     "call-2",
                     "file__list",
                     """{"path":"tests"}""");
-                yield return new ChatCompletionCompletedEvent(
-                    ChatCompletionFinishReason.ToolCall);
+                yield return Completed();
                 yield break;
             }
 
-            yield return new ChatCompletionContentDeltaEvent("done");
-            yield return new ChatCompletionCompletedEvent(
-                ChatCompletionFinishReason.Stop);
+            yield return Output("done");
+            yield return Completed();
         }
     }
 
-    private sealed class DeferredToolClient : IChatCompletionClient
+    private sealed class DeferredToolClient : IResponsesTestClient
     {
-        public List<ChatCompletionRequest> Requests { get; } = [];
+        public List<DeepSeekResponsesRequest> Requests { get; } = [];
 
-        public async IAsyncEnumerable<ChatCompletionEvent> StreamAsync(
-            ChatCompletionRequest request,
+        public async IAsyncEnumerable<DeepSeekResponseEvent> StreamAsync(
+            DeepSeekResponsesRequest request,
             [EnumeratorCancellation] CancellationToken cancellationToken = default)
         {
             Requests.Add(request);
@@ -1183,28 +1265,25 @@ public sealed class AgentRuntimeExecutorTests
             cancellationToken.ThrowIfCancellationRequested();
             if (Requests.Count == 1)
             {
-                yield return new ChatCompletionToolCallCompletedEvent(
-                    0,
+                yield return Function(
                     "call-search",
                     "tool__search",
                     """{"query":"echo"}""");
-                yield return new ChatCompletionCompletedEvent(
-                    ChatCompletionFinishReason.ToolCall);
+                yield return Completed();
                 yield break;
             }
 
-            yield return new ChatCompletionContentDeltaEvent("done");
-            yield return new ChatCompletionCompletedEvent(
-                ChatCompletionFinishReason.Stop);
+            yield return Output("done");
+            yield return Completed();
         }
     }
 
-    private sealed class DuplicateToolCallClient : IChatCompletionClient
+    private sealed class DuplicateToolCallClient : IResponsesTestClient
     {
-        public List<ChatCompletionRequest> Requests { get; } = [];
+        public List<DeepSeekResponsesRequest> Requests { get; } = [];
 
-        public async IAsyncEnumerable<ChatCompletionEvent> StreamAsync(
-            ChatCompletionRequest request,
+        public async IAsyncEnumerable<DeepSeekResponseEvent> StreamAsync(
+            DeepSeekResponsesRequest request,
             [EnumeratorCancellation] CancellationToken cancellationToken = default)
         {
             Requests.Add(request);
@@ -1212,79 +1291,71 @@ public sealed class AgentRuntimeExecutorTests
             cancellationToken.ThrowIfCancellationRequested();
             if (Requests.Count <= 2)
             {
-                yield return new ChatCompletionToolCallCompletedEvent(
-                    0,
+                yield return Function(
                     "call-1",
                     "file__list",
                     """{"path":"src"}""");
-                yield return new ChatCompletionCompletedEvent(
-                    ChatCompletionFinishReason.ToolCall);
+                yield return Completed();
                 yield break;
             }
 
-            yield return new ChatCompletionContentDeltaEvent("done");
-            yield return new ChatCompletionCompletedEvent(
-                ChatCompletionFinishReason.Stop);
+            yield return Output("done");
+            yield return Completed();
         }
     }
 
-    private sealed class SingleToolCallClient : IChatCompletionClient
+    private sealed class SingleToolCallClient : IResponsesTestClient
     {
-        public async IAsyncEnumerable<ChatCompletionEvent> StreamAsync(
-            ChatCompletionRequest request,
+        public async IAsyncEnumerable<DeepSeekResponseEvent> StreamAsync(
+            DeepSeekResponsesRequest request,
             [EnumeratorCancellation] CancellationToken cancellationToken = default)
         {
             await Task.Yield();
             cancellationToken.ThrowIfCancellationRequested();
-            yield return new ChatCompletionToolCallCompletedEvent(
-                0,
+            yield return Function(
                 "approval-call",
                 "file__list",
                 """{"path":"src"}""");
-            yield return new ChatCompletionCompletedEvent(
-                ChatCompletionFinishReason.ToolCall);
+            yield return Completed();
         }
     }
 
-    private sealed class FinalAfterToolClient : IChatCompletionClient
+    private sealed class FinalAfterToolClient : IResponsesTestClient
     {
-        public List<ChatCompletionRequest> Requests { get; } = [];
+        public List<DeepSeekResponsesRequest> Requests { get; } = [];
 
-        public async IAsyncEnumerable<ChatCompletionEvent> StreamAsync(
-            ChatCompletionRequest request,
+        public async IAsyncEnumerable<DeepSeekResponseEvent> StreamAsync(
+            DeepSeekResponsesRequest request,
             [EnumeratorCancellation] CancellationToken cancellationToken = default)
         {
             Requests.Add(request);
             await Task.Yield();
             cancellationToken.ThrowIfCancellationRequested();
-            yield return new ChatCompletionContentDeltaEvent("done");
-            yield return new ChatCompletionCompletedEvent(
-                ChatCompletionFinishReason.Stop);
+            yield return Output("done");
+            yield return Completed();
         }
     }
 
-    private sealed class IterationToolClient : IChatCompletionClient
+    private sealed class IterationToolClient : IResponsesTestClient
     {
         public int Requests { get; private set; }
 
-        public async IAsyncEnumerable<ChatCompletionEvent> StreamAsync(
-            ChatCompletionRequest request,
+        public async IAsyncEnumerable<DeepSeekResponseEvent> StreamAsync(
+            DeepSeekResponsesRequest request,
             [EnumeratorCancellation] CancellationToken cancellationToken = default)
         {
             Requests++;
             await Task.Yield();
             cancellationToken.ThrowIfCancellationRequested();
-            yield return new ChatCompletionToolCallCompletedEvent(
-                0,
+            yield return Function(
                 $"call-{Requests}",
                 "file__list",
                 """{"path":"src"}""");
-            yield return new ChatCompletionCompletedEvent(
-                ChatCompletionFinishReason.ToolCall);
+            yield return Completed();
         }
     }
 
-    private sealed class CompactionResumeClient : IChatCompletionClient
+    private sealed class CompactionResumeClient : IResponsesTestClient
     {
         private const string Summary =
             """
@@ -1300,21 +1371,20 @@ public sealed class AgentRuntimeExecutorTests
             - Continue the current turn.
             """;
 
-        public List<ChatCompletionRequest> Requests { get; } = [];
+        public List<DeepSeekResponsesRequest> Requests { get; } = [];
 
-        public async IAsyncEnumerable<ChatCompletionEvent> StreamAsync(
-            ChatCompletionRequest request,
+        public async IAsyncEnumerable<DeepSeekResponseEvent> StreamAsync(
+            DeepSeekResponsesRequest request,
             [EnumeratorCancellation] CancellationToken cancellationToken = default)
         {
             Requests.Add(request);
             await Task.Yield();
             cancellationToken.ThrowIfCancellationRequested();
-            yield return new ChatCompletionContentDeltaEvent(
+            yield return Output(
                 request.Purpose == ProviderInvocationPurpose.Compaction
                     ? Summary
                     : "done");
-            yield return new ChatCompletionCompletedEvent(
-                ChatCompletionFinishReason.Stop);
+            yield return Completed();
         }
     }
 
@@ -1493,27 +1563,34 @@ public sealed class AgentRuntimeExecutorTests
     }
 
     private sealed class FinishClient(
-        ChatCompletionFinishReason finishReason,
+        DeepSeekTerminalStatus status,
         string? content = null,
-        string? reasoning = null) : IChatCompletionClient
+        string? reasoning = null) : IResponsesTestClient
     {
-        public async IAsyncEnumerable<ChatCompletionEvent> StreamAsync(
-            ChatCompletionRequest request,
+        public async IAsyncEnumerable<DeepSeekResponseEvent> StreamAsync(
+            DeepSeekResponsesRequest request,
             [EnumeratorCancellation] CancellationToken cancellationToken = default)
         {
             await Task.Yield();
             cancellationToken.ThrowIfCancellationRequested();
             if (content is not null)
             {
-                yield return new ChatCompletionContentDeltaEvent(content);
+                yield return Output(content);
             }
 
             if (reasoning is not null)
             {
-                yield return new ChatCompletionReasoningDeltaEvent(reasoning);
+                yield return Reasoning(reasoning);
             }
 
-            yield return new ChatCompletionCompletedEvent(finishReason);
+            yield return new DeepSeekTerminalEvent(
+                status,
+                status == DeepSeekTerminalStatus.Failed
+                    ? null
+                    : new DeepSeekResponsesUsage(10, 0, 5, 0, 15),
+                status == DeepSeekTerminalStatus.Incomplete
+                    ? "max_output_tokens"
+                    : null);
         }
     }
 
