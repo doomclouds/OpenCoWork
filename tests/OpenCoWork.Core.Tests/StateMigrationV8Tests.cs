@@ -136,7 +136,7 @@ public sealed class StateMigrationV8Tests
         var faulted = new StateRuntime(
             files.Paths,
             TimeSpan.FromSeconds(2),
-            StateMigrations.Current,
+            StateMigrations.VersionEightOnly,
             Contributors(),
             point =>
             {
@@ -244,13 +244,24 @@ public sealed class StateMigrationV8Tests
             faultInjector: null);
 
     private static StateRuntime CreateCurrent(OpenCoWorkPaths paths) =>
-        new(paths, TimeSpan.FromSeconds(2), Contributors());
+        new(
+            paths,
+            TimeSpan.FromSeconds(2),
+            StateMigrations.VersionEightOnly,
+            Contributors(),
+            faultInjector: null);
 
-    private static IWorkspaceStateMigrationContributor[] Contributors() =>
+    private static IWorkspaceStateMigrationContributor[] Contributors()
+    {
+        IWorkspaceStateMigrationContributor[] contributors =
         [
             .. TeamsStateMigrationContributors.Create(),
             .. AutomationsStateMigrationContributors.Create(),
         ];
+        return contributors
+            .Where(contributor => contributor.TargetVersion <= 8)
+            .ToArray();
+    }
 
     private static async Task<T> ScalarAsync<T>(
         SqliteConnection connection,

@@ -79,9 +79,9 @@ Milestone standard: [README.md](README.md)
 - [ ] 11. M10 - Gateway and Operations
   - Status: In Progress
   - Related spec: docs/superpowers/specs/2026-08-01-open-cowork-m10-gateway-operations-design.md (Design Freeze; 2026-08-01 用户确认)
-  - Related plan: docs/superpowers/plans/2026-08-01-open-cowork-m10-gateway-operations-implementation-plan.md (In Progress; Gate 0 and Outcome 1 complete)
+  - Related plan: docs/superpowers/plans/2026-08-01-open-cowork-m10-gateway-operations-implementation-plan.md (In Progress; Gate 0 and Outcomes 1-2 complete)
   - Related archive: None yet.
-  - Completion signal: Outcome 1 已完成配置、Channel 契约、Secret/Trust 复用与 gateway 主宿主骨架；State v9、可靠投递、Hub、Operations、Wire 1.4 和双平台验收待后续 Outcome。
+  - Completion signal: Outcomes 1-2 已完成 Gateway 契约/主宿主与 State v9 十表、稳定 Workspace ID、三组 Correlation 列和迁移恢复；可靠投递、Hub、Operations、Wire 1.4 和双平台验收待后续 Outcome。
 - [ ] 12. M11 - OpenCoWork 1.0 Closure
   - Status: Not Started
   - Related spec: docs/superpowers/specs/2026-07-25-open-cowork-runtime-1-0-roadmap.md

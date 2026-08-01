@@ -92,6 +92,9 @@ public sealed class WorkspacePathTests
         Assert.Equal(Path.Combine(paths.TeamsRuntimeDirectory, "subagents"), paths.SubAgentsDirectory);
         Assert.Equal(Path.Combine(paths.RuntimeDirectory, "worktrees"), paths.WorktreesDirectory);
         Assert.Equal(
+            Path.Combine(paths.RuntimeDirectory, "external-channel-media"),
+            paths.ExternalChannelMediaDirectory);
+        Assert.Equal(
             Path.Combine(Path.GetFullPath(root), ".opencowork", "plugins.lock.json"),
             paths.PluginsLockPath);
         Assert.Equal(

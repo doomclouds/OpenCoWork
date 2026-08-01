@@ -17,7 +17,7 @@ internal enum StateMigrationFaultPoint
 
 internal static class StateMigrations
 {
-    internal const int CurrentVersion = 8;
+    internal const int CurrentVersion = 9;
     internal const string VersionTwoTables =
         "items,pending_interactions,session_idempotency," +
         "session_operation_receipts,state_info,threads,turn_queue,turns";
@@ -730,10 +730,16 @@ internal static class StateMigrations
         new(7, VersionSevenSql),
     ];
 
-    internal static readonly IReadOnlyList<StateMigration> Current =
+    internal static readonly IReadOnlyList<StateMigration> VersionEightOnly =
     [
         .. VersionSevenOnly,
         new(8, VersionEightSql),
+    ];
+
+    internal static readonly IReadOnlyList<StateMigration> Current =
+    [
+        .. VersionEightOnly,
+        new(9, "SELECT 1;"),
     ];
 }
 
@@ -1216,7 +1222,15 @@ public sealed class StateRuntime : IWorkspaceStateStore
             }
 
             SqliteConnection.ClearAllPools();
-            File.Move(temporaryPath, _paths.StateDatabasePath);
+            try
+            {
+                File.Move(temporaryPath, _paths.StateDatabasePath);
+            }
+            catch (IOException) when (File.Exists(_paths.StateDatabasePath))
+            {
+                DeleteDatabaseFiles(temporaryPath);
+                await MigrateExistingDatabaseAsync(cancellationToken);
+            }
         }
         catch
         {
@@ -1541,6 +1555,7 @@ public sealed class StateRuntime : IWorkspaceStateStore
                 5 => StateMigrations.VersionFiveTables,
                 6 => null,
                 7 => null,
+                8 => null,
                 StateMigrations.CurrentVersion => null,
                 _ => throw new StateMigrationException(
                     $"State schema version {expectedVersion} has no validation contract."),
@@ -1654,7 +1669,7 @@ public sealed class StateRuntime : IWorkspaceStateStore
             await contributor.ValidateAsync(connection, cancellationToken);
         }
 
-        if (expectedVersion != StateMigrations.CurrentVersion)
+        if (expectedVersion < 7)
         {
             return;
         }

@@ -77,10 +77,69 @@ public sealed record CoWorkConfig : IValidatableObject
 public static class TeamsStateMigrationContributors
 {
     public static IReadOnlyList<IWorkspaceStateMigrationContributor> Create() =>
-        [new TeamsStateMigrationContributor(), new TeamsProjectWriterMigrationContributor()];
+        [
+            new TeamsStateMigrationContributor(),
+            new TeamsProjectWriterMigrationContributor(),
+            new TeamsCorrelationMigrationContributor(),
+        ];
 
     internal static IReadOnlyList<IWorkspaceStateMigrationContributor> CreateVersionSix() =>
         [new TeamsStateMigrationContributor()];
+}
+
+internal sealed class TeamsCorrelationMigrationContributor
+    : IWorkspaceStateMigrationContributor
+{
+    public int TargetVersion => 9;
+
+    public ValueTask ApplyAsync(
+        DbConnection connection,
+        DbTransaction transaction,
+        CancellationToken cancellationToken) =>
+        ExecuteAsync(
+            connection,
+            transaction,
+            """
+            ALTER TABLE agent_runs
+                ADD COLUMN correlation_id TEXT NULL CHECK (
+                    correlation_id IS NULL OR (
+                        length(correlation_id) = 36 AND
+                        correlation_id = lower(correlation_id) AND
+                        correlation_id GLOB
+                            '????????-????-7???-[89ab]???-????????????' AND
+                        length(replace(correlation_id, '-', '')) = 32 AND
+                        replace(correlation_id, '-', '')
+                            NOT GLOB '*[^0-9a-f]*'));
+            """,
+            cancellationToken);
+
+    public async ValueTask ValidateAsync(
+        DbConnection connection,
+        CancellationToken cancellationToken)
+    {
+        await using var command = connection.CreateCommand();
+        command.CommandText =
+            "SELECT count(*) FROM pragma_table_info('agent_runs') " +
+            "WHERE name = 'correlation_id';";
+        if (Convert.ToInt64(
+                await command.ExecuteScalarAsync(cancellationToken),
+                System.Globalization.CultureInfo.InvariantCulture) != 1)
+        {
+            throw new InvalidOperationException("CoWork correlation column is missing.");
+        }
+    }
+
+    private static async ValueTask ExecuteAsync(
+        DbConnection connection,
+        DbTransaction transaction,
+        string sql,
+        CancellationToken cancellationToken)
+    {
+        await using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = sql;
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
 }
 
 internal sealed class TeamsStateMigrationContributor

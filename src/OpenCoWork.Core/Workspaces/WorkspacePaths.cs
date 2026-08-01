@@ -45,6 +45,8 @@ public sealed class OpenCoWorkPaths
         MissionsDirectory = Path.Combine(TeamsRuntimeDirectory, "missions");
         SubAgentsDirectory = Path.Combine(TeamsRuntimeDirectory, "subagents");
         WorktreesDirectory = Path.Combine(RuntimeDirectory, "worktrees");
+        ExternalChannelMediaDirectory =
+            Path.Combine(RuntimeDirectory, "external-channel-media");
     }
 
     public string WorkspaceRoot { get; }
@@ -92,6 +94,8 @@ public sealed class OpenCoWorkPaths
     public string SubAgentsDirectory { get; }
 
     public string WorktreesDirectory { get; }
+
+    public string ExternalChannelMediaDirectory { get; }
 }
 
 public static class WorkspaceDiscovery

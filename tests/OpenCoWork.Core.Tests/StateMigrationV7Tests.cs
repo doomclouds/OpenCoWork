@@ -265,11 +265,17 @@ public sealed class StateMigrationV7Tests
             Contributors(),
             faultInjector: null);
 
-    private static IWorkspaceStateMigrationContributor[] Contributors() =>
+    private static IWorkspaceStateMigrationContributor[] Contributors()
+    {
+        IWorkspaceStateMigrationContributor[] contributors =
         [
             .. TeamsStateMigrationContributors.Create(),
             .. AutomationsStateMigrationContributors.Create(),
         ];
+        return contributors
+            .Where(contributor => contributor.TargetVersion <= 7)
+            .ToArray();
+    }
 
     private static async Task<T> ScalarAsync<T>(
         SqliteConnection connection,

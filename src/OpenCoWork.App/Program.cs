@@ -13,6 +13,7 @@ using OpenCoWork.Core.Diagnostics;
 using OpenCoWork.Core.Hosting;
 using OpenCoWork.Core.Logging;
 using OpenCoWork.Core.Sessions;
+using OpenCoWork.Core.State;
 using OpenCoWork.Core.Workspaces;
 using OpenCoWork.Generated;
 using OpenCoWork.Protocol;
@@ -505,6 +506,7 @@ namespace OpenCoWork.App
         private static IReadOnlyList<IWorkspaceStateMigrationContributor>
             StateContributors() =>
             [
+                .. GatewayStateMigrationContributors.Create(),
                 .. TeamsStateMigrationContributors.Create(),
                 .. AutomationsStateMigrationContributors.Create(),
             ];
@@ -1108,6 +1110,10 @@ namespace OpenCoWork.App
     {
         public void ConfigureServices(IServiceCollection services)
         {
+            foreach (var contributor in GatewayStateMigrationContributors.Create())
+            {
+                services.AddSingleton(contributor);
+            }
         }
 
         public ValueTask StartAsync(
