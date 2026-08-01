@@ -135,16 +135,23 @@ internal static class CompactionCheckpointIntegrity
                 Append(canonical, NormalizeLf(item.GetProperty("content").GetString()!));
                 Append(canonical, string.Empty);
                 while (index + 1 < input.Count &&
-                       input[index + 1].GetProperty("type").GetString() ==
-                       "function_call")
+                       IsToolCall(input[index + 1].GetProperty("type").GetString()))
                 {
                     var call = input[++index];
+                    var callType = call.GetProperty("type").GetString();
                     Append(canonical, call.GetProperty("call_id").GetString()!);
-                    Append(canonical, call.GetProperty("name").GetString()!);
-                    Append(canonical, call.GetProperty("arguments").GetString()!);
+                    Append(
+                        canonical,
+                        (callType == "custom_tool_call" ? "custom:" : string.Empty) +
+                        call.GetProperty("name").GetString());
+                    Append(
+                        canonical,
+                        call.GetProperty(
+                            callType == "custom_tool_call" ? "input" : "arguments")
+                            .GetString()!);
                 }
             }
-            else if (type == "function_call")
+            else if (IsToolCall(type))
             {
                 Append(canonical, "assistant");
                 Append(canonical, string.Empty);
@@ -152,18 +159,26 @@ internal static class CompactionCheckpointIntegrity
                 do
                 {
                     var call = input[index];
+                    var callType = call.GetProperty("type").GetString();
                     Append(canonical, call.GetProperty("call_id").GetString()!);
-                    Append(canonical, call.GetProperty("name").GetString()!);
-                    Append(canonical, call.GetProperty("arguments").GetString()!);
+                    Append(
+                        canonical,
+                        (callType == "custom_tool_call" ? "custom:" : string.Empty) +
+                        call.GetProperty("name").GetString());
+                    Append(
+                        canonical,
+                        call.GetProperty(
+                            callType == "custom_tool_call" ? "input" : "arguments")
+                            .GetString()!);
                     index++;
                 }
                 while (index < input.Count &&
-                       input[index].GetProperty("type").GetString() == "function_call");
+                       IsToolCall(input[index].GetProperty("type").GetString()));
                 index--;
             }
-            else if (type == "function_call_output")
+            else if (type is "function_call_output" or "custom_tool_call_output")
             {
-                Append(canonical, "tool");
+                Append(canonical, type == "custom_tool_call_output" ? "custom_tool" : "tool");
                 Append(canonical, NormalizeLf(item.GetProperty("output").GetString()!));
                 Append(canonical, item.GetProperty("call_id").GetString()!);
             }
@@ -173,6 +188,9 @@ internal static class CompactionCheckpointIntegrity
 
         return Sha256(canonical.ToString());
     }
+
+    private static bool IsToolCall(string? type) =>
+        type is "function_call" or "custom_tool_call";
 
     private static void Append(StringBuilder target, string value)
     {

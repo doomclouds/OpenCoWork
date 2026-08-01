@@ -325,6 +325,63 @@ public sealed class AgentRuntimeExecutorTests
     }
 
     [Fact]
+    public async Task Custom_apply_patch_uses_the_local_pipeline_and_stateless_history()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var directory = Path.Combine(
+            Path.GetTempPath(),
+            $"opencowork-custom-patch-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        try
+        {
+            var runtime = new ToolRuntime(new OpenCoWorkPaths(directory));
+            var client = new CustomPatchClient();
+            var sink = new RecordingSink();
+            var toolsConfig = new ToolsConfig
+            {
+                Effects = new ToolEffectPoliciesConfig
+                {
+                    WorkspaceWrite = ToolAuthorityDecision.Allow,
+                },
+            };
+
+            await Executor(
+                    directory,
+                    "secret",
+                    _ => client,
+                    toolPipeline: new ToolInvocationPipeline(
+                        runtime,
+                        new SecretRedactor([])),
+                    toolRuntime: runtime,
+                    toolsConfig: toolsConfig)
+                .ExecuteAsync(Session(), sink, cancellationToken);
+
+            Assert.Equal(2, client.Requests.Count);
+            Assert.Equal(
+                ["custom_tool_call", "custom_tool_call_output"],
+                client.Requests[1].Input.TakeLast(2)
+                    .Select(item => item.GetProperty("type").GetString()));
+            Assert.Equal(
+                "*** Begin Patch\n*** Add File: added.txt\n+added\n*** End Patch",
+                client.Requests[1].Input[^2].GetProperty("input").GetString());
+            Assert.Equal(
+                "added\n",
+                await File.ReadAllTextAsync(
+                    Path.Combine(directory, "added.txt"),
+                    cancellationToken));
+            var call = Assert.Single(
+                sink.Intents.OfType<RecordToolCallIntent>()).Content.Calls[0];
+            Assert.Equal(ProviderCallKind.CustomApplyPatch, call.ProviderCallKind);
+            Assert.Equal("apply_patch", call.ProviderToolName);
+            Assert.IsType<CompleteTurnIntent>(sink.Intents[^1]);
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task Deferred_tool_activation_changes_the_next_provider_round()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
@@ -839,11 +896,12 @@ public sealed class AgentRuntimeExecutorTests
         Func<ProviderModelRegistration, IResponsesTestClient> clients,
         TimeProvider? timeProvider = null,
         IToolInvocationPipeline? toolPipeline = null,
-        ToolRuntime? toolRuntime = null)
+        ToolRuntime? toolRuntime = null,
+        ToolsConfig? toolsConfig = null)
     {
         var paths = new OpenCoWorkPaths(directory);
         return new AgentRuntimeExecutor(
-            Factory(directory, secret, toolRuntime),
+            Factory(directory, secret, toolRuntime, toolsConfig),
             paths,
             provider => clients(provider).StreamAsync,
             timeProvider,
@@ -853,7 +911,8 @@ public sealed class AgentRuntimeExecutorTests
     private static AgentFactory Factory(
         string directory,
         string secret,
-        ToolRuntime? toolRuntime = null)
+        ToolRuntime? toolRuntime = null,
+        ToolsConfig? toolsConfig = null)
     {
         var paths = new OpenCoWorkPaths(directory);
         var models = Models();
@@ -867,7 +926,8 @@ public sealed class AgentRuntimeExecutorTests
                 AppContext.BaseDirectory,
                 directory),
             paths,
-            toolRuntime);
+            toolRuntime,
+            toolsConfig);
     }
 
     private static ModelsConfig Models() =>
@@ -1305,6 +1365,11 @@ public sealed class AgentRuntimeExecutorTests
         string arguments) =>
         new($"2:{callId}", callId, name, arguments);
 
+    private static DeepSeekCustomToolCallCompletedEvent Custom(
+        string callId,
+        string input) =>
+        new($"2:{callId}", callId, "apply_patch", input);
+
     private sealed class ScriptedClient : IResponsesTestClient
     {
         public async IAsyncEnumerable<DeepSeekResponseEvent> StreamAsync(
@@ -1455,6 +1520,31 @@ public sealed class AgentRuntimeExecutorTests
             Started.TrySetResult();
             await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
             yield break;
+        }
+    }
+
+    private sealed class CustomPatchClient : IResponsesTestClient
+    {
+        public List<DeepSeekResponsesRequest> Requests { get; } = [];
+
+        public async IAsyncEnumerable<DeepSeekResponseEvent> StreamAsync(
+            DeepSeekResponsesRequest request,
+            [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            Requests.Add(request);
+            await Task.Yield();
+            cancellationToken.ThrowIfCancellationRequested();
+            if (Requests.Count == 1)
+            {
+                yield return Custom(
+                    "call-patch",
+                    "*** Begin Patch\n*** Add File: added.txt\n+added\n*** End Patch");
+                yield return Completed();
+                yield break;
+            }
+
+            yield return Output("done");
+            yield return Completed();
         }
     }
 

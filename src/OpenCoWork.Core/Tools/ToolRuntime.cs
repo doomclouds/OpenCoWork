@@ -446,11 +446,11 @@ internal sealed partial class ToolRuntime
                        StringComparison.Ordinal));
     }
 
-    public IReadOnlyList<DeepSeekFunctionTool> CreateProviderDefinitions(
+    public IReadOnlyList<DeepSeekResponsesTool> CreateProviderDefinitions(
         EffectiveToolSnapshot snapshot) =>
         CreateProviderDefinitions(snapshot, []);
 
-    public IReadOnlyList<DeepSeekFunctionTool> CreateProviderDefinitions(
+    public IReadOnlyList<DeepSeekResponsesTool> CreateProviderDefinitions(
         EffectiveToolSnapshot snapshot,
         IReadOnlyCollection<ToolDefinitionId> activatedDeferredTools)
     {
@@ -464,10 +464,12 @@ internal sealed partial class ToolRuntime
             .Select(registration =>
             {
                 var canonical = CanonicalName(registration.Definition.Name);
-                return new DeepSeekFunctionTool(
-                    snapshot.CanonicalToProviderNames[canonical],
-                    registration.Definition.Description,
-                    registration.Definition.InputSchema);
+                return canonical == "file.apply_patch"
+                    ? (DeepSeekResponsesTool)new DeepSeekApplyPatchTool()
+                    : new DeepSeekFunctionTool(
+                        snapshot.CanonicalToProviderNames[canonical],
+                        registration.Definition.Description,
+                        registration.Definition.InputSchema);
             })
             .ToArray());
     }
@@ -819,9 +821,11 @@ internal sealed partial class ToolRuntime
             {
                 item.Candidate,
                 item.CanonicalName,
-                ProviderName = item.BaseName.Length <= 64 && !collisions.Contains(item)
-                    ? item.BaseName
-                    : HashedProviderName(item.BaseName, item.CanonicalName),
+                ProviderName = item.CanonicalName == "file.apply_patch"
+                    ? "apply_patch"
+                    : item.BaseName.Length <= 64 && !collisions.Contains(item)
+                        ? item.BaseName
+                        : HashedProviderName(item.BaseName, item.CanonicalName),
             })
             .ToArray();
         var hashCollisions = mapped
@@ -1251,21 +1255,17 @@ internal sealed partial class ToolRuntime
                 : fileTools.ReadAsync,
             fileTools is null ? null : fileTools.ReadAsync);
         Add(
-            "file.write",
-            new ToolName("file", "write"),
-            "Atomically write a complete UTF-8 workspace file.",
+            "file.apply_patch",
+            new ToolName("file", "apply_patch"),
+            "Apply one validated patch to UTF-8 workspace files.",
             """
             {
               "$schema":"https://json-schema.org/draft/2020-12/schema",
-              "$defs":{"path":{"type":"string","minLength":1}},
               "type":"object",
               "properties":{
-                "path":{"$ref":"#/$defs/path"},
-                "area":{"type":"string","enum":["workspace","scratchpad"]},
-                "content":{"type":"string"},
-                "expectedSha256":{"type":"string","pattern":"^[0-9a-f]{64}$"}
+                "patch":{"type":"string","minLength":1,"maxLength":524288}
               },
-              "required":["path","content"],
+              "required":["patch"],
               "additionalProperties":false
             }
             """,
@@ -1274,8 +1274,8 @@ internal sealed partial class ToolRuntime
             TimeSpan.FromSeconds(30),
             fileTools is null
                 ? PlaceholderExecutor
-                : fileTools.WriteAsync,
-            fileTools is null ? null : fileTools.WriteAsync);
+                : fileTools.ApplyPatchAsync,
+            fileTools is null ? null : fileTools.ApplyPatchAsync);
         Add(
             "shell.run",
             new ToolName("shell", "run"),

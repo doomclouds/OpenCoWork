@@ -1,5 +1,6 @@
 using System.Text.Json;
 using OpenCoWork.Abstractions;
+using OpenCoWork.Core.Agents;
 using OpenCoWork.Core.Configuration;
 using OpenCoWork.Core.Tools;
 using Xunit;
@@ -20,9 +21,9 @@ public sealed class ToolSnapshotTests
         Assert.Equal(2, first.SchemaVersion);
         Assert.Equal(
             [
+                "file.apply_patch",
                 "file.list",
                 "file.read",
-                "file.write",
                 "memory.archive",
                 "memory.list",
                 "memory.read",
@@ -46,9 +47,9 @@ public sealed class ToolSnapshotTests
             first.Registrations.Select(CanonicalName));
         Assert.Equal(
             [
-                ToolReplaySafety.Safe,
-                ToolReplaySafety.Safe,
                 ToolReplaySafety.Unsafe,
+                ToolReplaySafety.Safe,
+                ToolReplaySafety.Safe,
                 ToolReplaySafety.Unsafe,
                 ToolReplaySafety.Safe,
                 ToolReplaySafety.Safe,
@@ -72,9 +73,9 @@ public sealed class ToolSnapshotTests
             first.Registrations.Select(item => item.Definition.ReplaySafety));
         Assert.Equal(
             [
-                ToolEffect.WorkspaceRead,
-                ToolEffect.WorkspaceRead,
                 ToolEffect.WorkspaceRead | ToolEffect.WorkspaceWrite,
+                ToolEffect.WorkspaceRead,
+                ToolEffect.WorkspaceRead,
                 ToolEffect.WorkspaceRead | ToolEffect.WorkspaceWrite,
                 ToolEffect.WorkspaceRead,
                 ToolEffect.WorkspaceRead,
@@ -124,9 +125,9 @@ public sealed class ToolSnapshotTests
             });
         Assert.Equal(
             [
+                "apply_patch",
                 "file__list",
                 "file__read",
-                "file__write",
                 "memory__archive",
                 "memory__list",
                 "memory__read",
@@ -171,9 +172,25 @@ public sealed class ToolSnapshotTests
         Assert.Equal(
             first.Registrations.Count,
             runtime.CreateProviderDefinitions(first).Count);
+        var applyPatch = Assert.Single(
+            first.Registrations,
+            registration => CanonicalName(registration) == "file.apply_patch");
+        Assert.Equal(
+            ToolEffect.WorkspaceRead | ToolEffect.WorkspaceWrite,
+            applyPatch.Definition.Effects);
+        Assert.Equal(ToolReplaySafety.Unsafe, applyPatch.Definition.ReplaySafety);
+        Assert.Equal(
+            "apply_patch",
+            first.CanonicalToProviderNames["file.apply_patch"]);
+        Assert.Single(
+            runtime.CreateProviderDefinitions(first),
+            tool => tool is DeepSeekApplyPatchTool);
+        Assert.DoesNotContain(
+            runtime.CreateProviderDefinitions(first).OfType<DeepSeekFunctionTool>(),
+            tool => tool.Name == "file__write");
 
-        using var valid = JsonDocument.Parse("""{"path":"src"}""");
-        using var invalid = JsonDocument.Parse("""{"path":1}""");
+        using var valid = JsonDocument.Parse("""{"patch":"*** Begin Patch\n*** End Patch"}""");
+        using var invalid = JsonDocument.Parse("""{"patch":1}""");
         Assert.True(runtime.ValidateArguments(
             first.Registrations[0].Definition.Id,
             valid.RootElement));
@@ -237,9 +254,9 @@ public sealed class ToolSnapshotTests
             plan.Registrations.Select(CanonicalName));
         Assert.Equal(
             [
+                "file.apply_patch",
                 "file.list",
                 "file.read",
-                "file.write",
                 "memory.archive",
                 "memory.list",
                 "memory.read",

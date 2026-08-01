@@ -358,16 +358,316 @@ public sealed partial class CoreToolTests
     }
 
     [Fact]
-    public async Task Write_creates_and_overwrites_only_when_the_sha_precondition_matches()
+    public async Task Apply_patch_adds_updates_deletes_moves_and_returns_only_metadata()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var directory = CreateWorkspace();
+        try
+        {
+            var edit = "one\ntwo\nthree\nfour\n";
+            var delete = "delete me\n";
+            var move = "old name\n";
+            await File.WriteAllTextAsync(
+                Path.Combine(directory, "edit.txt"),
+                edit,
+                cancellationToken);
+            await File.WriteAllTextAsync(
+                Path.Combine(directory, "delete.txt"),
+                delete,
+                cancellationToken);
+            await File.WriteAllTextAsync(
+                Path.Combine(directory, "move.txt"),
+                move,
+                cancellationToken);
+            var patch = $$"""
+                *** Begin Patch
+                *** Add File: added.txt
+                +added
+                *** Update File: edit.txt
+                *** Expected SHA256: {{Sha256(Encoding.UTF8.GetBytes(edit))}}
+                @@
+                 one
+                -two
+                +second
+                @@
+                 three
+                -four
+                +fourth
+                *** Delete File: delete.txt
+                *** Expected SHA256: {{Sha256(Encoding.UTF8.GetBytes(delete))}}
+                *** Update File: move.txt
+                *** Move to: moved.txt
+                *** Expected SHA256: {{Sha256(Encoding.UTF8.GetBytes(move))}}
+                @@
+                -old name
+                +new name
+                *** End Patch
+                """;
+
+            var result = await InvokeAsync(
+                new ToolRuntime(new OpenCoWorkPaths(directory)),
+                "core.file.apply_patch.v1",
+                new { patch },
+                cancellationToken);
+
+            Assert.True(result.IsSuccess, result.Error?.Message);
+            Assert.Equal(
+                "added\n",
+                await File.ReadAllTextAsync(
+                    Path.Combine(directory, "added.txt"),
+                    cancellationToken));
+            Assert.Equal(
+                "one\nsecond\nthree\nfourth\n",
+                await File.ReadAllTextAsync(
+                    Path.Combine(directory, "edit.txt"),
+                    cancellationToken));
+            Assert.False(File.Exists(Path.Combine(directory, "delete.txt")));
+            Assert.False(File.Exists(Path.Combine(directory, "move.txt")));
+            Assert.Equal(
+                "new name\n",
+                await File.ReadAllTextAsync(
+                    Path.Combine(directory, "moved.txt"),
+                    cancellationToken));
+            var output = result.Output!.Value.GetRawText();
+            Assert.DoesNotContain("second", output, StringComparison.Ordinal);
+            Assert.Equal(
+                ["add", "delete", "move", "update"],
+                result.Output.Value.GetProperty("operations")
+                    .EnumerateArray()
+                    .Select(item => item.GetProperty("operation").GetString())
+                    .Order(StringComparer.Ordinal));
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Apply_patch_preflights_the_whole_package_before_writing()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var directory = CreateWorkspace();
+        try
+        {
+            await File.WriteAllTextAsync(
+                Path.Combine(directory, "keep.txt"),
+                "old\n",
+                cancellationToken);
+            var result = await InvokeAsync(
+                new ToolRuntime(new OpenCoWorkPaths(directory)),
+                "core.file.apply_patch.v1",
+                new
+                {
+                    patch = """
+                        *** Begin Patch
+                        *** Add File: added.txt
+                        +added
+                        *** Update File: keep.txt
+                        *** Expected SHA256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+                        @@
+                        -old
+                        +changed
+                        *** End Patch
+                        """,
+                },
+                cancellationToken);
+
+            Assert.False(result.IsSuccess);
+            Assert.Equal(ToolErrorCodes.PreconditionFailed, result.Error!.Code);
+            Assert.False(File.Exists(Path.Combine(directory, "added.txt")));
+            Assert.Equal(
+                "old\n",
+                await File.ReadAllTextAsync(
+                    Path.Combine(directory, "keep.txt"),
+                    cancellationToken));
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Apply_patch_reports_partial_cross_file_failure_as_outcome_unknown()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var directory = CreateWorkspace();
+        try
+        {
+            const string before = "before\n";
+            await File.WriteAllTextAsync(
+                Path.Combine(directory, "a.txt"),
+                before,
+                cancellationToken);
+            await File.WriteAllTextAsync(
+                Path.Combine(directory, "b.txt"),
+                before,
+                cancellationToken);
+            var hash = Sha256(Encoding.UTF8.GetBytes(before));
+            var patch = $$"""
+                *** Begin Patch
+                *** Update File: a.txt
+                *** Expected SHA256: {{hash}}
+                @@
+                -before
+                +after a
+                *** Update File: b.txt
+                *** Expected SHA256: {{hash}}
+                @@
+                -before
+                +after b
+                *** End Patch
+                """;
+
+            var result = await InvokeFileAsync(
+                new CoreFileTools(
+                    new OpenCoWorkPaths(directory),
+                    failPatchCommitAt: 1).ApplyPatchAsync,
+                new { patch },
+                cancellationToken);
+
+            Assert.False(result.IsSuccess);
+            Assert.Equal(ToolErrorCodes.OutcomeUnknown, result.Error!.Code);
+            Assert.Contains("a.txt", result.Error.Message, StringComparison.Ordinal);
+            Assert.Contains("b.txt", result.Error.Message, StringComparison.Ordinal);
+            Assert.Equal(
+                "after a\n",
+                await File.ReadAllTextAsync(
+                    Path.Combine(directory, "a.txt"),
+                    cancellationToken));
+            Assert.Equal(
+                before,
+                await File.ReadAllTextAsync(
+                    Path.Combine(directory, "b.txt"),
+                    cancellationToken));
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Apply_patch_preserves_crlf_supports_empty_files_and_rejects_invalid_utf8()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var directory = CreateWorkspace();
+        try
+        {
+            var crlf = Encoding.UTF8.GetBytes("one\r\ntwo\r\n");
+            await File.WriteAllBytesAsync(
+                Path.Combine(directory, "crlf.txt"),
+                crlf,
+                cancellationToken);
+            var invalid = new byte[] { 0xC3, 0x28 };
+            await File.WriteAllBytesAsync(
+                Path.Combine(directory, "invalid.txt"),
+                invalid,
+                cancellationToken);
+            var runtime = new ToolRuntime(new OpenCoWorkPaths(directory));
+            var valid = await InvokeAsync(
+                runtime,
+                "core.file.apply_patch.v1",
+                new
+                {
+                    patch = $$"""
+                        *** Begin Patch
+                        *** Add File: empty.txt
+                        *** Update File: crlf.txt
+                        *** Expected SHA256: {{Sha256(crlf)}}
+                        @@
+                         one
+                        -two
+                        +second
+                        *** End Patch
+                        """,
+                },
+                cancellationToken);
+            Assert.True(valid.IsSuccess, valid.Error?.Message);
+            Assert.Empty(await File.ReadAllBytesAsync(
+                Path.Combine(directory, "empty.txt"),
+                cancellationToken));
+            Assert.Equal(
+                Encoding.UTF8.GetBytes("one\r\nsecond\r\n"),
+                await File.ReadAllBytesAsync(
+                    Path.Combine(directory, "crlf.txt"),
+                    cancellationToken));
+
+            var rejected = await InvokeAsync(
+                runtime,
+                "core.file.apply_patch.v1",
+                new
+                {
+                    patch = $$"""
+                        *** Begin Patch
+                        *** Update File: invalid.txt
+                        *** Expected SHA256: {{Sha256(invalid)}}
+                        @@
+                        -x
+                        +y
+                        *** End Patch
+                        """,
+                },
+                cancellationToken);
+            Assert.Equal(ToolErrorCodes.ContentUnsupported, rejected.Error!.Code);
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Apply_patch_rejects_unsafe_duplicate_and_oversized_inputs()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var directory = CreateWorkspace();
         try
         {
             var runtime = new ToolRuntime(new OpenCoWorkPaths(directory));
-            var unsupported = await InvokeAsync(
-                runtime,
-                "core.file.write.v1",
+            var patches = new[]
+            {
+                "*** Begin Patch\n*** Add File: ../escape.txt\n+x\n*** End Patch",
+                "*** Begin Patch\n*** Add File: /absolute.txt\n+x\n*** End Patch",
+                "*** Begin Patch\n*** Add File: .opencowork/secret.txt\n+x\n*** End Patch",
+                "*** Begin Patch\n*** Add File: same.txt\n+x\n*** Add File: same.txt\n+y\n*** End Patch",
+                "*** Begin Patch\n*** Add File: bad.txt\nmissing-prefix\n*** End Patch",
+            };
+            foreach (var patch in patches)
+            {
+                var result = await InvokeAsync(
+                    runtime,
+                    "core.file.apply_patch.v1",
+                    new { patch },
+                    cancellationToken);
+                Assert.False(result.IsSuccess);
+            }
+
+            var oversized = await InvokeFileAsync(
+                new CoreFileTools(new OpenCoWorkPaths(directory)).ApplyPatchAsync,
+                new { patch = new string('é', 300_000) },
+                cancellationToken);
+            Assert.Equal(ToolErrorCodes.InputInvalid, oversized.Error!.Code);
+            Assert.Empty(
+                Directory.EnumerateFiles(directory, "*", SearchOption.TopDirectoryOnly));
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Write_creates_and_overwrites_only_when_the_sha_precondition_matches()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var directory = CreateWorkspace();
+        try
+        {
+            var fileTools = new CoreFileTools(new OpenCoWorkPaths(directory));
+            var unsupported = await InvokeFileAsync(
+                fileTools.WriteAsync,
                 new { path = "unsupported.txt", content = "a\0b" },
                 cancellationToken);
             Assert.False(unsupported.IsSuccess);
@@ -375,9 +675,8 @@ public sealed partial class CoreToolTests
                 ToolErrorCodes.ContentUnsupported,
                 unsupported.Error!.Code);
 
-            var created = await InvokeAsync(
-                runtime,
-                "core.file.write.v1",
+            var created = await InvokeFileAsync(
+                fileTools.WriteAsync,
                 new { path = "note.txt", content = "first" },
                 cancellationToken);
             Assert.True(created.IsSuccess);
@@ -387,9 +686,8 @@ public sealed partial class CoreToolTests
                     Path.Combine(directory, "note.txt"),
                     cancellationToken));
 
-            var missingPrecondition = await InvokeAsync(
-                runtime,
-                "core.file.write.v1",
+            var missingPrecondition = await InvokeFileAsync(
+                fileTools.WriteAsync,
                 new { path = "note.txt", content = "second" },
                 cancellationToken);
             Assert.Equal(
@@ -401,9 +699,8 @@ public sealed partial class CoreToolTests
                 Path.Combine(directory, "note.txt"),
                 "changed",
                 cancellationToken);
-            var changedSinceRead = await InvokeAsync(
-                runtime,
-                "core.file.write.v1",
+            var changedSinceRead = await InvokeFileAsync(
+                fileTools.WriteAsync,
                 new
                 {
                     path = "note.txt",
@@ -416,9 +713,8 @@ public sealed partial class CoreToolTests
                 changedSinceRead.Error!.Code);
 
             var currentSha = Sha256(Encoding.UTF8.GetBytes("changed"));
-            var overwritten = await InvokeAsync(
-                runtime,
-                "core.file.write.v1",
+            var overwritten = await InvokeFileAsync(
+                fileTools.WriteAsync,
                 new
                 {
                     path = "note.txt",
@@ -453,7 +749,7 @@ public sealed partial class CoreToolTests
             var original = new string('a', 256 * 1024);
             var replacement = new string('b', 256 * 1024);
             await File.WriteAllTextAsync(path, original, cancellationToken);
-            var runtime = new ToolRuntime(new OpenCoWorkPaths(directory));
+            var fileTools = new CoreFileTools(new OpenCoWorkPaths(directory));
             var observed = new List<string>();
             using var finished = new CancellationTokenSource();
             var reader = Task.Run(
@@ -486,9 +782,8 @@ public sealed partial class CoreToolTests
                 },
                 CancellationToken.None);
 
-            var result = await InvokeAsync(
-                runtime,
-                "core.file.write.v1",
+            var result = await InvokeFileAsync(
+                fileTools.WriteAsync,
                 new
                 {
                     path = "atomic.txt",
@@ -515,9 +810,8 @@ public sealed partial class CoreToolTests
                 SearchOption.TopDirectoryOnly));
 
             await Assert.ThrowsAnyAsync<OperationCanceledException>(
-                () => InvokeAsync(
-                    runtime,
-                    "core.file.write.v1",
+                () => InvokeFileAsync(
+                    fileTools.WriteAsync,
                     new { path = "cancelled.txt", content = "cancelled" },
                     new CancellationToken(canceled: true)).AsTask());
             Assert.False(File.Exists(Path.Combine(directory, "cancelled.txt")));
@@ -580,6 +874,12 @@ public sealed partial class CoreToolTests
             JsonSerializer.SerializeToElement(arguments),
             cancellationToken);
     }
+
+    private static ValueTask<ToolBindingResult> InvokeFileAsync(
+        Func<JsonElement, CancellationToken, ValueTask<ToolBindingResult>> operation,
+        object arguments,
+        CancellationToken cancellationToken) =>
+        operation(JsonSerializer.SerializeToElement(arguments), cancellationToken);
 
     private static ToolInvocationContext ContextualInvocation(
         ToolRuntime runtime,

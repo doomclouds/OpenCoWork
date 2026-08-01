@@ -1,5 +1,6 @@
 using System.Text.Json;
 using OpenCoWork.Abstractions;
+using OpenCoWork.Core.Agents;
 using OpenCoWork.Core.Configuration;
 using OpenCoWork.Core.Logging;
 using OpenCoWork.Core.Tools;
@@ -35,7 +36,8 @@ public sealed class DeferredToolTests
         Assert.Equal(10, snapshot.Registrations.Count(
             registration => registration.Exposure == ToolExposure.Deferred));
         Assert.DoesNotContain(
-            runtime.CreateProviderDefinitions(snapshot, activated),
+            runtime.CreateProviderDefinitions(snapshot, activated)
+                .OfType<DeepSeekFunctionTool>(),
             tool => tool.Name.StartsWith("plugin_acme_tools", StringComparison.Ordinal));
 
         var search = Assert.Single(
@@ -70,7 +72,9 @@ public sealed class DeferredToolTests
         Assert.Equal(8, activation.ToolDefinitionIds.Count);
         Assert.Equal(
             8,
-            runtime.CreateProviderDefinitions(snapshot, activated).Count(
+            runtime.CreateProviderDefinitions(snapshot, activated)
+                .OfType<DeepSeekFunctionTool>()
+                .Count(
                 tool => tool.Name.StartsWith(
                     "plugin_acme_tools",
                     StringComparison.Ordinal)));

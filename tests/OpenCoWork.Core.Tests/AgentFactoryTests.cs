@@ -532,7 +532,10 @@ public sealed class AgentFactoryTests
             Assert.Equal(capabilities.CurrentCatalog.Revision, first.Snapshot.CapabilityRevision);
             Assert.Empty(first.Snapshot.Skills!.Items);
             Assert.Equal(
-                first.Tools.OfType<DeepSeekFunctionTool>().Select(tool => tool.Name),
+                first.Tools.OfType<DeepSeekFunctionTool>()
+                    .Select(tool => tool.Name)
+                    .Append("apply_patch")
+                    .Order(),
                 first.Snapshot.Tools!.CanonicalToProviderNames.Values.Order());
             Assert.DoesNotContain(secret, firstJson, StringComparison.Ordinal);
             Assert.DoesNotContain(secret, first.ResponsePrompt.SystemMessage, StringComparison.Ordinal);

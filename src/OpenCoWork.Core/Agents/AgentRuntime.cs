@@ -436,6 +436,46 @@ internal static class ProviderResponsesHistory
         return Encoding.UTF8.GetString(ThreadJournal.Canonicalize(value));
     }
 
+    public static JsonElement CallInput(ToolCallItemEntry call)
+    {
+        ArgumentNullException.ThrowIfNull(call);
+        if (call.ProviderCallKind == ProviderCallKind.CustomApplyPatch)
+        {
+            return JsonSerializer.SerializeToElement(new
+            {
+                type = "custom_tool_call",
+                call_id = call.ProviderToolCallId,
+                name = call.ProviderToolName,
+                input = call.Arguments.GetProperty("patch").GetString(),
+            });
+        }
+
+        return JsonSerializer.SerializeToElement(new
+        {
+            type = "function_call",
+            call_id = call.ProviderToolCallId,
+            name = call.ProviderToolName,
+            arguments = Encoding.UTF8.GetString(
+                ThreadJournal.Canonicalize(call.Arguments)),
+        });
+    }
+
+    public static JsonElement ResultInput(
+        ToolCallItemEntry call,
+        ToolResultSnapshot result)
+    {
+        ArgumentNullException.ThrowIfNull(call);
+        ArgumentNullException.ThrowIfNull(result);
+        return JsonSerializer.SerializeToElement(new
+        {
+            type = call.ProviderCallKind == ProviderCallKind.CustomApplyPatch
+                ? "custom_tool_call_output"
+                : "function_call_output",
+            call_id = result.ProviderToolCallId,
+            output = ToolResultEnvelope(result),
+        });
+    }
+
     private static void AddToolGroup(
         IReadOnlyList<SessionItemSnapshot> items,
         IReadOnlyDictionary<Guid, SessionItemSnapshot> byId,
@@ -476,14 +516,7 @@ internal static class ProviderResponsesHistory
 
         foreach (var call in toolCall.Calls)
         {
-            input.Add(JsonSerializer.SerializeToElement(new
-            {
-                type = "function_call",
-                call_id = call.ProviderToolCallId,
-                name = call.ProviderToolName,
-                arguments = Encoding.UTF8.GetString(
-                    ThreadJournal.Canonicalize(call.Arguments)),
-            }));
+            input.Add(CallInput(call));
         }
 
         var resultIndex = 0;
@@ -504,12 +537,9 @@ internal static class ProviderResponsesHistory
                     throw InvalidHistory();
                 }
 
-                input.Add(JsonSerializer.SerializeToElement(new
-                {
-                    type = "function_call_output",
-                    call_id = result.Result.ProviderToolCallId,
-                    output = ToolResultEnvelope(result.Result),
-                }));
+                input.Add(ResultInput(
+                    toolCall.Calls[resultIndex],
+                    result.Result));
                 consumedResults.Add(candidate.ItemId);
                 resultIndex++;
             }
@@ -1286,8 +1316,7 @@ internal sealed class AgentRuntimeExecutor : ISessionExecutor
                     var stepVisible = false;
                     var content = new StringBuilder();
                     var reasoning = new StringBuilder();
-                    var toolCalls =
-                        new List<DeepSeekFunctionCallCompletedEvent>();
+                    var toolCalls = new List<ProviderToolCallFrame>();
                     activeContentItemId = Guid.Empty;
                     activeReasoningItemId = Guid.Empty;
                     DeepSeekTerminalEvent? terminal = null;
@@ -1327,10 +1356,10 @@ internal sealed class AgentRuntimeExecutor : ISessionExecutor
                             switch (item)
                             {
                                 case DeepSeekTextDeltaEvent
-                                    {
-                                        Kind: DeepSeekTextKind.Output,
-                                        Delta.Length: > 0,
-                                    } delta:
+                                {
+                                    Kind: DeepSeekTextKind.Output,
+                                    Delta.Length: > 0,
+                                } delta:
                                     if (activeContentItemId == Guid.Empty)
                                     {
                                         activeContentItemId =
@@ -1354,10 +1383,10 @@ internal sealed class AgentRuntimeExecutor : ISessionExecutor
                                     stepVisible = true;
                                     break;
                                 case DeepSeekTextDeltaEvent
-                                    {
-                                        Kind: DeepSeekTextKind.Reasoning,
-                                        Delta.Length: > 0,
-                                    } delta:
+                                {
+                                    Kind: DeepSeekTextKind.Reasoning,
+                                    Delta.Length: > 0,
+                                } delta:
                                     if (activeReasoningItemId == Guid.Empty)
                                     {
                                         activeReasoningItemId =
@@ -1381,15 +1410,28 @@ internal sealed class AgentRuntimeExecutor : ISessionExecutor
                                     stepVisible = true;
                                     break;
                                 case DeepSeekFunctionCallCompletedEvent toolCall:
-                                    toolCalls.Add(toolCall);
+                                    toolCalls.Add(new ProviderToolCallFrame(
+                                        toolCall.CallId,
+                                        toolCall.Name,
+                                        toolCall.Arguments,
+                                        ProviderCallKind.Function));
+                                    break;
+                                case DeepSeekCustomToolCallCompletedEvent toolCall:
+                                    toolCalls.Add(new ProviderToolCallFrame(
+                                        toolCall.CallId,
+                                        toolCall.Name,
+                                        JsonSerializer.Serialize(new
+                                        {
+                                            patch = toolCall.Input,
+                                        }),
+                                        ProviderCallKind.CustomApplyPatch));
                                     break;
                                 case DeepSeekTextCompletedEvent:
                                     break;
                                 case DeepSeekTerminalEvent completed:
                                     terminal = completed;
                                     break;
-                                case DeepSeekCustomToolCallCompletedEvent or
-                                    DeepSeekWebSearchEvent:
+                                case DeepSeekWebSearchEvent:
                                     throw new ProviderException(
                                         AgentErrorCodes.ProviderUnsupportedToolCall,
                                         "Provider returned a tool call that is not enabled yet.");
@@ -1466,6 +1508,7 @@ internal sealed class AgentRuntimeExecutor : ISessionExecutor
                                 activeContentItemId == Guid.Empty
                                     ? null
                                     : activeContentItemId,
+                                draft.Snapshot.Tools!,
                                 toolCalls);
                             var toolCallItemId =
                                 Guid.CreateVersion7(_timeProvider.GetUtcNow());
@@ -1493,14 +1536,7 @@ internal sealed class AgentRuntimeExecutor : ISessionExecutor
 
                             foreach (var call in frame.Calls)
                             {
-                                input.Add(JsonSerializer.SerializeToElement(new
-                                {
-                                    type = "function_call",
-                                    call_id = call.ProviderToolCallId,
-                                    name = call.ProviderToolName,
-                                    arguments = Encoding.UTF8.GetString(
-                                        ThreadJournal.Canonicalize(call.Arguments)),
-                                }));
+                                input.Add(ProviderResponsesHistory.CallInput(call));
                             }
                             for (var callIndex = 0;
                                  callIndex < frame.Calls.Count;
@@ -1581,12 +1617,9 @@ internal sealed class AgentRuntimeExecutor : ISessionExecutor
                                             result));
                                 }
 
-                                input.Add(JsonSerializer.SerializeToElement(new
-                                {
-                                    type = "function_call_output",
-                                    call_id = call.ProviderToolCallId,
-                                    output = ProviderResponsesHistory.ToolResultEnvelope(result),
-                                }));
+                                input.Add(ProviderResponsesHistory.ResultInput(
+                                    call,
+                                    result));
                             }
 
                             if (providerRound >= 64)
@@ -1970,12 +2003,7 @@ internal sealed class AgentRuntimeExecutor : ISessionExecutor
                     known with { Result = result };
             }
 
-            input.Add(JsonSerializer.SerializeToElement(new
-            {
-                type = "function_call_output",
-                call_id = call.ProviderToolCallId,
-                output = ProviderResponsesHistory.ToolResultEnvelope(result),
-            }));
+            input.Add(ProviderResponsesHistory.ResultInput(call, result));
         }
 
         return anyToolAttempted;
@@ -2104,7 +2132,8 @@ internal sealed class AgentRuntimeExecutor : ISessionExecutor
     private ToolCallItemContent PreflightToolFrame(
         int providerRound,
         Guid? agentMessageItemId,
-        IReadOnlyList<DeepSeekFunctionCallCompletedEvent> calls)
+        EffectiveToolSnapshot snapshot,
+        IReadOnlyList<ProviderToolCallFrame> calls)
     {
         if (calls.Count == 0 ||
             calls.Select(call => call.CallId)
@@ -2120,6 +2149,17 @@ internal sealed class AgentRuntimeExecutor : ISessionExecutor
             var call = calls[index];
             if (string.IsNullOrWhiteSpace(call.CallId) ||
                 string.IsNullOrWhiteSpace(call.Name))
+            {
+                throw InvalidToolFrame();
+            }
+
+            var isApplyPatch = snapshot.ProviderToCanonicalNames.TryGetValue(
+                                   call.Name,
+                                   out var canonicalName) &&
+                               canonicalName == "file.apply_patch";
+            if (call.Kind == ProviderCallKind.CustomApplyPatch
+                    ? !isApplyPatch || call.Name != "apply_patch"
+                    : isApplyPatch)
             {
                 throw InvalidToolFrame();
             }
@@ -2152,7 +2192,8 @@ internal sealed class AgentRuntimeExecutor : ISessionExecutor
                     arguments,
                     Convert.ToHexString(SHA256.HashData(canonical))
                         .ToLowerInvariant(),
-                    sensitiveInputDetected);
+                    sensitiveInputDetected,
+                    call.Kind);
             }
             catch (ProviderException)
             {
@@ -2347,9 +2388,9 @@ internal sealed class AgentRuntimeExecutor : ISessionExecutor
                     switch (item)
                     {
                         case DeepSeekTextDeltaEvent
-                            {
-                                Kind: DeepSeekTextKind.Output,
-                            } delta:
+                        {
+                            Kind: DeepSeekTextKind.Output,
+                        } delta:
                             summary.Append(delta.Delta);
                             break;
                         case DeepSeekTextCompletedEvent:
@@ -2689,6 +2730,12 @@ internal sealed class AgentRuntimeExecutor : ISessionExecutor
         string ArgumentsSha256,
         ToolResultSnapshot? Result,
         AgentToolInvocationSnapshot? State = null);
+
+    private sealed record ProviderToolCallFrame(
+        string CallId,
+        string Name,
+        string Arguments,
+        ProviderCallKind Kind);
 
     private sealed record PendingToolFrame(
         SessionItemSnapshot Item,
