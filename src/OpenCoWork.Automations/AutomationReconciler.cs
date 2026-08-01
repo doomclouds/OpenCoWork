@@ -496,15 +496,15 @@ internal sealed class AutomationReconciler : IAsyncDisposable
         var target = fact.HasOutcomeUnknown
             ? "needsAttention"
             : fact.Status switch
-        {
-            "running" => "running",
-            "waitingApproval" => "needsAttention",
-            "waitingInput" => "needsAttention",
-            "completed" => "completed",
-            "failed" => "failed",
-            "cancelled" => "cancelled",
-            _ => null,
-        };
+            {
+                "running" => "running",
+                "waitingApproval" => "needsAttention",
+                "waitingInput" => "needsAttention",
+                "completed" => "completed",
+                "failed" => "failed",
+                "cancelled" => "cancelled",
+                _ => null,
+            };
         if (target is null)
         {
             return;
@@ -513,11 +513,11 @@ internal sealed class AutomationReconciler : IAsyncDisposable
         var attention = fact.HasOutcomeUnknown
             ? "outcomeUnknown"
             : fact.Status switch
-        {
-            "waitingApproval" => "approvalRequired",
-            "waitingInput" => "userInputRequired",
-            _ => null,
-        };
+            {
+                "waitingApproval" => "approvalRequired",
+                "waitingInput" => "userInputRequired",
+                _ => null,
+            };
         var terminal = target is "completed" or "failed" or "cancelled";
         var configuredDeadline =
             _timeProvider.GetUtcNow() +

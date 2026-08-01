@@ -24,6 +24,15 @@ public sealed class ProviderReleaseValidationTests(ITestOutputHelper output)
             "deepseek-v4-flash",
             "DEEPSEEK_API_KEY"),
     ];
+    private static readonly ProviderScenario[] Scenarios =
+    [
+        new("text", "Reply with exactly OK."),
+        new("function", "Use file.list on the workspace root, then reply with exactly OK."),
+        new("webSearch", "Use web search to find the official DeepSeek Responses API page, then reply with exactly OK.", NetworkRead: true),
+        new("applyPatch", "Use apply_patch to create m9-release-patch.txt containing OK, then reply with exactly OK.", WorkspaceWrite: true),
+        new("usage", "Reply with exactly USAGE."),
+        new("secretCanary", "Reply with exactly CANARY-SAFE."),
+    ];
 
     [Fact(Explicit = true)]
     public async Task Real_provider_matrix_completes_the_full_runtime_without_secret_leaks()
@@ -82,9 +91,66 @@ public sealed class ProviderReleaseValidationTests(ITestOutputHelper output)
             string.Join(", ", incomplete));
     }
 
+    [Fact]
+    public void Release_evidence_requires_commit_and_all_six_completed_usage_scenarios()
+    {
+        var path = Assert.Single(Paths);
+        var usage = new DeepSeekResponsesUsage(10, 2, 4, 1, 14);
+        var valid = Scenarios
+            .Select(scenario => ScenarioEvidence(
+                scenario,
+                ReleaseStatus.Pass,
+                usage: usage,
+                terminalStatus: DeepSeekTerminalStatus.Completed))
+            .ToArray();
+
+        Assert.Equal(
+            ReleaseStatus.NotRun,
+            Evidence(path, null, ReleaseStatus.NotRun).Status);
+        Assert.Equal(
+            ReleaseStatus.Fail,
+            Evidence(
+                path,
+                new string('a', 40),
+                ReleaseStatus.Pass,
+                scenarios: valid[..^1]).Status);
+        var complete = Evidence(
+            path,
+            new string('a', 40),
+            ReleaseStatus.Pass,
+            scenarios: valid);
+        Assert.Equal(ReleaseStatus.Pass, complete.Status);
+        Assert.Equal(6, complete.Scenarios.Count);
+    }
+
     private static async Task<ProviderReleaseEvidence> RunAsync(
         ProviderCase path,
         string commitSha,
+        string apiKey,
+        CancellationToken cancellationToken)
+    {
+        var scenarios = new List<ProviderReleaseScenarioEvidence>();
+        foreach (var scenario in Scenarios)
+        {
+            scenarios.Add(await RunScenarioAsync(
+                path,
+                scenario,
+                apiKey,
+                cancellationToken));
+        }
+
+        return Evidence(
+            path,
+            commitSha,
+            scenarios.All(item => item.Status == ReleaseStatus.Pass)
+                ? ReleaseStatus.Pass
+                : ReleaseStatus.Fail,
+            scenarios: scenarios);
+    }
+
+    private static async Task<ProviderReleaseScenarioEvidence> RunScenarioAsync(
+        ProviderCase path,
+        ProviderScenario scenario,
         string apiKey,
         CancellationToken cancellationToken)
     {
@@ -93,9 +159,8 @@ public sealed class ProviderReleaseValidationTests(ITestOutputHelper output)
             Path.GetTempPath(),
             $"opencowork-provider-release-{Guid.NewGuid():N}");
         var userProfile = Path.Combine(root, "user");
-        var result = Evidence(
-            path,
-            commitSha,
+        var result = ScenarioEvidence(
+            scenario,
             ReleaseStatus.Fail,
             timestamp);
         var cleanupFailed = false;
@@ -110,7 +175,7 @@ public sealed class ProviderReleaseValidationTests(ITestOutputHelper output)
                 cancellationToken);
             await File.WriteAllTextAsync(
                 paths.ConfigPath,
-                Config(path),
+                Config(path, scenario),
                 cancellationToken);
 
             var probe = new ProviderProbe();
@@ -118,7 +183,7 @@ public sealed class ProviderReleaseValidationTests(ITestOutputHelper output)
             var standardError = new StringWriter();
             var exitCode = await OpenCoWorkCli.RunAsync(
                 ["chat", "--workspace", root],
-                new StringReader("Reply with exactly OK.\n"),
+                new StringReader(scenario.Prompt + "\n"),
                 standardOutput,
                 standardError,
                 root,
@@ -142,7 +207,8 @@ public sealed class ProviderReleaseValidationTests(ITestOutputHelper output)
                                     timeProvider).StreamAsync,
                                 registration.Tokenizer,
                                 probe).StreamAsync,
-                            timeProvider);
+                            timeProvider,
+                            serviceProvider.GetRequiredService<IToolInvocationPipeline>());
                     }),
                 cancellationToken);
 
@@ -158,21 +224,20 @@ public sealed class ProviderReleaseValidationTests(ITestOutputHelper output)
                 standardError.ToString().Contains(apiKey, StringComparison.Ordinal) ||
                 DirectoryContains(root, Encoding.UTF8.GetBytes(apiKey));
             if (exitCode == 0 &&
-                probe.RequestCount == 1 &&
+                probe.RequestCount > 0 &&
                 probe.Completed &&
                 probe.HasContent &&
                 !string.IsNullOrWhiteSpace(standardOutput.ToString()) &&
                 probe.Usage is
                 { InputTokens: > 0, OutputTokens: > 0, TotalTokens: > 0 } usage &&
-                probe.UsageCount == 1 &&
                 probe.Status == DeepSeekTerminalStatus.Completed &&
-                UsageMatches(probe.LocalPromptTokens, usage.InputTokens) &&
+                probe.PromptUsageMatches &&
                 reasoningCommitted &&
-                !secretFound)
+                !secretFound &&
+                ScenarioPassed(scenario, probe, root))
             {
-                result = Evidence(
-                    path,
-                    commitSha,
+                result = ScenarioEvidence(
+                    scenario,
                     ReleaseStatus.Pass,
                     timestamp,
                     usage,
@@ -186,9 +251,8 @@ public sealed class ProviderReleaseValidationTests(ITestOutputHelper output)
         }
         catch
         {
-            result = Evidence(
-                path,
-                commitSha,
+            result = ScenarioEvidence(
+                scenario,
                 ReleaseStatus.Fail,
                 timestamp);
         }
@@ -209,11 +273,11 @@ public sealed class ProviderReleaseValidationTests(ITestOutputHelper output)
         }
 
         return cleanupFailed
-            ? Evidence(path, commitSha, ReleaseStatus.Fail, timestamp)
+            ? ScenarioEvidence(scenario, ReleaseStatus.Fail, timestamp)
             : result;
     }
 
-    private static string Config(ProviderCase path) =>
+    private static string Config(ProviderCase path, ProviderScenario scenario) =>
         JsonSerializer.Serialize(
             new
             {
@@ -221,6 +285,14 @@ public sealed class ProviderReleaseValidationTests(ITestOutputHelper output)
                 {
                     defaultModel = path.ModelId,
                     reasoningEffort = "high",
+                },
+                tools = new
+                {
+                    effects = new
+                    {
+                        networkRead = scenario.NetworkRead ? "allow" : "deny",
+                        workspaceWrite = scenario.WorkspaceWrite ? "allow" : "deny",
+                    },
                 },
             },
             new JsonSerializerOptions(JsonSerializerDefaults.Web)
@@ -255,18 +327,69 @@ public sealed class ProviderReleaseValidationTests(ITestOutputHelper output)
                localPromptTokens - providerPromptTokens <= maximumOverestimate;
     }
 
+    private static bool ScenarioPassed(
+        ProviderScenario scenario,
+        ProviderProbe probe,
+        string root) =>
+        scenario.Name switch
+        {
+            "text" or "secretCanary" => true,
+            "function" => probe.HasFunctionCall,
+            "webSearch" => probe.HasWebSearch,
+            "applyPatch" =>
+                probe.HasApplyPatch &&
+                File.Exists(Path.Combine(root, "m9-release-patch.txt")) &&
+                File.ReadAllText(Path.Combine(root, "m9-release-patch.txt"))
+                    .Trim() == "OK",
+            "usage" => probe.UsageCount > 0,
+            _ => false,
+        };
+
     private static ProviderReleaseEvidence Evidence(
         ProviderCase path,
         string? commitSha,
         ReleaseStatus status,
         DateTimeOffset? timestamp = null,
+        IReadOnlyList<ProviderReleaseScenarioEvidence>? scenarios = null)
+    {
+        var values = scenarios ?? Scenarios
+            .Select(scenario => ScenarioEvidence(scenario, ReleaseStatus.NotRun))
+            .ToArray();
+        var effectiveStatus = status == ReleaseStatus.Pass &&
+                              (!IsCommitSha(commitSha) ||
+                               values.Count != Scenarios.Length ||
+                               !values.Select(item => item.Name)
+                                   .SequenceEqual(
+                                       Scenarios.Select(item => item.Name),
+                                       StringComparer.Ordinal) ||
+                               values.Any(item =>
+                                   item.Status != ReleaseStatus.Pass ||
+                                   item.TerminalStatus !=
+                                   DeepSeekTerminalStatus.Completed ||
+                                   item.Usage is null))
+            ? ReleaseStatus.Fail
+            : status;
+        return new ProviderReleaseEvidence(
+            IsCommitSha(commitSha) ? commitSha! : "unavailable",
+            RuntimeInformation.RuntimeIdentifier,
+            RuntimeInformation.OSDescription,
+            Environment.Version.ToString(),
+            path.ProviderPath,
+            path.ModelId,
+            "/v1/responses",
+            timestamp ?? DateTimeOffset.UtcNow,
+            values,
+            effectiveStatus);
+    }
+
+    private static ProviderReleaseScenarioEvidence ScenarioEvidence(
+        ProviderScenario scenario,
+        ReleaseStatus status,
+        DateTimeOffset? timestamp = null,
         DeepSeekResponsesUsage? usage = null,
         DeepSeekTerminalStatus? terminalStatus = null) =>
         new(
-            IsCommitSha(commitSha) ? commitSha! : "unavailable",
-            RuntimeInformation.RuntimeIdentifier,
-            path.ProviderPath,
-            path.ModelId,
+            scenario.Name,
             timestamp ?? DateTimeOffset.UtcNow,
             usage,
             terminalStatus,
@@ -286,11 +409,26 @@ public sealed class ProviderReleaseValidationTests(ITestOutputHelper output)
             ModelId == "deepseek-v4-flash";
     }
 
+    private sealed record ProviderScenario(
+        string Name,
+        string Prompt,
+        bool NetworkRead = false,
+        bool WorkspaceWrite = false);
+
     private sealed record ProviderReleaseEvidence(
         string CommitSha,
         string Rid,
+        string Os,
+        string Runtime,
         string ProviderPath,
         string ModelId,
+        string Api,
+        DateTimeOffset TimestampUtc,
+        IReadOnlyList<ProviderReleaseScenarioEvidence> Scenarios,
+        ReleaseStatus Status);
+
+    private sealed record ProviderReleaseScenarioEvidence(
+        string Name,
         DateTimeOffset TimestampUtc,
         DeepSeekResponsesUsage? Usage,
         DeepSeekTerminalStatus? TerminalStatus,
@@ -311,6 +449,8 @@ public sealed class ProviderReleaseValidationTests(ITestOutputHelper output)
 
         public int LocalPromptTokens { get; private set; }
 
+        public bool PromptUsageMatches { get; private set; } = true;
+
         public bool HasContent { get; private set; }
 
         public bool HasReasoning => _reasoningDeltas.Count != 0;
@@ -318,6 +458,12 @@ public sealed class ProviderReleaseValidationTests(ITestOutputHelper output)
         public IReadOnlyList<string> ReasoningDeltas => _reasoningDeltas;
 
         public bool Completed { get; private set; }
+
+        public bool HasFunctionCall { get; private set; }
+
+        public bool HasWebSearch { get; private set; }
+
+        public bool HasApplyPatch { get; private set; }
 
         public DeepSeekResponsesUsage? Usage { get; private set; }
 
@@ -343,20 +489,44 @@ public sealed class ProviderReleaseValidationTests(ITestOutputHelper output)
             switch (item)
             {
                 case DeepSeekTextDeltaEvent
-                    { Kind: DeepSeekTextKind.Output, Delta.Length: > 0 }:
+                { Kind: DeepSeekTextKind.Output, Delta.Length: > 0 }:
                     HasContent = true;
                     break;
                 case DeepSeekTextDeltaEvent
-                    { Kind: DeepSeekTextKind.Reasoning } reasoning:
+                { Kind: DeepSeekTextKind.Reasoning } reasoning:
                     _reasoningDeltas.Add(reasoning.Delta);
+                    break;
+                case DeepSeekFunctionCallCompletedEvent:
+                    HasFunctionCall = true;
+                    break;
+                case DeepSeekCustomToolCallCompletedEvent:
+                    HasApplyPatch = true;
+                    break;
+                case DeepSeekWebSearchEvent:
+                    HasWebSearch = true;
                     break;
                 case DeepSeekTerminalEvent terminal:
                     Completed = true;
-                    Status = terminal.Status;
+                    Status = Status is null ||
+                             Status == DeepSeekTerminalStatus.Completed
+                        ? terminal.Status
+                        : Status;
                     if (terminal.Usage is not null)
                     {
+                        PromptUsageMatches &= UsageMatches(
+                            LocalPromptTokens,
+                            terminal.Usage.InputTokens);
                         UsageCount++;
-                        Usage = terminal.Usage;
+                        Usage = Usage is null
+                            ? terminal.Usage
+                            : new DeepSeekResponsesUsage(
+                                Usage.InputTokens + terminal.Usage.InputTokens,
+                                Usage.CachedInputTokens +
+                                terminal.Usage.CachedInputTokens,
+                                Usage.OutputTokens + terminal.Usage.OutputTokens,
+                                Usage.ReasoningOutputTokens +
+                                terminal.Usage.ReasoningOutputTokens,
+                                Usage.TotalTokens + terminal.Usage.TotalTokens);
                     }
 
                     break;

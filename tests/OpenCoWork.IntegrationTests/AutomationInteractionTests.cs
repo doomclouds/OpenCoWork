@@ -1,7 +1,7 @@
+using System.Data.Common;
 using OpenCoWork.Abstractions;
 using OpenCoWork.Automations;
 using OpenCoWork.Core.Sessions;
-using System.Data.Common;
 using Xunit;
 
 namespace OpenCoWork.IntegrationTests;
