@@ -226,13 +226,13 @@ M11 仍须在最终发布候选上重跑完整双平台验收。
 
 | AcceptanceId | Requirement | CapabilityIds | EvidenceType | Platforms | ExpectedEvidence | Status | SupersededBy |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| M9-ACC-011 | Provider Catalog、配置和 Auth 只暴露 DeepSeek；通用 `openaiCompatible`、千问 Token Plan 和其他 Provider 不能进入有效运行时。 | CAP-026, CAP-027 | ContractSnapshot | All | M9 配置 Schema、Catalog Snapshot、旧配置拒绝与 Secret Store 测试。 | Planned | — |
-| M9-ACC-012 | DeepSeek 官方 Responses 子集的请求与语义 SSE 事件严格、有界地映射为 Content、Reasoning、Usage 和终态；流以 `response.completed` / `response.incomplete` / `response.failed` 结束且不等待 `[DONE]`。 | CAP-028 | AutomatedTest | All | 按官方事件表生成的 BCL Loopback Fixture 覆盖合法流、三类终态、未知事件、损坏帧、大小上限和空响应。 | Planned | — |
-| M9-ACC-013 | 官方 `function_call`、Arguments Delta、`function_call_output` 与 `custom/apply_patch` 在同一 Turn 内保持 Call ID、顺序、快照和多轮循环语义。 | CAP-032, CAP-033, CAP-034 | AutomatedTest | All | 多 Function Call、跨帧参数、重复 Call ID、Apply Patch 路径/审批/整包预检/单文件原子替换、跨文件 `OutcomeUnknown`、恢复和结果回注测试。 | Planned | — |
-| M9-ACC-014 | `deepseek-v4-flash` 的 Reasoning Text、可配置 `reasoning.effort`、Usage 与三类响应终态映射确定且可恢复对账。 | CAP-028, CAP-075 | ContractSnapshot | All | `low` / `high` / `max` 与默认 `high` 配置快照、非法值无网络断言、官方协议 Fixture、`cached_tokens` / `reasoning_tokens` Usage Ledger 对账和终态快照。 | Planned | — |
-| M9-ACC-015 | 官方 400/401/402/422 稳定失败，429/500/503 与超时按策略瞬态处理；只有已识别的上下文过长 400 触发压缩，所有重试遵守 Attempt 已提交边界。 | CAP-029, CAP-040 | FaultInjection | All | 全部官方 HTTP 错误码、响应头/空闲超时、首增量/Web Search/本地工具尝试前后断流和响应式压缩测试。 | Planned | — |
-| M9-ACC-016 | ThreadJournal 仍是唯一恢复事实源；进程重启不依赖官方明确不支持的 `previous_response_id`、`conversation` 或 `store`。 | CAP-020, CAP-039 | FaultInjection | All | 响应中断、进程重启、State v8 迁移/重建、Provider Action/Checkpoint 回放与工具副作用唯一性测试。 | Planned | — |
-| M9-ACC-017 | 旧 OpenAI-compatible/Qwen 配置和不受支持模型以稳定迁移诊断失败，不静默回退或别名映射。 | CAP-008, CAP-026 | MigrationTest | All | 旧配置 Corpus、Schema/Doctor/CLI 错误快照与无网络调用断言。 | Planned | — |
+| M9-ACC-011 | Provider Catalog、配置和 Auth 只暴露 DeepSeek；通用 `openaiCompatible`、千问 Token Plan 和其他 Provider 不能进入有效运行时。 | CAP-026, CAP-027 | ContractSnapshot | All | M9 配置 Schema、Catalog Snapshot、旧配置拒绝与 Secret Store 测试。 | Passed | — |
+| M9-ACC-012 | DeepSeek 官方 Responses 子集的请求与语义 SSE 事件严格、有界地映射为 Content、Reasoning、Usage 和终态；流以 `response.completed` / `response.incomplete` / `response.failed` 结束且不等待 `[DONE]`。 | CAP-028 | AutomatedTest | All | 按官方事件表生成的 BCL Loopback Fixture 覆盖合法流、三类终态、未知事件、损坏帧、大小上限和空响应。 | Passed | — |
+| M9-ACC-013 | 官方 `function_call`、Arguments Delta、`function_call_output` 与 `custom/apply_patch` 在同一 Turn 内保持 Call ID、顺序、快照和多轮循环语义。 | CAP-032, CAP-033, CAP-034 | AutomatedTest | All | 多 Function Call、跨帧参数、重复 Call ID、Apply Patch 路径/审批/整包预检/单文件原子替换、跨文件 `OutcomeUnknown`、恢复和结果回注测试。 | Passed | — |
+| M9-ACC-014 | `deepseek-v4-flash` 的 Reasoning Text、可配置 `reasoning.effort`、Usage 与三类响应终态映射确定且可恢复对账。 | CAP-028, CAP-075 | ContractSnapshot | All | `low` / `high` / `max` 与默认 `high` 配置快照、非法值无网络断言、官方协议 Fixture、`cached_tokens` / `reasoning_tokens` Usage Ledger 对账和终态快照。 | Passed | — |
+| M9-ACC-015 | 官方 400/401/402/422 稳定失败，429/500/503 与超时按策略瞬态处理；只有已识别的上下文过长 400 触发压缩，所有重试遵守 Attempt 已提交边界。 | CAP-029, CAP-040 | FaultInjection | All | 全部官方 HTTP 错误码、响应头/空闲超时、首增量/Web Search/本地工具尝试前后断流和响应式压缩测试。 | Passed | — |
+| M9-ACC-016 | ThreadJournal 仍是唯一恢复事实源；进程重启不依赖官方明确不支持的 `previous_response_id`、`conversation` 或 `store`。 | CAP-020, CAP-039 | FaultInjection | All | 响应中断、进程重启、State v8 迁移/重建、Provider Action/Checkpoint 回放与工具副作用唯一性测试。 | Passed | — |
+| M9-ACC-017 | 旧 OpenAI-compatible/Qwen 配置和不受支持模型以稳定迁移诊断失败，不静默回退或别名映射。 | CAP-008, CAP-026 | MigrationTest | All | 旧配置 Corpus、Schema/Doctor/CLI 错误快照与无网络调用断言。 | Passed | — |
 | M9-ACC-018 | `deepseek-v4-flash` 在 `win-x64` 与 `osx-arm64` 发布目录通过 Responses API 真实冒烟、Function、`web_search`、`custom/apply_patch`、Usage 对账和 Secret Canary。 | CAP-026, CAP-027, CAP-028, CAP-036 | RealPlatformValidation | DualPlatform | 两平台独立发布目录记录、精确模型/API、Provider 工具、Usage、终态与全输出面 Secret 扫描。 | Planned | — |
 | M9-ACC-019 | DeepSeek 服务端 `web_search` 只有在有效 `NetworkRead` Authority 已授权时才进入请求并映射官方状态事件；本地 `web.fetch/CoreWebTool` 与模型侧 `file.write` 退出 Catalog。 | CAP-032, CAP-034, CAP-036 | SecurityTest | DualPlatform | Provider 请求 Snapshot、Web Search 事件 Fixture、Authority 拒绝/允许矩阵、旧工具不存在断言，以及双平台真实搜索。 | Planned | — |
 
@@ -281,10 +281,10 @@ M11 仍须在最终发布候选上重跑完整双平台验收。
 | M6 | 10 | Passed |
 | M7 | 10 | 8 Passed / 2 Planned |
 | M8 | 9 | 7 Passed / 2 Planned |
-| M9 | 9 | Planned |
+| M9 | 9 | 7 Passed / 2 Planned |
 | M10 | 10 | Planned |
 | M11 | 12 | Planned |
-| **Total** | **113** | **78 Passed / 35 Planned** |
+| **Total** | **113** | **85 Passed / 28 Planned** |
 
 每个 Slice 标记 Done 前必须：
 

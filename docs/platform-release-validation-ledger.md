@@ -56,8 +56,8 @@ Passed`，不得把目标平台状态改为 `Passed`。M11 必须在最终发布
 | M7 Multi-Agent CoWork | `osx-arm64` | Passed | `c30f168a7c01a39915662453799427e749c8eacf` | Apple Silicon macOS 26.5.2 (`25F84`)；.NET SDK `10.0.302`；Runtime `10.0.10`；Git `2.50.1` | 446 项回归、Release build 0/0、App/TestClient Mach-O arm64 发布目录 Wire 1.0/1.1/1.2、ACP、WebSocket、DAG、Mailbox、Artifact、Symlink、Worktree、恢复、Secret Canary、进程树与 Dirty Retention | [M7 实施计划 Outcome 10](superpowers/plans/2026-07-30-open-cowork-m7-multi-agent-cowork-implementation-plan.md) |
 | M8 Automations and Scheduler | `win-x64` | Pending | `a710866ec2f812dce3bb03a72d5723ac72e68427`；Cross-publish Passed | 从 macOS 26.5.2 交叉发布；Windows 真机环境待登记 | App/TestClient `win-x64` 独立 restore/publish 与 PE32+ x64 摘要通过；DST、强杀恢复、Reparse/Junction、Worktree、进程树与 Wire 1.3 仍待 Windows 真机 | [M8 实施计划 Outcome 10](superpowers/plans/2026-07-30-open-cowork-m8-automations-scheduler-implementation-plan.md) |
 | M8 Automations and Scheduler | `osx-arm64` | Passed | `a710866ec2f812dce3bb03a72d5723ac72e68427` | Apple Silicon macOS 26.5.2 (`25F84`)；.NET SDK `10.0.302`；Runtime `10.0.10`；Git `2.50.1` | 536 项回归、100 项 M8 专项、固定负载、Release build 0/0、App/TestClient Mach-O arm64 发布目录 Wire 1.0–1.3、DST、热更新、恢复、Symlink、Worktree、取消、Secret Canary 与残留检查 | [M8 实施计划 Outcome 10](superpowers/plans/2026-07-30-open-cowork-m8-automations-scheduler-implementation-plan.md) |
-| M9 DeepSeek Responses Provider | `win-x64` | Pending | 待实现 | 待登记 | Release 回归、发布目录 `deepseek-v4-flash` Responses、Function、`web_search`、`custom/apply_patch`、Usage 与 Secret Canary 真实证据；Provider 细节见统一台账 | [Provider 台账](provider-validation-backlog.md) |
-| M9 DeepSeek Responses Provider | `osx-arm64` | Pending | 待实现 | 待登记 | Release 回归、发布目录 `deepseek-v4-flash` Responses、Function、`web_search`、`custom/apply_patch`、Usage 与 Secret Canary 真实证据；Provider 细节见统一台账 | [Provider 台账](provider-validation-backlog.md) |
+| M9 DeepSeek Responses Provider | `win-x64` | Pending | `be8c90053b468a8a1c8032e87e49cf968168ca2a`；Cross-publish Passed | 从 macOS 26.5.2 交叉发布；Windows 真机环境待登记 | App/TestClient `win-x64` 独立 restore/publish 与 PE32+ x64 产物通过；真实 `deepseek-v4-flash` 六场景、迁移/恢复和残留仍待 Windows 真机 | [Provider 台账](provider-validation-backlog.md) |
+| M9 DeepSeek Responses Provider | `osx-arm64` | Pending | `be8c90053b468a8a1c8032e87e49cf968168ca2a` | Apple Silicon macOS 26.5.2 (`25F84`)；.NET SDK `10.0.302`；Runtime `10.0.10` | 571 项离线回归、Release build 0/0、App/TestClient 发布目录 7 场景通过；环境无 `DEEPSEEK_API_KEY`，真实 Provider 六场景 NotRun | [Provider 台账](provider-validation-backlog.md) |
 | M10 Gateway and Operations | `win-x64` | Pending | 待实现 | 待登记 | Gateway/Hub、Channel 生命周期、媒体路径、后台服务和发布目录验收 | [Runtime 1.0 里程碑](milestones/2026-07/open-cowork-runtime-1-0/README.md) |
 | M10 Gateway and Operations | `osx-arm64` | Pending | 待实现 | 待登记 | Gateway/Hub、Channel 生命周期、媒体路径、后台服务和发布目录验收 | [Runtime 1.0 里程碑](milestones/2026-07/open-cowork-runtime-1-0/README.md) |
 | M11 OpenCoWork 1.0 Closure | `win-x64` | Pending | 最终发布候选待定 | 待登记 | 安装、升级、迁移、恢复、安全、性能、签名和完整发布候选验收 | [Runtime 1.0 里程碑](milestones/2026-07/open-cowork-runtime-1-0/README.md) |
@@ -218,6 +218,36 @@ Passed`，不得把目标平台状态改为 `Passed`。M11 必须在最终发布
   `b2cbd020fb2d1ad35da39bcdd485ab15b8de466c09104c5ed41f39b7970b73c6`。
   该结果不是 Windows 真机证据，`M8-ACC-003`、`M8-ACC-008` 和完整 M8
   继续保持未关闭，也不改变 M7 的 Windows Pending 状态。
+
+## M9 当前验证结果（macOS 2026-08-01；Windows 待验）
+
+- 代码基线为 `be8c90053b468a8a1c8032e87e49cf968168ca2a`；验证前工作树干净。
+- `dotnet test OpenCoWork.slnx -c Release --no-restore` 为 Architecture `8`、
+  Core `391`、Generators `15`、Integration `124`、Protocol `33`，合计
+  `571` passed / `0` failed；真实 Provider 显式用例按设计跳过。
+- `dotnet build OpenCoWork.slnx -c Release --no-restore` 为 `0` warning /
+  `0` error；format 与 diff 门禁通过。App 与 Protocol TestClient 分别为
+  `osx-arm64`、`win-x64` 独立 restore/publish。
+- `osx-arm64` 发布目录 TestClient 返回 `passed: true`，通过
+  `wire-stdio-reconnect`、`wire-11-catalog-dynamic-memory-git-terminal-cleanup`、
+  `wire-12-cowork-idempotency-notification`、
+  `wire-13-automation-catalog-schedule-runs-notifications`、
+  `acp-v1-session-load`、`wire-websocket-auth-slow-reader` 与 `secret-canary`。
+- `osx-arm64` App host/DLL SHA-256 为
+  `162a965f8f20ad7e6b78e03d2d76c396a6e7ba193c9bb1b69ab06944f36f0212` /
+  `854e3bbae09f6595e696b2e7dde4b9853ad2115b73845b7f5c56769b6a9f027b`；
+  TestClient host/DLL 为
+  `bd55da6603c19010bf549dab4cd6decc03e1d9d67ed7f45b2a54169150927306` /
+  `b4d9711209177d8cecca260167d39ee3825a2c08f53593450863fb218f039bfe`。
+- `win-x64` 交叉发布生成 PE32+ x64 App/TestClient；App host/DLL SHA-256 为
+  `1fbf2743dea49d121e190a507ad9395fdbd8dc5c88976adff56f87e0f703c5c4` /
+  `4a67b0b34a3c96acf0cf7b948a14f3ee751216407432ce1113581b01ba46dbb6`，
+  TestClient host/DLL 为
+  `2c010be85638a9c6288943bd666504392d24fd38adc3820c068295efad45d26b` /
+  `9efb1cc6bf3f173d8df60b943c3c599b6ee574a7d941e4170029b4579bf0fb35`。
+- 当前环境未提供 `DEEPSEEK_API_KEY`，因此 macOS 的固定六场景真实 Provider
+  Runner 为 NotRun；Windows 真机同样未执行。上述发布和离线 TestClient 结果不能
+  替代真实 Provider 证据，`M9-ACC-018`、`M9-ACC-019` 和完整 M9 保持未关闭。
 
 ## 更新规则
 
