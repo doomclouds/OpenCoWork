@@ -351,7 +351,8 @@ public sealed record QueuedTurnInputSnapshot(
     string Text,
     int Position,
     DateTimeOffset CreatedAt,
-    AgentMode EffectiveAgentMode = AgentMode.Agent);
+    AgentMode EffectiveAgentMode = AgentMode.Agent,
+    Guid? CorrelationId = null);
 
 public sealed record SubmittedTurnInputSnapshot(
     QueuedTurnInputSnapshot QueueItem,
@@ -568,7 +569,8 @@ public sealed record EnqueueInputRequest(
     Guid IdempotencyKey,
     long ExpectedSequence,
     string Text,
-    TurnAdmission Admission = TurnAdmission.QueueIfBusy);
+    TurnAdmission Admission = TurnAdmission.QueueIfBusy,
+    Guid? CorrelationId = null);
 
 public sealed record AppendCompletedAgentTurnRequest(
     Guid ThreadId,

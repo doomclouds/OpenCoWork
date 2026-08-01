@@ -22,8 +22,30 @@ public sealed class GatewayMediaStore(
         IReadOnlyList<ChannelMediaInput> attachments,
         CancellationToken cancellationToken = default)
     {
-        ValidateChannelId(channelId);
         ValidateVersionSeven(inboundMessageId, nameof(inboundMessageId));
+        var committed = await StoreFilesAsync(channelId, attachments, cancellationToken);
+        await state.WriteAsync(
+            async (connection, transaction, token) =>
+            {
+                await InsertMetadataAsync(
+                    connection,
+                    transaction,
+                    inboundMessageId,
+                    committed,
+                    DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                    token);
+                return true;
+            },
+            cancellationToken);
+        return committed;
+    }
+
+    internal async Task<IReadOnlyList<ChannelMediaReference>> StoreFilesAsync(
+        string channelId,
+        IReadOnlyList<ChannelMediaInput> attachments,
+        CancellationToken cancellationToken = default)
+    {
+        ValidateChannelId(channelId);
         ArgumentNullException.ThrowIfNull(attachments);
         if (attachments.Count > MaximumAttachments)
         {
@@ -80,43 +102,6 @@ public sealed class GatewayMediaStore(
                     relativePath));
             }
 
-            await state.WriteAsync(
-                async (connection, transaction, token) =>
-                {
-                    for (var ordinal = 0; ordinal < committed.Count; ordinal++)
-                    {
-                        var item = committed[ordinal];
-                        await using var command = connection.CreateCommand();
-                        command.Transaction = transaction;
-                        command.CommandText =
-                            """
-                            INSERT INTO channel_media (
-                                media_id, inbound_message_id, ordinal, relative_path,
-                                media_type, content_length, content_sha256, display_name,
-                                created_utc)
-                            VALUES (
-                                $media_id, $inbound_message_id, $ordinal, $relative_path,
-                                $media_type, $content_length, $content_sha256, $display_name,
-                                $created_utc);
-                            """;
-                        Add(command, "$media_id", item.MediaId.ToString("D"));
-                        Add(command, "$inbound_message_id", inboundMessageId.ToString("D"));
-                        Add(command, "$ordinal", ordinal);
-                        Add(command, "$relative_path", item.RelativePath);
-                        Add(command, "$media_type", item.MediaType);
-                        Add(command, "$content_length", item.ContentLength);
-                        Add(command, "$content_sha256", item.ContentSha256);
-                        Add(command, "$display_name", item.DisplayName);
-                        Add(
-                            command,
-                            "$created_utc",
-                            DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
-                        await command.ExecuteNonQueryAsync(token);
-                    }
-
-                    return true;
-                },
-                cancellationToken);
             return committed;
         }
         finally
@@ -125,6 +110,43 @@ public sealed class GatewayMediaStore(
             {
                 DeleteIfExists(item.TemporaryPath);
             }
+        }
+    }
+
+    internal static async ValueTask InsertMetadataAsync(
+        DbConnection connection,
+        DbTransaction transaction,
+        Guid inboundMessageId,
+        IReadOnlyList<ChannelMediaReference> media,
+        long createdUtc,
+        CancellationToken cancellationToken)
+    {
+        for (var ordinal = 0; ordinal < media.Count; ordinal++)
+        {
+            var item = media[ordinal];
+            await using var command = connection.CreateCommand();
+            command.Transaction = transaction;
+            command.CommandText =
+                """
+                INSERT INTO channel_media (
+                    media_id, inbound_message_id, ordinal, relative_path,
+                    media_type, content_length, content_sha256, display_name,
+                    created_utc)
+                VALUES (
+                    $media_id, $inbound_message_id, $ordinal, $relative_path,
+                    $media_type, $content_length, $content_sha256, $display_name,
+                    $created_utc);
+                """;
+            Add(command, "$media_id", item.MediaId.ToString("D"));
+            Add(command, "$inbound_message_id", inboundMessageId.ToString("D"));
+            Add(command, "$ordinal", ordinal);
+            Add(command, "$relative_path", item.RelativePath);
+            Add(command, "$media_type", item.MediaType);
+            Add(command, "$content_length", item.ContentLength);
+            Add(command, "$content_sha256", item.ContentSha256);
+            Add(command, "$display_name", item.DisplayName);
+            Add(command, "$created_utc", createdUtc);
+            await command.ExecuteNonQueryAsync(cancellationToken);
         }
     }
 

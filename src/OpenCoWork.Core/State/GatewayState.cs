@@ -61,8 +61,9 @@ internal sealed class GatewayStateMigrationContributor
                 "inbound_message_id", "channel_id", "external_message_id",
                 "external_conversation_id", "partition_sequence", "payload_json",
                 "body_sha256", "session_create_idempotency_key",
-                "session_submit_idempotency_key", "correlation_id", "thread_id",
-                "turn_id", "status", "attempt_count", "next_attempt_utc",
+                "session_submit_idempotency_key", "session_expected_sequence",
+                "session_queue_item_id", "correlation_id", "thread_id", "turn_id", "status",
+                "attempt_count", "next_attempt_utc",
                 "lease_owner_instance_id", "lease_expires_utc", "error_code",
                 "diagnostic", "revision", "created_utc", "updated_utc",
                 "delivered_utc",
@@ -215,6 +216,16 @@ internal sealed class GatewayStateMigrationContributor
                 length(replace(session_submit_idempotency_key, '-', '')) = 32 AND
                 replace(session_submit_idempotency_key, '-', '')
                     NOT GLOB '*[^0-9a-f]*'),
+            session_expected_sequence INTEGER NULL CHECK (
+                session_expected_sequence IS NULL OR session_expected_sequence >= 0),
+            session_queue_item_id TEXT NULL CHECK (
+                session_queue_item_id IS NULL OR (
+                    length(session_queue_item_id) = 36 AND
+                    session_queue_item_id = lower(session_queue_item_id) AND
+                    session_queue_item_id GLOB
+                        '????????-????-7???-[89ab]???-????????????' AND
+                    length(replace(session_queue_item_id, '-', '')) = 32 AND
+                    replace(session_queue_item_id, '-', '') NOT GLOB '*[^0-9a-f]*')),
             correlation_id TEXT NOT NULL CHECK (
                 length(correlation_id) = 36 AND correlation_id = lower(correlation_id) AND
                 correlation_id GLOB '????????-????-7???-[89ab]???-????????????' AND

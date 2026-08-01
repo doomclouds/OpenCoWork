@@ -1360,7 +1360,8 @@ internal sealed partial class SessionService : ISessionService
                         queued.Text,
                         queued.Position,
                         entry.Timestamp,
-                        queued.EffectiveAgentMode)));
+                        queued.EffectiveAgentMode,
+                        queued.CorrelationId)));
                 break;
             case SessionEventType.TurnQueueChanged:
                 var changed = entry.Payload

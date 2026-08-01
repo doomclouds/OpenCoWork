@@ -1580,6 +1580,7 @@ internal sealed class SessionProjection
         var scheduled = fact.QueueItemId is not null ||
                         fact.UserItemId is not null ||
                         fact.Text is not null;
+        Guid? correlationId = null;
         if (scheduled &&
             (fact.QueueItemId is null ||
              fact.UserItemId is null ||
@@ -1619,6 +1620,7 @@ internal sealed class SessionProjection
                     SessionErrorCodes.JournalCorrupt,
                     "Scheduled turn mode does not match its queued input.");
             }
+            correlationId = queuedInput.CorrelationId;
 
             await ExecuteRequiredAsync(
                 connection,
@@ -1670,6 +1672,16 @@ internal sealed class SessionProjection
             ("$agentMode", Wire(fact.EffectiveAgentMode)),
             ("$scheduled", scheduled ? 1 : 0),
             ("$timestamp", timestamp));
+        if (correlationId is not null)
+        {
+            await ExecuteRequiredAsync(
+                connection,
+                transaction,
+                "UPDATE turns SET correlation_id = $correlationId WHERE turn_id = $turnId;",
+                cancellationToken,
+                ("$correlationId", Wire(correlationId.Value)),
+                ("$turnId", Wire(fact.TurnId)));
+        }
         await ExecuteRequiredAsync(
             connection,
             transaction,
@@ -3239,7 +3251,8 @@ internal sealed class SessionProjection
                 fact.Text,
                 queueReader.GetInt32(2),
                 DateTimeOffset.FromUnixTimeMilliseconds(queueReader.GetInt64(3)),
-                ParseWire<AgentMode>(queueReader.GetString(4))));
+                ParseWire<AgentMode>(queueReader.GetString(4)),
+                fact.CorrelationId));
         }
 
         return new ThreadSnapshot(

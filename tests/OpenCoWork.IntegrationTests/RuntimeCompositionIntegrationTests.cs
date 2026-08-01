@@ -213,6 +213,95 @@ public sealed class RuntimeCompositionIntegrationTests
     }
 
     [Fact]
+    public async Task GatewayInbound_dispatches_into_the_real_session_queue_with_correlation()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var root = Path.Combine(
+            Path.GetTempPath(),
+            $"opencowork-gateway-dispatch-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            using var host = OpenCoWorkCompositionRoot.Build(
+                [],
+                root,
+                primaryModuleId: "gateway");
+            await host.StartAsync(cancellationToken);
+            var state = host.Services.GetRequiredService<IWorkspaceStateStore>();
+            await state.WriteAsync(
+                async (connection, transaction, token) =>
+                {
+                    await using var command = connection.CreateCommand();
+                    command.Transaction = transaction;
+                    command.CommandText =
+                        """
+                        INSERT INTO channels (
+                            channel_id, kind, enabled, definition_sha256,
+                            trust_status, runtime_status, revision, created_utc, updated_utc)
+                        VALUES (
+                            'integration', 'webhook', 1,
+                            'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+                            'trusted', 'ready', 1, 1, 1);
+                        """;
+                    await command.ExecuteNonQueryAsync(token);
+                    return true;
+                },
+                cancellationToken);
+
+            var service = host.Services.GetRequiredService<GatewayService>();
+            Assert.Same(
+                service,
+                host.Services.GetRequiredService<IChannelInboundSink>());
+            var receipt = await service.AcceptAsync(
+                new ChannelInboundRequest(
+                    "integration",
+                    "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                    new ChannelInboundEnvelope(
+                        1,
+                        "message-1",
+                        "conversation-1",
+                        DateTimeOffset.UtcNow,
+                        "hello from gateway",
+                        [])),
+                cancellationToken);
+
+            Assert.Equal(1, await service.DispatchPendingAsync(
+                Guid.CreateVersion7(),
+                1,
+                cancellationToken));
+            var projectedCorrelation = await state.ReadAsync<string?>(
+                async (connection, token) =>
+                {
+                    await using var command = connection.CreateCommand();
+                    command.CommandText =
+                        """
+                        SELECT coalesce(
+                            (SELECT json_extract(q.payload_json, '$.correlationId')
+                             FROM turn_queue q WHERE q.thread_id = i.thread_id LIMIT 1),
+                            (SELECT t.correlation_id FROM turns t
+                             WHERE t.thread_id = i.thread_id
+                             ORDER BY t.created_utc DESC LIMIT 1))
+                        FROM channel_inbound_messages i
+                        WHERE i.inbound_message_id = $inboundId;
+                        """;
+                    var parameter = command.CreateParameter();
+                    parameter.ParameterName = "$inboundId";
+                    parameter.Value = receipt.ReceiptId.ToString("D");
+                    command.Parameters.Add(parameter);
+                    return await command.ExecuteScalarAsync(token) as string;
+                },
+                cancellationToken);
+            Assert.Equal(receipt.CorrelationId.ToString("D"), projectedCorrelation);
+            await host.StopAsync(cancellationToken);
+        }
+        finally
+        {
+            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task Capability_start_failure_is_cleaned_before_workspace_faults()
     {
         var cancellationToken = TestContext.Current.CancellationToken;

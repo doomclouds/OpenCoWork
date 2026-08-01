@@ -1118,6 +1118,9 @@ namespace OpenCoWork.App
             }
 
             services.TryAddSingleton<GatewayMediaStore>();
+            services.TryAddSingleton<GatewayService>();
+            services.TryAddSingleton<IChannelInboundSink>(services =>
+                services.GetRequiredService<GatewayService>());
             services.TryAddSingleton<IChannelSender, WebhookChannelSender>();
         }
 

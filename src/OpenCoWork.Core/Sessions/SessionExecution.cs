@@ -2786,7 +2786,8 @@ internal sealed partial class SessionService
                         queued.Text,
                         queued.Position,
                         entry.Timestamp,
-                        queued.EffectiveAgentMode);
+                        queued.EffectiveAgentMode,
+                        queued.CorrelationId);
                     queueItems[queued.QueueItemId] = queuedItem;
                     events.Add(new SessionEvent(
                         entry.ThreadId,

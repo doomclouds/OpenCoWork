@@ -16,6 +16,10 @@ internal sealed partial class SessionService
         ArgumentException.ThrowIfNullOrWhiteSpace(request.Text);
         RequireId(request.ThreadId, nameof(request.ThreadId), "Thread ID");
         RequireId(request.IdempotencyKey, nameof(request.IdempotencyKey), "Idempotency key");
+        if (request.CorrelationId is { } correlationId)
+        {
+            RequireId(correlationId, nameof(request.CorrelationId), "Correlation ID");
+        }
         ArgumentOutOfRangeException.ThrowIfNegative(request.ExpectedSequence);
         if (!Enum.IsDefined(request.Admission))
         {
@@ -23,16 +27,28 @@ internal sealed partial class SessionService
         }
 
         var operation = Wire(SessionEventType.TurnQueued);
-        var requestSha256 = RequestHash(
-            operation,
-            new
-            {
-                ThreadId = Wire(request.ThreadId),
-                IdempotencyKey = Wire(request.IdempotencyKey),
-                request.ExpectedSequence,
-                request.Text,
-                request.Admission,
-            });
+        var requestSha256 = request.CorrelationId is null
+            ? RequestHash(
+                operation,
+                new
+                {
+                    ThreadId = Wire(request.ThreadId),
+                    IdempotencyKey = Wire(request.IdempotencyKey),
+                    request.ExpectedSequence,
+                    request.Text,
+                    request.Admission,
+                })
+            : RequestHash(
+                operation,
+                new
+                {
+                    ThreadId = Wire(request.ThreadId),
+                    IdempotencyKey = Wire(request.IdempotencyKey),
+                    request.ExpectedSequence,
+                    request.Text,
+                    request.Admission,
+                    CorrelationId = Wire(request.CorrelationId.Value),
+                });
         var keyGate = GetIdempotencyGate(request.IdempotencyKey);
         await keyGate.WaitAsync(cancellationToken);
         SessionCommandResult<SubmittedTurnInputSnapshot> result;
@@ -131,7 +147,8 @@ internal sealed partial class SessionService
                     request.Text,
                     thread.Queue.Count,
                     timestamp,
-                    thread.AgentMode);
+                    thread.AgentMode,
+                    request.CorrelationId);
                 var queue = thread.Queue.Append(queueItem).ToArray();
                 var nextThread = ExecutionThread(
                     thread,
@@ -149,7 +166,8 @@ internal sealed partial class SessionService
                         queueItem.Text,
                         queueItem.Position,
                         requestSha256,
-                        queueItem.EffectiveAgentMode),
+                        queueItem.EffectiveAgentMode,
+                        queueItem.CorrelationId),
                     SessionEventType.TurnQueued,
                     cancellationToken,
                     new SessionEventPayload(QueueItem: queueItem));
@@ -712,7 +730,8 @@ internal sealed partial class SessionService
             fact.Text,
             fact.Position,
             match.Entry.Timestamp,
-            fact.EffectiveAgentMode);
+            fact.EffectiveAgentMode,
+            fact.CorrelationId);
         var turnId = match.Replay.Entries
             .Where(entry =>
                 entry.Sequence > match.Entry.Sequence &&

@@ -80,7 +80,8 @@ internal sealed record TurnQueuedFact(
     string Text,
     int Position,
     string RequestSha256,
-    AgentMode EffectiveAgentMode = AgentMode.Agent);
+    AgentMode EffectiveAgentMode = AgentMode.Agent,
+    Guid? CorrelationId = null);
 
 internal sealed record TurnQueueChangedFact(
     IReadOnlyList<Guid> QueueItemIds,
