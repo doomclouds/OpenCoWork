@@ -143,6 +143,29 @@ public sealed class AcpConnectionTests
             Event(
                 thread.ThreadId,
                 sequence: 5,
+                SessionEventType.ItemCompleted,
+                new SessionEventPayload(
+                    Turn: Turn(thread.ThreadId, turnId, TurnStatus.Running),
+                    Item: Item(
+                        Guid.CreateVersion7(),
+                        turnId,
+                        SessionItemType.ProviderAction,
+                        string.Empty,
+                        now,
+                        new ProviderActionItemContent(
+                            "search-1",
+                            ProviderActionStatus.Completed,
+                            JsonSerializer.SerializeToElement(new
+                            {
+                                type = "web_search_call",
+                                id = "search-1",
+                                status = "completed",
+                            }))))),
+            cancellationToken);
+        await events.Writer.WriteAsync(
+            Event(
+                thread.ThreadId,
+                sequence: 6,
                 SessionEventType.TurnCompleted,
                 new SessionEventPayload(
                     Turn: Turn(thread.ThreadId, turnId, TurnStatus.Completed))),
@@ -160,6 +183,9 @@ public sealed class AcpConnectionTests
             notifications,
             item => item.GetProperty("params").GetProperty("update")
                 .GetProperty("sessionUpdate").GetString() == "agent_message_chunk");
+        Assert.DoesNotContain(
+            output,
+            item => item.GetRawText().Contains("search-1", StringComparison.Ordinal));
         Assert.Equal(
             "max_tokens",
             output.Last(item => item.TryGetProperty("id", out var id) &&

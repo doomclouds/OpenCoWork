@@ -401,7 +401,7 @@ public sealed class OpenCoWorkJsonRpcTests
             {
                 using var document = JsonDocument.Parse(message);
                 output.Enqueue(document.RootElement.Clone());
-                if (output.Count(element => element.TryGetProperty("method", out _)) >= 5)
+                if (output.Count(element => element.TryGetProperty("method", out _)) >= 6)
                 {
                     received.TrySetResult();
                 }
@@ -440,7 +440,21 @@ public sealed class OpenCoWorkJsonRpcTests
                 Item: Item(SessionItemStatus.Streaming, "AB"))),
             cancellationToken);
         await events.Writer.WriteAsync(
-            Event(6, SessionEventType.ProviderUsageRecorded, new SessionEventPayload()),
+            Event(6, SessionEventType.ItemStarted, new SessionEventPayload(
+                Item: new SessionItemSnapshot(
+                    Guid.CreateVersion7(),
+                    turnId,
+                    SessionItemType.ProviderAction,
+                    SessionItemStatus.Started,
+                    new ProviderActionItemContent(
+                        "search-1",
+                        ProviderActionStatus.Searching),
+                    Sequence: 6,
+                    now,
+                    now))),
+            cancellationToken);
+        await events.Writer.WriteAsync(
+            Event(7, SessionEventType.ProviderUsageRecorded, new SessionEventPayload()),
             cancellationToken);
         await received.Task.WaitAsync(cancellationToken);
         events.Writer.Complete();
@@ -451,7 +465,7 @@ public sealed class OpenCoWorkJsonRpcTests
                 .GetProperty("sequence").GetInt64())
             .ToArray();
         Assert.Equal(
-            [2L, 3L, 4L, 5L, 6L],
+            [2L, 3L, 4L, 5L, 6L, 7L],
             notifications.Select(element => element.GetProperty("params")
                 .GetProperty("sequence").GetInt64()));
         Assert.Equal(
@@ -464,6 +478,20 @@ public sealed class OpenCoWorkJsonRpcTests
         Assert.Equal(
             "system/event",
             notifications[^1].GetProperty("method").GetString());
+        var providerAction = Assert.Single(
+            notifications,
+            element => element.GetProperty("params").GetProperty("sequence").GetInt64() == 6);
+        Assert.Equal("item/started", providerAction.GetProperty("method").GetString());
+        var actionItem = providerAction.GetProperty("params")
+            .GetProperty("payload")
+            .GetProperty("item");
+        Assert.Equal("providerAction", actionItem.GetProperty("type").GetString());
+        Assert.Equal(
+            "search-1",
+            actionItem.GetProperty("content").GetProperty("providerCallId").GetString());
+        Assert.Equal(
+            "searching",
+            actionItem.GetProperty("content").GetProperty("status").GetString());
 
         SessionEvent Event(
             long sequence,

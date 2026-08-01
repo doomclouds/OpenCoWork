@@ -1387,7 +1387,8 @@ internal sealed partial class SessionService
             snapshot.ResponsePrompt.TokenCount < 0 ||
             snapshot.CompactionPrompt.TokenCount < 0 ||
             snapshot.ContextWindowTokens <= 0 ||
-            snapshot.MaxOutputTokens <= 0)
+            snapshot.MaxOutputTokens <= 0 ||
+            snapshot.ReasoningEffort is not ("low" or "high" or "max"))
         {
             throw ExecutionError(
                 SessionErrorCodes.InvalidState,
@@ -1440,7 +1441,11 @@ internal sealed partial class SessionService
             usage.AttemptNumber <= 0 ||
             usage.PromptTokens < 0 ||
             usage.CompletionTokens < 0 ||
-            usage.TotalTokens < usage.PromptTokens + usage.CompletionTokens ||
+            usage.CachedPromptTokens < 0 ||
+            usage.CachedPromptTokens > usage.PromptTokens ||
+            usage.ReasoningCompletionTokens < 0 ||
+            usage.ReasoningCompletionTokens > usage.CompletionTokens ||
+            usage.TotalTokens != usage.PromptTokens + usage.CompletionTokens ||
             usage.IsEstimate != (usage.Source == ProviderUsageSource.LocalEstimate))
         {
             throw ExecutionError(
@@ -4156,6 +4161,8 @@ internal sealed partial class SessionService
                 content.Deserialize<ToolCallItemContent>(JsonOptions),
             SessionItemType.ToolResult =>
                 content.Deserialize<ToolResultItemContent>(JsonOptions),
+            SessionItemType.ProviderAction =>
+                content.Deserialize<ProviderActionItemContent>(JsonOptions),
             _ => null,
         };
         return result ?? throw ExecutionError(
@@ -4177,6 +4184,7 @@ internal sealed partial class SessionService
             SessionItemType.UserInputResponse => content is UserInputResponseContent,
             SessionItemType.Error => content is ErrorItemContent,
             SessionItemType.SystemNotice => content is SystemNoticeContent,
+            SessionItemType.ProviderAction => content is ProviderActionItemContent,
             _ => false,
         };
 
@@ -4394,7 +4402,7 @@ internal sealed partial class SessionService
     private sealed record ProviderUsageKey(
         Guid InvocationId,
         int AttemptNumber,
-        ChatCompletionInvocationPurpose Purpose);
+        ProviderInvocationPurpose Purpose);
 
     private sealed record UsageRecord(
         ProviderUsageSnapshot Usage,

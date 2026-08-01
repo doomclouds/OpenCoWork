@@ -17,7 +17,7 @@ internal enum StateMigrationFaultPoint
 
 internal static class StateMigrations
 {
-    internal const int CurrentVersion = 7;
+    internal const int CurrentVersion = 8;
     internal const string VersionTwoTables =
         "items,pending_interactions,session_idempotency," +
         "session_operation_receipts,state_info,threads,turn_queue,turns";
@@ -559,6 +559,126 @@ internal static class StateMigrations
         VALUES (1, NULL, NULL, NULL, NULL, 0);
         """;
 
+    private const string VersionEightSql =
+        """
+        ALTER TABLE pending_interactions RENAME TO pending_interactions_v7;
+        ALTER TABLE items RENAME TO items_v7;
+        DROP INDEX ix_pending_interactions_thread;
+        DROP INDEX ix_items_thread_sequence;
+        DROP INDEX ix_items_turn_sequence;
+        CREATE TABLE items (
+            item_id TEXT NOT NULL PRIMARY KEY,
+            thread_id TEXT NOT NULL,
+            turn_id TEXT NOT NULL,
+            sequence INTEGER NOT NULL CHECK (sequence > 0),
+            item_type TEXT NOT NULL CHECK (
+                item_type IN (
+                    'userMessage',
+                    'agentMessage',
+                    'reasoning',
+                    'approvalRequest',
+                    'approvalResponse',
+                    'userInputRequest',
+                    'userInputResponse',
+                    'error',
+                    'systemNotice',
+                    'toolCall',
+                    'toolResult',
+                    'providerAction')),
+            status TEXT NOT NULL CHECK (
+                status IN ('started', 'streaming', 'completed', 'failed', 'cancelled')),
+            payload_json TEXT NOT NULL,
+            content_text TEXT NULL,
+            content_length INTEGER NULL,
+            content_sha256 TEXT NULL,
+            created_utc INTEGER NOT NULL,
+            updated_utc INTEGER NOT NULL,
+            FOREIGN KEY (thread_id) REFERENCES threads (thread_id) ON DELETE CASCADE,
+            FOREIGN KEY (turn_id) REFERENCES turns (turn_id) ON DELETE CASCADE
+        );
+        INSERT INTO items (
+            item_id,
+            thread_id,
+            turn_id,
+            sequence,
+            item_type,
+            status,
+            payload_json,
+            content_text,
+            content_length,
+            content_sha256,
+            created_utc,
+            updated_utc)
+        SELECT
+            item_id,
+            thread_id,
+            turn_id,
+            sequence,
+            item_type,
+            status,
+            payload_json,
+            content_text,
+            content_length,
+            content_sha256,
+            created_utc,
+            updated_utc
+        FROM items_v7;
+        CREATE INDEX ix_items_thread_sequence
+            ON items (thread_id, sequence, item_id);
+        CREATE INDEX ix_items_turn_sequence
+            ON items (turn_id, sequence, item_id);
+
+        CREATE TABLE pending_interactions (
+            interaction_id TEXT NOT NULL PRIMARY KEY,
+            thread_id TEXT NOT NULL,
+            turn_id TEXT NOT NULL,
+            item_id TEXT NOT NULL,
+            interaction_type TEXT NOT NULL CHECK (
+                interaction_type IN ('approval', 'userInput')),
+            status TEXT NOT NULL CHECK (status IN ('pending', 'resolved')),
+            request_json TEXT NOT NULL,
+            resolution_json TEXT NULL,
+            checkpoint_json TEXT NOT NULL,
+            timeout_utc INTEGER NULL,
+            created_utc INTEGER NOT NULL,
+            updated_utc INTEGER NOT NULL,
+            FOREIGN KEY (thread_id) REFERENCES threads (thread_id) ON DELETE CASCADE,
+            FOREIGN KEY (turn_id) REFERENCES turns (turn_id) ON DELETE CASCADE,
+            FOREIGN KEY (item_id) REFERENCES items (item_id) ON DELETE CASCADE
+        );
+        INSERT INTO pending_interactions (
+            interaction_id,
+            thread_id,
+            turn_id,
+            item_id,
+            interaction_type,
+            status,
+            request_json,
+            resolution_json,
+            checkpoint_json,
+            timeout_utc,
+            created_utc,
+            updated_utc)
+        SELECT
+            interaction_id,
+            thread_id,
+            turn_id,
+            item_id,
+            interaction_type,
+            status,
+            request_json,
+            resolution_json,
+            checkpoint_json,
+            timeout_utc,
+            created_utc,
+            updated_utc
+        FROM pending_interactions_v7;
+        CREATE INDEX ix_pending_interactions_thread
+            ON pending_interactions (thread_id, status, created_utc);
+        DROP TABLE pending_interactions_v7;
+        DROP TABLE items_v7;
+        """;
+
     internal static readonly IReadOnlyList<StateMigration> VersionOneOnly =
     [
         new(1, VersionOneSql),
@@ -604,15 +724,16 @@ internal static class StateMigrations
         new(6, "SELECT 1;"),
     ];
 
+    internal static readonly IReadOnlyList<StateMigration> VersionSevenOnly =
+    [
+        .. VersionSixOnly,
+        new(7, VersionSevenSql),
+    ];
+
     internal static readonly IReadOnlyList<StateMigration> Current =
     [
-        new(1, VersionOneSql),
-        new(2, VersionTwoSql),
-        new(3, VersionThreeSql),
-        new(4, VersionFourSql),
-        new(5, VersionFiveSql),
-        new(6, "SELECT 1;"),
-        new(7, VersionSevenSql),
+        .. VersionSevenOnly,
+        new(8, VersionEightSql),
     ];
 }
 
@@ -1419,6 +1540,7 @@ public sealed class StateRuntime : IWorkspaceStateStore
                 4 => StateMigrations.VersionFourTables,
                 5 => StateMigrations.VersionFiveTables,
                 6 => null,
+                7 => null,
                 StateMigrations.CurrentVersion => null,
                 _ => throw new StateMigrationException(
                     $"State schema version {expectedVersion} has no validation contract."),

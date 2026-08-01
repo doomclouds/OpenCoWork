@@ -1,4 +1,6 @@
 using System.Reflection;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 using OpenCoWork.Abstractions;
 using OpenCoWork.Core.Configuration;
 using Xunit;
@@ -7,6 +9,12 @@ namespace OpenCoWork.Core.Tests;
 
 public sealed class SessionContractTests
 {
+    private static readonly JsonSerializerOptions JsonOptions = new()
+    {
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        Converters = { new JsonStringEnumConverter(JsonNamingPolicy.CamelCase) },
+    };
+
     [Fact]
     public void M2_session_contracts_have_frozen_names_defaults_and_public_boundary()
     {
@@ -88,6 +96,7 @@ public sealed class SessionContractTests
                 SessionItemType.SystemNotice,
                 SessionItemType.ToolCall,
                 SessionItemType.ToolResult,
+                SessionItemType.ProviderAction,
             ],
             Enum.GetValues<SessionItemType>());
         Assert.Equal(
@@ -134,5 +143,43 @@ public sealed class SessionContractTests
         Assert.Contains(
             typeof(ToolInvocationSnapshot),
             typeof(SessionEventPayload).GetProperties().Select(property => property.PropertyType));
+    }
+
+    [Fact]
+    public void Responses_item_contracts_preserve_old_tool_calls_and_bound_provider_actions()
+    {
+        var oldCall = JsonSerializer.Deserialize<ToolCallItemEntry>(
+            """
+            {
+              "providerToolCallId":"call-1",
+              "providerToolName":"file__list",
+              "arguments":{},
+              "argumentsSha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "sensitiveInputDetected":false
+            }
+            """,
+            JsonOptions);
+        Assert.NotNull(oldCall);
+        Assert.Equal(ProviderCallKind.Function, oldCall.ProviderCallKind);
+
+        using var replay = JsonDocument.Parse(
+            """{"type":"web_search_call","id":"search-1","status":"completed"}""");
+        var completed = new ProviderActionItemContent(
+            "search-1",
+            ProviderActionStatus.Completed,
+            replay.RootElement);
+        Assert.Equal("search-1", completed.ProviderCallId);
+        Assert.Equal(ProviderActionStatus.Completed, completed.Status);
+        Assert.Equal("web_search_call", completed.ReplayItem?.GetProperty("type").GetString());
+
+        Assert.Throws<ArgumentException>(() => new ProviderActionItemContent(
+            "search-1",
+            ProviderActionStatus.Completed));
+        using var oversized = JsonDocument.Parse(
+            JsonSerializer.Serialize(new { data = new string('x', 256 * 1024) }));
+        Assert.Throws<ArgumentOutOfRangeException>(() => new ProviderActionItemContent(
+            "search-1",
+            ProviderActionStatus.Completed,
+            oversized.RootElement));
     }
 }

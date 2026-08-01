@@ -23,6 +23,99 @@ public sealed class SessionExecutionTests
     };
 
     [Fact]
+    public async Task Provider_actions_append_immutable_state_items_and_replay_from_journal()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        using var files = new TempWorkspace();
+        using var replayItem = JsonDocument.Parse(
+            """{"type":"web_search_call","id":"search-1","status":"completed"}""");
+        var states = new[]
+        {
+            new ProviderActionItemContent(
+                "search-1",
+                ProviderActionStatus.InProgress),
+            new ProviderActionItemContent(
+                "search-1",
+                ProviderActionStatus.Searching),
+            new ProviderActionItemContent(
+                "search-1",
+                ProviderActionStatus.Completed,
+                replayItem.RootElement),
+        };
+        var itemIds = states.Select(_ => Guid.CreateVersion7()).ToArray();
+        var executor = new ScriptedExecutor(
+            async (_, sink, token) =>
+            {
+                for (var index = 0; index < states.Length; index++)
+                {
+                    await sink.EmitAsync(
+                        new StartItemIntent(
+                            itemIds[index],
+                            SessionItemType.ProviderAction,
+                            states[index]),
+                        token);
+                    await sink.EmitAsync(
+                        new CompleteItemIntent(itemIds[index]),
+                        token);
+                }
+
+                await sink.EmitAsync(new CompleteTurnIntent(), token);
+            });
+        var (runtime, journal, service) = await CreateServiceAsync(
+            files,
+            cancellationToken,
+            executor);
+        var thread = await CreateThreadAsync(service, cancellationToken);
+        var turnId = Guid.CreateVersion7();
+
+        await service.StartTurnAsync(
+            thread.ThreadId,
+            turnId,
+            Guid.CreateVersion7(),
+            thread.CurrentSequence,
+            cancellationToken);
+        await service.WaitForExecutionAsync(turnId, cancellationToken);
+
+        var history = Assert.IsType<SessionPage<SessionEvent>>(
+            (await service.ReadHistoryAsync(
+                new ReadHistoryRequest(thread.ThreadId),
+                cancellationToken)).Value);
+        var completed = history.Items
+            .Where(sessionEvent =>
+                sessionEvent.Type == SessionEventType.ItemCompleted &&
+                sessionEvent.Payload.Item?.Type == SessionItemType.ProviderAction)
+            .Select(sessionEvent =>
+                Assert.IsType<ProviderActionItemContent>(
+                    sessionEvent.Payload.Item!.Content))
+            .ToArray();
+        Assert.Equal(
+            [
+                ProviderActionStatus.InProgress,
+                ProviderActionStatus.Searching,
+                ProviderActionStatus.Completed,
+            ],
+            completed.Select(item => item.Status));
+        Assert.All(completed, item => Assert.Equal("search-1", item.ProviderCallId));
+        Assert.Null(completed[0].ReplayItem);
+        Assert.Null(completed[1].ReplayItem);
+        Assert.NotNull(completed[2].ReplayItem);
+
+        var projection = new SessionProjection(runtime);
+        await projection.RebuildAsync(
+            [
+                new ThreadJournalSource(
+                    ThreadJournalLocation.Active,
+                    thread.ThreadId,
+                    (await journal.ReplayAsync(
+                        ThreadJournalLocation.Active,
+                        thread.ThreadId,
+                        cancellationToken)).Entries),
+            ],
+            cancellationToken);
+        Assert.Empty(await service.RecoverSessionStateAsync(cancellationToken));
+    }
+
+    [Fact]
     public async Task Deferred_activation_is_projected_and_replays_from_journal()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
@@ -537,7 +630,7 @@ public sealed class SessionExecutionTests
                         new ProviderUsageSnapshot(
                             invocationId,
                             AttemptNumber: 1,
-                            ChatCompletionInvocationPurpose.Response,
+                            ProviderInvocationPurpose.Response,
                             PromptTokens: 10,
                             CompletionTokens: 4,
                             TotalTokens: 14,
@@ -608,6 +701,86 @@ public sealed class SessionExecutionTests
         Assert.Single(
             history.Items,
             item => item.Type == SessionEventType.CompactionCheckpointRecorded);
+    }
+
+    [Theory]
+    [InlineData(11, 0, 14)]
+    [InlineData(0, 5, 14)]
+    [InlineData(0, 0, 15)]
+    public async Task Invalid_provider_usage_is_rejected_before_it_is_recorded(
+        int cachedPromptTokens,
+        int reasoningCompletionTokens,
+        int totalTokens)
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        using var files = new TempWorkspace();
+        var invocationId = Guid.CreateVersion7();
+        var invocation = new AgentInvocationSnapshot(
+            invocationId,
+            "deepseek",
+            "deepseek-v4-flash",
+            "deepseek-tokenizer",
+            "1",
+            AgentMode.Agent,
+            new AgentPromptSnapshot("response-v1", new string('a', 64), 10),
+            new AgentPromptSnapshot("compaction-v1", new string('b', 64), 8),
+            WorkspaceInstructions: null,
+            ContextWindowTokens: 128_000,
+            MaxOutputTokens: 8_192,
+            ConfigurationSha256: new string('c', 64));
+        var executor = new ScriptedExecutor(
+            async (_, sink, token) =>
+            {
+                await sink.EmitAsync(
+                    new RecordAgentInvocationSnapshotIntent(invocation),
+                    token);
+                await sink.EmitAsync(
+                    new RecordProviderUsageIntent(new ProviderUsageSnapshot(
+                        invocationId,
+                        AttemptNumber: 1,
+                        ProviderInvocationPurpose.Response,
+                        PromptTokens: 10,
+                        CompletionTokens: 4,
+                        TotalTokens: totalTokens,
+                        Source: ProviderUsageSource.Provider,
+                        IsEstimate: false,
+                        CachedPromptTokens: cachedPromptTokens,
+                        ReasoningCompletionTokens: reasoningCompletionTokens)),
+                    token);
+            });
+        var (_, _, service) = await CreateServiceAsync(
+            files,
+            cancellationToken,
+            executor);
+        var thread = Assert.IsType<ThreadSnapshot>(
+            (await service.CreateThreadAsync(
+                new CreateThreadRequest(
+                    Guid.CreateVersion7(),
+                    ExpectedSequence: 0,
+                    ProviderId: "deepseek",
+                    ModelId: "deepseek-v4-flash"),
+                cancellationToken)).Value);
+        var turnId = Guid.CreateVersion7();
+
+        await service.StartTurnAsync(
+            thread.ThreadId,
+            turnId,
+            Guid.CreateVersion7(),
+            thread.CurrentSequence,
+            cancellationToken);
+        await service.WaitForExecutionAsync(turnId, cancellationToken);
+
+        var history = Assert.IsType<SessionPage<SessionEvent>>(
+            (await service.ReadHistoryAsync(
+                new ReadHistoryRequest(thread.ThreadId),
+                cancellationToken)).Value);
+        Assert.DoesNotContain(
+            history.Items,
+            item => item.Type == SessionEventType.ProviderUsageRecorded);
+        var failed = Assert.Single(
+            history.Items,
+            item => item.Type == SessionEventType.TurnFailed);
+        Assert.Equal(SessionErrorCodes.InvalidState, failed.Payload.Error?.Code);
     }
 
     [Fact]
@@ -1233,7 +1406,11 @@ public sealed class SessionExecutionTests
             TimeProvider? timeProvider = null,
             Action<SessionExecutionFaultPoint>? faultInjector = null)
     {
-        var runtime = new StateRuntime(files.Paths, TimeSpan.FromSeconds(2));
+        var runtime = new StateRuntime(
+            files.Paths,
+            TimeSpan.FromSeconds(2),
+            StateMigrations.Current,
+            faultInjector: null);
         await runtime.InitializeAsync(cancellationToken);
         var journal = new ThreadJournal(files.Paths);
         var service = new SessionService(

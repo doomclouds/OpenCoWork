@@ -484,8 +484,8 @@ public sealed class AgentRuntimeExecutorTests
 
             Assert.Equal(
                 [
-                    ChatCompletionInvocationPurpose.Compaction,
-                    ChatCompletionInvocationPurpose.Response,
+                    ProviderInvocationPurpose.Compaction,
+                    ProviderInvocationPurpose.Response,
                 ],
                 client.Requests.Select(request => request.Purpose));
             Assert.Equal(
@@ -1056,7 +1056,7 @@ public sealed class AgentRuntimeExecutorTests
                 .Select(attempt => new ProviderUsageSnapshot(
                     invocation.InvocationId,
                     attempt,
-                    ChatCompletionInvocationPurpose.Response,
+                    ProviderInvocationPurpose.Response,
                     PromptTokens: 0,
                     CompletionTokens: 0,
                     TotalTokens: 0,
@@ -1310,7 +1310,7 @@ public sealed class AgentRuntimeExecutorTests
             await Task.Yield();
             cancellationToken.ThrowIfCancellationRequested();
             yield return new ChatCompletionContentDeltaEvent(
-                request.Purpose == ChatCompletionInvocationPurpose.Compaction
+                request.Purpose == ProviderInvocationPurpose.Compaction
                     ? Summary
                     : "done");
             yield return new ChatCompletionCompletedEvent(

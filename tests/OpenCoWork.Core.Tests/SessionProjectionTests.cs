@@ -13,6 +13,95 @@ namespace OpenCoWork.Core.Tests;
 public sealed class SessionProjectionTests
 {
     [Fact]
+    public async Task Projection_persists_provider_action_without_a_side_table()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        using var files = new TempWorkspace();
+        var runtime = new StateRuntime(
+            files.Paths,
+            TimeSpan.FromSeconds(2),
+            StateMigrations.Current,
+            faultInjector: null);
+        await runtime.InitializeAsync(cancellationToken);
+        var journal = new ThreadJournal(files.Paths);
+        var projection = new SessionProjection(runtime);
+        var threadId = Guid.CreateVersion7();
+        var turnId = Guid.CreateVersion7();
+        var itemId = Guid.CreateVersion7();
+        var content = JsonSerializer.SerializeToElement(
+            new ProviderActionItemContent(
+                "search-1",
+                ProviderActionStatus.Searching));
+        var entries = new[]
+        {
+            await AppendAsync(
+                journal,
+                threadId,
+                1,
+                SessionEventType.ThreadCreated,
+                new ThreadCreatedFact("Provider action", HistoryMode.Server, null, RequestHash(1)),
+                cancellationToken),
+            await AppendAsync(
+                journal,
+                threadId,
+                2,
+                SessionEventType.TurnStarted,
+                new TurnStartedFact(
+                    turnId,
+                    QueueItemId: null,
+                    UserItemId: null,
+                    Text: null,
+                    RequestSha256: RequestHash(2)),
+                cancellationToken),
+            await AppendAsync(
+                journal,
+                threadId,
+                3,
+                SessionEventType.ItemStarted,
+                new ItemStartedFact(
+                    itemId,
+                    turnId,
+                    SessionItemType.ProviderAction,
+                    content,
+                    ContentText: null,
+                    RequestHash(3)),
+                cancellationToken),
+            await AppendAsync(
+                journal,
+                threadId,
+                4,
+                SessionEventType.ItemCompleted,
+                new ItemCompletedFact(
+                    itemId,
+                    ContentLength: 0,
+                    RequestHashText(string.Empty),
+                    RequestHash(4)),
+                cancellationToken),
+        };
+
+        foreach (var entry in entries)
+        {
+            Assert.Equal(
+                ProjectionApplyDisposition.Applied,
+                await projection.ApplyAsync(entry, cancellationToken));
+        }
+
+        await using var connection =
+            await runtime.OpenReadWriteConnectionAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText =
+            "SELECT item_type || ':' || status FROM items WHERE item_id = $itemId;";
+        command.Parameters.AddWithValue("$itemId", itemId.ToString("D"));
+        Assert.Equal(
+            "providerAction:completed",
+            (string?)await command.ExecuteScalarAsync(cancellationToken));
+        command.CommandText =
+            "SELECT count(*) FROM sqlite_schema WHERE type = 'table' AND name LIKE '%provider%action%';";
+        command.Parameters.Clear();
+        Assert.Equal(0L, (long)(await command.ExecuteScalarAsync(cancellationToken))!);
+    }
+
+    [Fact]
     public async Task Projection_applies_all_session_rows_in_sequence_and_skips_exact_replay()
     {
         var cancellationToken = TestContext.Current.CancellationToken;

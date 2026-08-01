@@ -92,7 +92,7 @@ public sealed class DataFoundationIntegrationTests
                 await using var command = state.CreateCommand();
                 command.CommandText =
                     "SELECT schema_version FROM state_info WHERE id = 1;";
-                Assert.Equal(7L, await command.ExecuteScalarAsync(cancellationToken));
+                Assert.Equal(8L, await command.ExecuteScalarAsync(cancellationToken));
             }
 
             var fileProvider = new JsonLinesFileLoggerProvider(

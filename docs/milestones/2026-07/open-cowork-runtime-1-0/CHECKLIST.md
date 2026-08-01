@@ -73,7 +73,7 @@ Milestone standard: [README.md](README.md)
 - [ ] 10. M9 - DeepSeek Responses Provider
   - Status: In Progress
   - Related spec: docs/superpowers/specs/2026-08-01-open-cowork-m9-deepseek-responses-provider-design.md (Design Freeze; 2026-08-01 用户确认)
-  - Related plan: docs/superpowers/plans/2026-08-01-open-cowork-m9-deepseek-responses-provider-implementation-plan.md (Planned; real protocol probe Gate pending)
+  - Related plan: docs/superpowers/plans/2026-08-01-open-cowork-m9-deepseek-responses-provider-implementation-plan.md (In Progress; Gate 0 and Outcomes 1-2 complete)
   - Related archive: None yet.
   - Completion signal: 通用 OpenAI-compatible Chat Completions 与千问 Token Plan 路径已由 DeepSeek-only 实现取代；首发只声明 `deepseek-v4-flash`，并严格实现 DeepSeek 官方 Responses API 中当前产品需要的文本、Function、`web_search`、`custom/apply_patch`、Reasoning、Usage 与 SSE 终态子集；本地 `web.fetch` 和模型侧 `file.write` 已移除但安全/审计边界保留；无状态恢复、错误/重试和双平台真实发布冒烟通过验收；`deepseek-v4-pro` 等官方支持后再激活。
 - [ ] 11. M10 - Gateway and Operations

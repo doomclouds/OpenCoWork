@@ -2483,6 +2483,12 @@ public sealed partial class OpenCoWorkJsonRpcConnection : IAsyncDisposable
             ErrorItemContent error => JsonSerializer.SerializeToElement(
                 new WireCodeContent(error.Code),
                 JsonOptions),
+            ProviderActionItemContent action => JsonSerializer.SerializeToElement(
+                new WireProviderActionContent(
+                    action.ProviderCallId,
+                    Wire(action.Status),
+                    action.ReplayItem),
+                JsonOptions),
             _ => JsonSerializer.SerializeToElement(new WireEmpty(), JsonOptions),
         };
 
@@ -2757,6 +2763,11 @@ public sealed partial class OpenCoWorkJsonRpcConnection : IAsyncDisposable
     private sealed record WireApprovalContent(bool Approved);
 
     private sealed record WireCodeContent(string Code);
+
+    private sealed record WireProviderActionContent(
+        string ProviderCallId,
+        string Status,
+        JsonElement? ReplayItem);
 
     private sealed record JsonRpcError(
         int Code,

@@ -28,7 +28,7 @@ public enum ChatCompletionFinishReason
     Unknown,
 }
 
-public enum ChatCompletionInvocationPurpose
+public enum ProviderInvocationPurpose
 {
     Response,
     Compaction,
@@ -103,7 +103,7 @@ public sealed class ChatCompletionRequest
         int maxOutputTokens,
         Guid invocationId,
         int attemptNumber,
-        ChatCompletionInvocationPurpose purpose,
+        ProviderInvocationPurpose purpose,
         IEnumerable<ChatCompletionToolDefinition>? tools = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(modelId);
@@ -117,7 +117,7 @@ public sealed class ChatCompletionRequest
         InvocationId = invocationId;
         AttemptNumber = attemptNumber;
         Purpose = purpose;
-        Tools = purpose == ChatCompletionInvocationPurpose.Response
+        Tools = purpose == ProviderInvocationPurpose.Response
             ? Array.AsReadOnly((tools ?? []).ToArray())
             : Array.AsReadOnly<ChatCompletionToolDefinition>([]);
     }
@@ -132,7 +132,7 @@ public sealed class ChatCompletionRequest
 
     public int AttemptNumber { get; }
 
-    public ChatCompletionInvocationPurpose Purpose { get; }
+    public ProviderInvocationPurpose Purpose { get; }
 
     public IReadOnlyList<ChatCompletionToolDefinition> Tools { get; }
 }
@@ -323,17 +323,20 @@ public sealed record AgentInvocationSnapshot(
     string ConfigurationSha256,
     EffectiveToolSnapshot? Tools = null,
     long CapabilityRevision = 0,
-    EffectiveSkillSnapshot? Skills = null);
+    EffectiveSkillSnapshot? Skills = null,
+    string ReasoningEffort = "high");
 
 public sealed record ProviderUsageSnapshot(
     Guid InvocationId,
     int AttemptNumber,
-    ChatCompletionInvocationPurpose Purpose,
+    ProviderInvocationPurpose Purpose,
     int PromptTokens,
     int CompletionTokens,
     int TotalTokens,
     ProviderUsageSource Source,
-    bool IsEstimate);
+    bool IsEstimate,
+    int CachedPromptTokens = 0,
+    int ReasoningCompletionTokens = 0);
 
 public sealed record CompactionCheckpointSnapshot(
     int SchemaVersion,

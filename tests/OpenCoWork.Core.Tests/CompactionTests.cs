@@ -32,8 +32,8 @@ public sealed class CompactionTests
             Assert.Null(sink.Intents.OfType<FailTurnIntent>().SingleOrDefault());
             Assert.Equal(
                 [
-                    ChatCompletionInvocationPurpose.Compaction,
-                    ChatCompletionInvocationPurpose.Response,
+                    ProviderInvocationPurpose.Compaction,
+                    ProviderInvocationPurpose.Response,
                 ],
                 client.Requests.Select(request => request.Purpose));
             Assert.Equal([1, 2], client.Requests.Select(request => request.AttemptNumber));
@@ -56,8 +56,8 @@ public sealed class CompactionTests
                 checkpoint.SourceMessagesSha256);
             Assert.Equal(
                 [
-                    ChatCompletionInvocationPurpose.Compaction,
-                    ChatCompletionInvocationPurpose.Response,
+                    ProviderInvocationPurpose.Compaction,
+                    ProviderInvocationPurpose.Response,
                 ],
                 sink.Intents
                     .OfType<RecordProviderUsageIntent>()
@@ -119,7 +119,7 @@ public sealed class CompactionTests
 
             var request = Assert.Single(
                 client.Requests,
-                item => item.Purpose == ChatCompletionInvocationPurpose.Compaction);
+                item => item.Purpose == ProviderInvocationPurpose.Compaction);
             Assert.Contains(
                 "Previous authoritative summary:",
                 request.Messages[^1].Content,
@@ -162,7 +162,7 @@ public sealed class CompactionTests
             var compactionRequest = Assert.Single(
                 client.Requests,
                 request =>
-                    request.Purpose == ChatCompletionInvocationPurpose.Compaction);
+                    request.Purpose == ProviderInvocationPurpose.Compaction);
             Assert.Contains(
                 "ToolCall call-1 file__list",
                 compactionRequest.Messages[^1].Content,
@@ -253,9 +253,9 @@ public sealed class CompactionTests
 
             Assert.Equal(
                 [
-                    ChatCompletionInvocationPurpose.Response,
-                    ChatCompletionInvocationPurpose.Compaction,
-                    ChatCompletionInvocationPurpose.Response,
+                    ProviderInvocationPurpose.Response,
+                    ProviderInvocationPurpose.Compaction,
+                    ProviderInvocationPurpose.Response,
                 ],
                 client.Requests.Select(request => request.Purpose));
             Assert.Equal([1, 2, 3], client.Requests.Select(request => request.AttemptNumber));
@@ -638,10 +638,10 @@ public sealed class CompactionTests
             Requests.Add(request);
             await Task.Yield();
             cancellationToken.ThrowIfCancellationRequested();
-            if (request.Purpose == ChatCompletionInvocationPurpose.Response &&
+            if (request.Purpose == ProviderInvocationPurpose.Response &&
                 promptTooLongOnFirstResponse &&
                 Requests.Count(item =>
-                    item.Purpose == ChatCompletionInvocationPurpose.Response) == 1)
+                    item.Purpose == ProviderInvocationPurpose.Response) == 1)
             {
                 throw new ChatCompletionException(
                     AgentErrorCodes.ProviderInvalidRequest,
@@ -649,11 +649,11 @@ public sealed class CompactionTests
                     isPromptTooLong: true);
             }
 
-            if (request.Purpose == ChatCompletionInvocationPurpose.Compaction)
+            if (request.Purpose == ProviderInvocationPurpose.Compaction)
             {
                 if (transientOnFirstCompaction &&
                     Requests.Count(item =>
-                        item.Purpose == ChatCompletionInvocationPurpose.Compaction) == 1)
+                        item.Purpose == ProviderInvocationPurpose.Compaction) == 1)
                 {
                     throw new ChatCompletionException(
                         AgentErrorCodes.ProviderServerUnavailable,

@@ -104,7 +104,7 @@ public sealed class StateMigrationV7Tests
         var faulted = new StateRuntime(
             files.Paths,
             TimeSpan.FromSeconds(2),
-            StateMigrations.Current,
+            StateMigrations.VersionSevenOnly,
             Contributors(),
             point =>
             {
@@ -258,7 +258,12 @@ public sealed class StateMigrationV7Tests
             faultInjector: null);
 
     private static StateRuntime CreateCurrent(OpenCoWorkPaths paths) =>
-        new(paths, TimeSpan.FromSeconds(2), Contributors());
+        new(
+            paths,
+            TimeSpan.FromSeconds(2),
+            StateMigrations.VersionSevenOnly,
+            Contributors(),
+            faultInjector: null);
 
     private static IWorkspaceStateMigrationContributor[] Contributors() =>
         [

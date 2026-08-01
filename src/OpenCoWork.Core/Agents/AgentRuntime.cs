@@ -113,6 +113,7 @@ internal sealed record ProviderModelRegistration(
     string ChatTemplateVersion,
     int ContextWindowTokens,
     int MaxOutputTokens,
+    string ReasoningEffort,
     string ConfigurationSha256,
     ModelTokenizer Tokenizer,
     bool SupportsToolCalls,
@@ -296,7 +297,13 @@ internal sealed class ProviderRegistry
             profile?.ChatTemplateVersion ?? "1",
             model.ContextWindowTokens,
             model.MaxOutputTokens,
-            ConfigurationHash(providerId, modelId, provider, model),
+            _models.ReasoningEffort,
+            ConfigurationHash(
+                providerId,
+                modelId,
+                provider,
+                model,
+                _models.ReasoningEffort),
             tokenizer,
             SupportsToolCalls: true,
             TimeSpan.FromSeconds(120),
@@ -308,7 +315,8 @@ internal sealed class ProviderRegistry
         string providerId,
         string modelId,
         ProviderConfig provider,
-        ModelConfig model)
+        ModelConfig model,
+        string reasoningEffort)
     {
         var canonical = string.Join(
             '\n',
@@ -316,6 +324,7 @@ internal sealed class ProviderRegistry
             modelId,
             provider.BaseUrl.TrimEnd('/'),
             provider.ApiKey.Environment,
+            reasoningEffort,
             model.TokenizerProfileId,
             model.TokenizerProfileVersion,
             model.ContextWindowTokens,
@@ -703,7 +712,8 @@ internal sealed class AgentFactory(
             provider.ConfigurationSha256,
             toolSnapshot,
             capabilityRevision,
-            skillSnapshot);
+            skillSnapshot,
+            provider.ReasoningEffort);
         return new AgentInvocationDraft(
             disposition,
             provider,
@@ -788,6 +798,10 @@ internal sealed class AgentFactory(
         frozen.EffectiveAgentMode == session.Turn.EffectiveAgentMode &&
         frozen.ContextWindowTokens == provider.ContextWindowTokens &&
         frozen.MaxOutputTokens == provider.MaxOutputTokens &&
+        string.Equals(
+            frozen.ReasoningEffort,
+            provider.ReasoningEffort,
+            StringComparison.Ordinal) &&
         string.Equals(
             frozen.ConfigurationSha256,
             provider.ConfigurationSha256,
@@ -1250,7 +1264,7 @@ internal sealed class AgentRuntimeExecutor : ISessionExecutor
                             draft.Provider.MaxOutputTokens,
                             draft.Snapshot.InvocationId,
                             attempt,
-                            ChatCompletionInvocationPurpose.Response,
+                            ProviderInvocationPurpose.Response,
                             providerTools);
                         await foreach (var item in Client(
                                            draft.Provider,
@@ -1316,7 +1330,7 @@ internal sealed class AgentRuntimeExecutor : ISessionExecutor
                                         sink,
                                         draft.Snapshot.InvocationId,
                                         attempt,
-                                        ChatCompletionInvocationPurpose.Response,
+                                        ProviderInvocationPurpose.Response,
                                         usage.Usage,
                                         cancellationToken);
                                     usageRecorded = true;
@@ -1336,7 +1350,7 @@ internal sealed class AgentRuntimeExecutor : ISessionExecutor
                                 sink,
                                 draft.Snapshot.InvocationId,
                                 attempt,
-                                ChatCompletionInvocationPurpose.Response,
+                                ProviderInvocationPurpose.Response,
                                 inputTokenCount,
                                 completionTokens,
                                 cancellationToken);
@@ -2264,7 +2278,7 @@ internal sealed class AgentRuntimeExecutor : ISessionExecutor
                     maxSummaryTokens,
                     draft.Snapshot.InvocationId,
                     attempt,
-                    ChatCompletionInvocationPurpose.Compaction);
+                    ProviderInvocationPurpose.Compaction);
                 await foreach (var item in Client(draft.Provider, providerSecret)
                                    .StreamAsync(request, invocationToken)
                                    .WithCancellation(invocationToken))
@@ -2279,7 +2293,7 @@ internal sealed class AgentRuntimeExecutor : ISessionExecutor
                                 sink,
                                 draft.Snapshot.InvocationId,
                                 attempt,
-                                ChatCompletionInvocationPurpose.Compaction,
+                                ProviderInvocationPurpose.Compaction,
                                 usage.Usage,
                                 cancellationToken);
                             usageRecorded = true;
@@ -2299,7 +2313,7 @@ internal sealed class AgentRuntimeExecutor : ISessionExecutor
                         sink,
                         draft.Snapshot.InvocationId,
                         attempt,
-                        ChatCompletionInvocationPurpose.Compaction,
+                        ProviderInvocationPurpose.Compaction,
                         promptTokens,
                         summaryTokens,
                         cancellationToken);
@@ -2520,7 +2534,7 @@ internal sealed class AgentRuntimeExecutor : ISessionExecutor
         ISessionExecutionSink sink,
         Guid invocationId,
         int attempt,
-        ChatCompletionInvocationPurpose purpose,
+        ProviderInvocationPurpose purpose,
         ChatCompletionUsage usage,
         CancellationToken cancellationToken) =>
         sink.EmitAsync(
@@ -2540,7 +2554,7 @@ internal sealed class AgentRuntimeExecutor : ISessionExecutor
         ISessionExecutionSink sink,
         Guid invocationId,
         int attempt,
-        ChatCompletionInvocationPurpose purpose,
+        ProviderInvocationPurpose purpose,
         int promptTokens,
         int completionTokens,
         CancellationToken cancellationToken) =>

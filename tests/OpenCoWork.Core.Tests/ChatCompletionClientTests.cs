@@ -197,7 +197,7 @@ public sealed class ChatCompletionClientTests
                     maxOutputTokens: 32,
                     Guid.CreateVersion7(),
                     attemptNumber: 1,
-                    ChatCompletionInvocationPurpose.Response,
+                    ProviderInvocationPurpose.Response,
                     [definition]),
                 cancellationToken),
             cancellationToken);
@@ -228,7 +228,7 @@ public sealed class ChatCompletionClientTests
                     maxOutputTokens: 32,
                     Guid.CreateVersion7(),
                     attemptNumber: 2,
-                    ChatCompletionInvocationPurpose.Compaction,
+                    ProviderInvocationPurpose.Compaction,
                     [definition]),
                 cancellationToken),
             cancellationToken);
@@ -566,7 +566,7 @@ public sealed class ChatCompletionClientTests
             maxOutputTokens: 32,
             Guid.Parse("019f2fac-2732-7c7e-86ec-46375a08d598"),
             attemptNumber: 1,
-            ChatCompletionInvocationPurpose.Response);
+            ProviderInvocationPurpose.Response);
 
     private static HttpResponseMessage Response(
         HttpStatusCode statusCode,

@@ -36,6 +36,7 @@ public enum SessionItemType
     SystemNotice,
     ToolCall,
     ToolResult,
+    ProviderAction,
 }
 
 public enum SessionItemStatus
@@ -200,12 +201,68 @@ public sealed record ErrorItemContent(string Code, string Message) : SessionItem
 
 public sealed record SystemNoticeContent(string Message) : SessionItemContent;
 
+public enum ProviderActionStatus
+{
+    InProgress,
+    Searching,
+    Completed,
+}
+
+public sealed record ProviderActionItemContent : SessionItemContent
+{
+    private const int MaxReplayBytes = 256 * 1024;
+
+    public ProviderActionItemContent(
+        string providerCallId,
+        ProviderActionStatus status,
+        System.Text.Json.JsonElement? replayItem = null)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(providerCallId);
+        if (!Enum.IsDefined(status))
+        {
+            throw new ArgumentOutOfRangeException(nameof(status));
+        }
+
+        if ((status == ProviderActionStatus.Completed) != replayItem.HasValue)
+        {
+            throw new ArgumentException(
+                "Only a completed Provider Action can carry its replay item.",
+                nameof(replayItem));
+        }
+
+        if (replayItem is { } item &&
+            (item.ValueKind != System.Text.Json.JsonValueKind.Object ||
+             System.Text.Encoding.UTF8.GetByteCount(item.GetRawText()) > MaxReplayBytes))
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(replayItem),
+                "Provider Action replay item must be an object no larger than 256 KiB.");
+        }
+
+        ProviderCallId = providerCallId;
+        Status = status;
+        ReplayItem = replayItem?.Clone();
+    }
+
+    public string ProviderCallId { get; }
+
+    public ProviderActionStatus Status { get; }
+
+    public System.Text.Json.JsonElement? ReplayItem { get; }
+}
+
 public sealed record ToolApprovalRequestContent(
     Guid ToolInvocationId,
     ToolDefinitionId ToolDefinitionId,
     string SnapshotSha256,
     string ArgumentsSha256,
     string Prompt) : ApprovalRequestContent(Prompt);
+
+public enum ProviderCallKind
+{
+    Function,
+    CustomApplyPatch,
+}
 
 public sealed record ToolCallItemEntry
 {
@@ -214,16 +271,22 @@ public sealed record ToolCallItemEntry
         string providerToolName,
         System.Text.Json.JsonElement arguments,
         string argumentsSha256,
-        bool sensitiveInputDetected)
+        bool sensitiveInputDetected,
+        ProviderCallKind providerCallKind = ProviderCallKind.Function)
     {
         ArgumentNullException.ThrowIfNull(providerToolCallId);
         ArgumentNullException.ThrowIfNull(providerToolName);
         ArgumentException.ThrowIfNullOrWhiteSpace(argumentsSha256);
+        if (!Enum.IsDefined(providerCallKind))
+        {
+            throw new ArgumentOutOfRangeException(nameof(providerCallKind));
+        }
         ProviderToolCallId = providerToolCallId;
         ProviderToolName = providerToolName;
         Arguments = arguments.Clone();
         ArgumentsSha256 = argumentsSha256;
         SensitiveInputDetected = sensitiveInputDetected;
+        ProviderCallKind = providerCallKind;
     }
 
     public string ProviderToolCallId { get; }
@@ -235,6 +298,8 @@ public sealed record ToolCallItemEntry
     public string ArgumentsSha256 { get; }
 
     public bool SensitiveInputDetected { get; }
+
+    public ProviderCallKind ProviderCallKind { get; }
 }
 
 public sealed record ToolCallItemContent : SessionItemContent

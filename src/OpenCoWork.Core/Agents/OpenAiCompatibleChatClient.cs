@@ -236,7 +236,7 @@ internal sealed class OpenAiCompatibleChatClient : IChatCompletionClient
         }
 
         writer.WriteEndArray();
-        if (request.Purpose == ChatCompletionInvocationPurpose.Response &&
+        if (request.Purpose == ProviderInvocationPurpose.Response &&
             request.Tools.Count != 0)
         {
             writer.WriteStartArray("tools");

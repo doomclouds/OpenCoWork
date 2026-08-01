@@ -355,6 +355,7 @@ public sealed class AgentFactoryTests
         {
             var models = new ModelsConfig
             {
+                ReasoningEffort = "max",
                 Providers = new Dictionary<string, ProviderConfig>(StringComparer.Ordinal)
                 {
                     ["token-plan"] = new()
@@ -529,6 +530,7 @@ public sealed class AgentFactoryTests
             Assert.DoesNotContain(secret, firstJson, StringComparison.Ordinal);
             Assert.DoesNotContain(secret, first.ResponsePrompt.SystemMessage, StringComparison.Ordinal);
             Assert.Equal(64, first.Snapshot.ConfigurationSha256.Length);
+            Assert.Equal("max", first.Snapshot.ReasoningEffort);
             Assert.True(
                 first.InputTokenCount >
                 AgentFactory.CountPromptTokens(
