@@ -30,6 +30,7 @@ internal sealed class OperationsRuntime
     private readonly OpenCoWorkPaths _paths;
     private readonly TimeProvider _timeProvider;
     private readonly Func<OperationsRuntimeHealth> _health;
+    private readonly OperationsChangeHub? _changes;
     private CancellationTokenSource? _lifetime;
     private Task? _heartbeatLoop;
     private Task? _insightLoop;
@@ -41,7 +42,8 @@ internal sealed class OperationsRuntime
         OpenCoWorkPaths paths,
         TimeProvider timeProvider,
         Func<OperationsRuntimeHealth> health,
-        IWorkspaceInsightService? insights = null)
+        IWorkspaceInsightService? insights = null,
+        OperationsChangeHub? changes = null)
     {
         _state = state ?? throw new ArgumentNullException(nameof(state));
         _traces = traces ?? throw new ArgumentNullException(nameof(traces));
@@ -50,6 +52,7 @@ internal sealed class OperationsRuntime
         _timeProvider = timeProvider ?? throw new ArgumentNullException(nameof(timeProvider));
         _health = health ?? throw new ArgumentNullException(nameof(health));
         _insights = insights ?? new WorkspaceInsightService(state, timeProvider);
+        _changes = changes;
         RuntimeInstanceId = Guid.CreateVersion7(timeProvider.GetUtcNow());
     }
 
@@ -213,6 +216,10 @@ internal sealed class OperationsRuntime
                 return true;
             },
             cancellationToken);
+        _changes?.Publish(
+            OperationsChangeKind.Heartbeat,
+            statusOverride == OperationsHealthStatus.Stopped ? "stopped" : "observed",
+            RuntimeInstanceId.ToString("D"));
     }
 
     private async Task<Guid> ReadWorkspaceIdAsync(CancellationToken cancellationToken) =>

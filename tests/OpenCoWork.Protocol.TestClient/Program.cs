@@ -68,6 +68,12 @@ internal static class ProtocolTestClient
                 workspace,
                 secret,
                 transcript);
+            stage = "Wire 1.4 Operations";
+            var operations = await RunOperationsWireAsync(
+                server,
+                workspace,
+                secret,
+                transcript);
             stage = "ACP";
             var acp = await RunAcpAsync(
                 server,
@@ -95,6 +101,7 @@ internal static class ProtocolTestClient
                     capabilities,
                     cowork,
                     automations,
+                    operations,
                     acp,
                     websocket,
                     "secret-canary",
@@ -116,6 +123,63 @@ internal static class ProtocolTestClient
         {
             TryDelete(workspace);
         }
+    }
+
+    private static async Task<string> RunOperationsWireAsync(
+        string server,
+        string workspace,
+        string secret,
+        ConcurrentQueue<string> transcript)
+    {
+        await using var client = StartLineClient(
+            server,
+            workspace,
+            secret,
+            transcript,
+            "app-server");
+        var initialized = await InitializeWire14Async(client, workspace);
+        Require(
+            initialized.GetProperty("result").GetProperty("wireVersion")
+                .GetString() == "1.4",
+            "Wire 1.4 negotiation failed.");
+
+        var channels = await client.RequestAsync(2, "channel/list", new { pageSize = 10 });
+        Require(
+            channels.GetProperty("result").GetProperty("operationsRevision")
+                .GetInt64() >= 0,
+            "Channel operations revision was not projected.");
+        var workspaces = await client.RequestAsync(
+            3,
+            "hub/workspace/list",
+            new { pageSize = 10 });
+        Require(
+            workspaces.GetProperty("result").GetProperty("items")
+                .EnumerateArray().Any(),
+            "Hub did not project the active workspace.");
+        _ = await client.RequestAsync(
+            4,
+            "usage/query",
+            new
+            {
+                fromUtc = DateTimeOffset.UtcNow.AddHours(-1),
+                toUtc = DateTimeOffset.UtcNow,
+                bucket = "hour",
+            });
+        _ = await client.RequestAsync(5, "trace/list", new { pageSize = 10 });
+        _ = await client.RequestAsync(6, "heartbeat/get", new { });
+
+        var commandId = Guid.CreateVersion7();
+        var run = await client.RequestAsync(7, "insight/run", new { commandId });
+        var replay = await client.RequestAsync(8, "insight/run", new { commandId });
+        Require(
+            run.GetProperty("result").GetProperty("insightRunId").GetGuid() == commandId &&
+            replay.GetProperty("result").GetProperty("insightRunId").GetGuid() == commandId,
+            "Insight command replay was not stable.");
+        _ = await client.RequestAsync(
+            9,
+            "insight/list",
+            new { kind = "runs", pageSize = 10 });
+        return "wire-14-operations-hub-idempotency";
     }
 
     private static async Task<string> RunAutomationWireAsync(
@@ -825,6 +889,19 @@ internal static class ProtocolTestClient
             {
                 client = new { name = "m8-test-client", version = "1" },
                 wireVersions = new[] { "1.3", "1.2", "1.1", "1.0" },
+                workspace = new { path = workspace },
+            });
+
+    private static Task<JsonElement> InitializeWire14Async(
+        LineClient client,
+        string workspace) =>
+        client.RequestAsync(
+            1,
+            "initialize",
+            new
+            {
+                client = new { name = "m10-test-client", version = "1" },
+                wireVersions = new[] { "1.4", "1.3", "1.2", "1.1", "1.0" },
                 workspace = new { path = workspace },
             });
 

@@ -83,6 +83,25 @@ public static class OpenCoWorkProtocolServer
         string workspacePath,
         Stream input,
         Stream output,
+        CancellationToken cancellationToken = default) =>
+        RunStdioAsync(
+            sessions, capabilities, coWork, automations,
+            channels: null, hub: null, operations: null, insights: null, changes: null,
+            workspacePath, input, output, cancellationToken);
+
+    public static Task RunStdioAsync(
+        ISessionService sessions,
+        ICapabilityService? capabilities,
+        ICoWorkService? coWork,
+        IAutomationService? automations,
+        IChannelService? channels,
+        IHubService? hub,
+        IOperationsQueryService? operations,
+        IWorkspaceInsightService? insights,
+        IOperationsChangeSource? changes,
+        string workspacePath,
+        Stream input,
+        Stream output,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(input);
@@ -100,6 +119,11 @@ public static class OpenCoWorkProtocolServer
                 capabilities,
                 coWork,
                 automations,
+                channels,
+                hub,
+                operations,
+                insights,
+                changes,
                 workspacePath,
                 "stdio",
                 send),
@@ -165,6 +189,25 @@ public static class OpenCoWorkProtocolServer
         string workspacePath,
         TextReader input,
         TextWriter output,
+        CancellationToken cancellationToken = default) =>
+        RunJsonLinesAsync(
+            sessions, capabilities, coWork, automations,
+            channels: null, hub: null, operations: null, insights: null, changes: null,
+            workspacePath, input, output, cancellationToken);
+
+    public static Task RunJsonLinesAsync(
+        ISessionService sessions,
+        ICapabilityService? capabilities,
+        ICoWorkService? coWork,
+        IAutomationService? automations,
+        IChannelService? channels,
+        IHubService? hub,
+        IOperationsQueryService? operations,
+        IWorkspaceInsightService? insights,
+        IOperationsChangeSource? changes,
+        string workspacePath,
+        TextReader input,
+        TextWriter output,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(input);
@@ -182,6 +225,11 @@ public static class OpenCoWorkProtocolServer
                 capabilities,
                 coWork,
                 automations,
+                channels,
+                hub,
+                operations,
+                insights,
+                changes,
                 workspacePath,
                 "stdio",
                 send),
@@ -307,6 +355,25 @@ public static class OpenCoWorkProtocolServer
         string workspacePath,
         int port,
         string bearerToken,
+        CancellationToken cancellationToken = default) =>
+        await RunWebSocketAsync(
+            sessions, capabilities, coWork, automations,
+            channels: null, hub: null, operations: null, insights: null, changes: null,
+            workspacePath, port, bearerToken, cancellationToken);
+
+    public static async Task RunWebSocketAsync(
+        ISessionService sessions,
+        ICapabilityService? capabilities,
+        ICoWorkService? coWork,
+        IAutomationService? automations,
+        IChannelService? channels,
+        IHubService? hub,
+        IOperationsQueryService? operations,
+        IWorkspaceInsightService? insights,
+        IOperationsChangeSource? changes,
+        string workspacePath,
+        int port,
+        string bearerToken,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(sessions);
@@ -362,6 +429,11 @@ public static class OpenCoWorkProtocolServer
                             capabilities,
                             coWork,
                             automations,
+                            channels,
+                            hub,
+                            operations,
+                            insights,
+                            changes,
                             workspacePath,
                             "websocket",
                             send),

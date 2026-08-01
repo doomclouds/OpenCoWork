@@ -3,6 +3,7 @@ using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using OpenCoWork.Abstractions;
+using OpenCoWork.Core.Operations;
 
 namespace OpenCoWork.Core.Gateway;
 
@@ -30,6 +31,7 @@ public sealed class GatewayService : IChannelInboundSink
     private readonly ISessionService _sessions;
     private readonly TimeProvider _timeProvider;
     private readonly Action<GatewayInboundFaultPoint>? _faultInjector;
+    private readonly OperationsChangeHub? _changes;
 
     internal event Action? Changed;
 
@@ -38,7 +40,7 @@ public sealed class GatewayService : IChannelInboundSink
         GatewayMediaStore media,
         ISessionService sessions,
         TimeProvider timeProvider)
-        : this(state, media, sessions, timeProvider, null)
+        : this(state, media, sessions, timeProvider, null, null)
     {
     }
 
@@ -47,7 +49,18 @@ public sealed class GatewayService : IChannelInboundSink
         GatewayMediaStore media,
         ISessionService sessions,
         TimeProvider timeProvider,
-        Action<GatewayInboundFaultPoint>? faultInjector)
+        OperationsChangeHub changes)
+        : this(state, media, sessions, timeProvider, null, changes)
+    {
+    }
+
+    internal GatewayService(
+        IWorkspaceStateStore state,
+        GatewayMediaStore media,
+        ISessionService sessions,
+        TimeProvider timeProvider,
+        Action<GatewayInboundFaultPoint>? faultInjector,
+        OperationsChangeHub? changes = null)
     {
         ArgumentNullException.ThrowIfNull(state);
         ArgumentNullException.ThrowIfNull(media);
@@ -58,6 +71,7 @@ public sealed class GatewayService : IChannelInboundSink
         _sessions = sessions;
         _timeProvider = timeProvider;
         _faultInjector = faultInjector;
+        _changes = changes;
     }
 
     public async ValueTask<ChannelInboundReceipt> AcceptAsync(
@@ -168,6 +182,10 @@ public sealed class GatewayService : IChannelInboundSink
         if (!receipt.Duplicate)
         {
             Changed?.Invoke();
+            _changes?.Publish(
+                OperationsChangeKind.Channel,
+                "inboundAccepted",
+                receipt.ReceiptId.ToString("D"));
         }
 
         activity?.SetTag(

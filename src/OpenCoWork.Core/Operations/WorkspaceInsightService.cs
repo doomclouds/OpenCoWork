@@ -9,16 +9,33 @@ namespace OpenCoWork.Core.Operations;
 
 internal sealed class WorkspaceInsightService(
     StateRuntime state,
-    TimeProvider timeProvider) : IWorkspaceInsightService
+    TimeProvider timeProvider,
+    OperationsChangeHub? changes = null) : IWorkspaceInsightService
 {
     private const int MaximumPageSize = 200;
     private const string RuleVersion = "m10-insight-v1";
     private static readonly TimeSpan Lookback = TimeSpan.FromHours(24);
 
-    public async Task<InsightRunSnapshot> RunAsync(
+    public Task<InsightRunSnapshot> RunAsync(
         InsightRunTrigger trigger,
+        CancellationToken cancellationToken = default) =>
+        RunAsync(
+            new InsightRunRequest(
+                Guid.CreateVersion7(timeProvider.GetUtcNow()),
+                trigger),
+            cancellationToken);
+
+    public async Task<InsightRunSnapshot> RunAsync(
+        InsightRunRequest request,
         CancellationToken cancellationToken = default)
     {
+        RequireVersionSeven(request.CommandId, nameof(request.CommandId));
+        if (await ReadRunAsync(request.CommandId, cancellationToken) is { } replay)
+        {
+            return replay;
+        }
+
+        var trigger = request.Trigger;
         var now = timeProvider.GetUtcNow();
         var watermark = await ReadWatermarkAsync(cancellationToken);
         if (trigger == InsightRunTrigger.Scheduled &&
@@ -29,10 +46,32 @@ internal sealed class WorkspaceInsightService(
             return previous;
         }
 
-        var runId = Guid.CreateVersion7(now);
-        await state.WriteAsync(
+        var runId = request.CommandId;
+        var inserted = await state.WriteAsync(
             async (connection, transaction, token) =>
             {
+                await using var insert = connection.CreateCommand();
+                insert.Transaction = transaction;
+                insert.CommandText =
+                    """
+                    INSERT OR IGNORE INTO insight_runs (
+                        insight_run_id, trigger_kind, status, high_watermark_utc,
+                        diagnostic, revision, created_utc, updated_utc, completed_utc)
+                    VALUES ($runId, $trigger, 'running', $watermark,
+                            NULL, 1, $now, $now, NULL);
+                    SELECT changes();
+                    """;
+                Add(insert, "$runId", runId.ToString("D"));
+                Add(insert, "$trigger", trigger == InsightRunTrigger.Manual ? "manual" : "scheduled");
+                Add(insert, "$watermark", watermark.ToUnixTimeMilliseconds());
+                Add(insert, "$now", now.ToUnixTimeMilliseconds());
+                if (Convert.ToInt32(
+                        await insert.ExecuteScalarAsync(token),
+                        System.Globalization.CultureInfo.InvariantCulture) == 0)
+                {
+                    return false;
+                }
+
                 await ExecuteAsync(
                     connection,
                     transaction,
@@ -41,21 +80,19 @@ internal sealed class WorkspaceInsightService(
                     SET status = 'failed', diagnostic = 'insight.interrupted',
                         revision = revision + 1, updated_utc = $now,
                         completed_utc = $now
-                    WHERE status = 'running';
-                    INSERT INTO insight_runs (
-                        insight_run_id, trigger_kind, status, high_watermark_utc,
-                        diagnostic, revision, created_utc, updated_utc, completed_utc)
-                    VALUES ($runId, $trigger, 'running', $watermark,
-                            NULL, 1, $now, $now, NULL);
+                    WHERE status = 'running' AND insight_run_id <> $runId;
                     """,
                     token,
                     ("$runId", runId.ToString("D")),
-                    ("$trigger", trigger == InsightRunTrigger.Manual ? "manual" : "scheduled"),
-                    ("$watermark", watermark.ToUnixTimeMilliseconds()),
                     ("$now", now.ToUnixTimeMilliseconds()));
                 return true;
             },
             cancellationToken);
+        if (!inserted)
+        {
+            return await ReadRunAsync(runId, cancellationToken)
+                   ?? throw new InvalidDataException("Insight run disappeared after replay.");
+        }
 
         try
         {
@@ -97,7 +134,7 @@ internal sealed class WorkspaceInsightService(
                     return signals.Count;
                 },
                 cancellationToken);
-            return new InsightRunSnapshot(
+            var result = new InsightRunSnapshot(
                 runId,
                 trigger,
                 InsightRunStatus.Completed,
@@ -106,10 +143,19 @@ internal sealed class WorkspaceInsightService(
                 now,
                 now,
                 Revision: 2);
+            changes?.Publish(
+                OperationsChangeKind.Insight,
+                "runCompleted",
+                runId.ToString("D"));
+            return result;
         }
         catch
         {
             await MarkFailedAsync(runId, now, CancellationToken.None);
+            changes?.Publish(
+                OperationsChangeKind.Insight,
+                "runFailed",
+                runId.ToString("D"));
             throw;
         }
     }
@@ -174,6 +220,57 @@ internal sealed class WorkspaceInsightService(
             cancellationToken).AsTask();
     }
 
+    public async Task<OperationsPage<InsightRunSnapshot>> ListRunsAsync(
+        int pageSize = 100,
+        string? cursor = null,
+        CancellationToken cancellationToken = default)
+    {
+        if (pageSize is < 1 or > MaximumPageSize)
+        {
+            throw new ArgumentOutOfRangeException(nameof(pageSize));
+        }
+        var after = DecodeCursor(cursor);
+        return await state.ReadAsync(
+            async (connection, token) =>
+            {
+                await using var command = connection.CreateCommand();
+                command.CommandText =
+                    """
+                    SELECT insight_run_id, trigger_kind, status, high_watermark_utc,
+                           diagnostic, revision, created_utc, completed_utc
+                    FROM insight_runs
+                    WHERE ($created IS NULL OR created_utc < $created OR
+                           (created_utc = $created AND insight_run_id < $runId))
+                    ORDER BY created_utc DESC, insight_run_id DESC
+                    LIMIT $limit;
+                    """;
+                Add(command, "$created", after?.UpdatedUtc);
+                Add(command, "$runId", after?.ProposalId);
+                Add(command, "$limit", pageSize + 1);
+                var items = new List<InsightRunSnapshot>();
+                await using var reader = await command.ExecuteReaderAsync(token);
+                while (await reader.ReadAsync(token))
+                {
+                    items.Add(ReadRun(reader));
+                }
+
+                var hasMore = items.Count > pageSize;
+                if (hasMore)
+                {
+                    items.RemoveAt(items.Count - 1);
+                }
+                var last = items.LastOrDefault();
+                return new OperationsPage<InsightRunSnapshot>(
+                    items,
+                    hasMore && last is not null
+                        ? EncodeCursor(
+                            last.CreatedAtUtc.ToUnixTimeMilliseconds(),
+                            last.InsightRunId)
+                        : null);
+            },
+            cancellationToken);
+    }
+
     public async Task<ImprovementProposalSnapshot> ArchiveAsync(
         Guid proposalId,
         long expectedRevision,
@@ -182,7 +279,7 @@ internal sealed class WorkspaceInsightService(
         RequireVersionSeven(proposalId, nameof(proposalId));
         ArgumentOutOfRangeException.ThrowIfLessThan(expectedRevision, 1);
         var now = timeProvider.GetUtcNow();
-        return await state.WriteAsync(
+        var result = await state.WriteAsync(
             async (connection, transaction, token) =>
             {
                 await using var command = connection.CreateCommand();
@@ -200,8 +297,19 @@ internal sealed class WorkspaceInsightService(
                 Add(command, "$expectedRevision", expectedRevision);
                 if (await command.ExecuteNonQueryAsync(token) != 1)
                 {
-                    throw new InvalidOperationException(
-                        "Improvement Proposal changed or is not open.");
+                    var replay = await ReadProposalAsync(
+                        connection,
+                        transaction,
+                        proposalId,
+                        token);
+                    return replay is
+                    {
+                        Status: ImprovementProposalStatus.Archived,
+                        Revision: var revision,
+                    } && revision == expectedRevision + 1
+                            ? (Snapshot: replay, Changed: false)
+                            : throw new InvalidOperationException(
+                                "Improvement Proposal changed or is not open.");
                 }
 
                 await ExecuteAsync(
@@ -214,11 +322,24 @@ internal sealed class WorkspaceInsightService(
                     """,
                     token,
                     ("$now", now.ToUnixTimeMilliseconds()));
-                return await ReadProposalAsync(connection, transaction, proposalId, token)
-                       ?? throw new InvalidDataException(
-                           "Improvement Proposal disappeared after archive.");
+                return (
+                    Snapshot: await ReadProposalAsync(
+                        connection,
+                        transaction,
+                        proposalId,
+                        token) ?? throw new InvalidDataException(
+                            "Improvement Proposal disappeared after archive."),
+                    Changed: true);
             },
             cancellationToken);
+        if (result.Changed)
+        {
+            changes?.Publish(
+                OperationsChangeKind.Insight,
+                "proposalArchived",
+                proposalId.ToString("D"));
+        }
+        return result.Snapshot;
     }
 
     private async Task<DateTimeOffset> ReadWatermarkAsync(
@@ -256,6 +377,25 @@ internal sealed class WorkspaceInsightService(
                     ORDER BY created_utc DESC, insight_run_id DESC
                     LIMIT 1;
                     """;
+                await using var reader = await command.ExecuteReaderAsync(token);
+                return await reader.ReadAsync(token) ? ReadRun(reader) : null;
+            },
+            cancellationToken);
+
+    private async Task<InsightRunSnapshot?> ReadRunAsync(
+        Guid runId,
+        CancellationToken cancellationToken) =>
+        await state.ReadAsync(
+            async (connection, token) =>
+            {
+                await using var command = connection.CreateCommand();
+                command.CommandText =
+                    """
+                    SELECT insight_run_id, trigger_kind, status, high_watermark_utc,
+                           diagnostic, revision, created_utc, completed_utc
+                    FROM insight_runs WHERE insight_run_id = $runId;
+                    """;
+                Add(command, "$runId", runId.ToString("D"));
                 await using var reader = await command.ExecuteReaderAsync(token);
                 return await reader.ReadAsync(token) ? ReadRun(reader) : null;
             },

@@ -83,7 +83,7 @@ internal sealed class SecretLease : IDisposable
     }
 }
 
-internal sealed class ChannelCredentialService
+internal sealed class ChannelCredentialService : IChannelCredentialAdmin
 {
     private readonly IOsSecretStore _store;
     private readonly SecretRedactor _redactor;

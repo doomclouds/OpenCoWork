@@ -77,6 +77,13 @@ public sealed class ChannelServiceException : Exception
     public long? CurrentRevision { get; }
 }
 
+public interface IChannelCredentialAdmin
+{
+    void Set(string channelId, string secret);
+
+    void Clear(string channelId);
+}
+
 public sealed record ChannelMediaInput(
     string MediaType,
     string DisplayName,
@@ -146,5 +153,128 @@ public interface IChannelSender
     ValueTask<ChannelSendResult> SendAsync(
         ChannelSendRequest request,
         ReadOnlyMemory<byte> secret,
+        CancellationToken cancellationToken = default);
+}
+
+public sealed record ChannelListQuery(
+    ChannelRuntimeStatus? Status = null,
+    int PageSize = 100,
+    string? Cursor = null);
+
+public sealed record ChannelInboundQuery(
+    string? ChannelId = null,
+    ChannelInboundStatus? Status = null,
+    int PageSize = 100,
+    string? Cursor = null);
+
+public sealed record ChannelOutboxQuery(
+    string? ChannelId = null,
+    ChannelOutboxStatus? Status = null,
+    int PageSize = 100,
+    string? Cursor = null);
+
+public sealed record ChannelSnapshot(
+    string ChannelId,
+    string Kind,
+    bool Enabled,
+    string DefinitionSha256,
+    string TrustStatus,
+    ChannelRuntimeStatus RuntimeStatus,
+    string? DiagnosticCode,
+    long Revision,
+    DateTimeOffset CreatedAtUtc,
+    DateTimeOffset UpdatedAtUtc);
+
+public sealed record ChannelMediaSummary(
+    Guid MediaId,
+    string MediaType,
+    string DisplayName,
+    long ContentLength,
+    string ContentSha256);
+
+public sealed record ChannelInboundSummary(
+    Guid InboundMessageId,
+    string ChannelId,
+    string ExternalMessageId,
+    string ExternalConversationId,
+    long PartitionSequence,
+    string BodySha256,
+    Guid CorrelationId,
+    Guid? ThreadId,
+    Guid? TurnId,
+    ChannelInboundStatus Status,
+    int AttemptCount,
+    string? ErrorCode,
+    IReadOnlyList<ChannelMediaSummary> Media,
+    long Revision,
+    DateTimeOffset CreatedAtUtc,
+    DateTimeOffset UpdatedAtUtc,
+    DateTimeOffset? DeliveredAtUtc);
+
+public sealed record ChannelOutboxSummary(
+    Guid OutboxMessageId,
+    Guid DeliveryId,
+    string ChannelId,
+    string ExternalConversationId,
+    string SourceMessageId,
+    Guid ThreadId,
+    Guid TurnId,
+    Guid CorrelationId,
+    long PartitionSequence,
+    string BodySha256,
+    ChannelOutboxStatus Status,
+    int AttemptCount,
+    string? ErrorCode,
+    long Revision,
+    DateTimeOffset CreatedAtUtc,
+    DateTimeOffset UpdatedAtUtc,
+    DateTimeOffset? SentAtUtc);
+
+public sealed record ChannelPage<T>(
+    long OperationsRevision,
+    IReadOnlyList<T> Items,
+    string? NextCursor);
+
+public sealed record ChannelMediaReadRequest(
+    Guid MediaId,
+    long Offset = 0,
+    int Length = 256 * 1024);
+
+public sealed record ChannelMediaChunk(
+    Guid MediaId,
+    string MediaType,
+    long Offset,
+    byte[] Data,
+    bool EndOfFile);
+
+public sealed record ChannelDeadLetterRetryRequest(
+    Guid OutboxMessageId,
+    Guid IdempotencyKey,
+    long ExpectedRevision);
+
+public interface IChannelService
+{
+    Task<ChannelPage<ChannelSnapshot>> ListChannelsAsync(
+        ChannelListQuery query,
+        CancellationToken cancellationToken = default);
+
+    Task<ChannelSnapshot?> GetChannelAsync(
+        string channelId,
+        CancellationToken cancellationToken = default);
+
+    Task<ChannelPage<ChannelInboundSummary>> ListInboundAsync(
+        ChannelInboundQuery query,
+        CancellationToken cancellationToken = default);
+
+    Task<ChannelPage<ChannelOutboxSummary>> ListOutboxAsync(
+        ChannelOutboxQuery query,
+        CancellationToken cancellationToken = default);
+
+    Task<ChannelMediaChunk> ReadMediaAsync(
+        ChannelMediaReadRequest request,
+        CancellationToken cancellationToken = default);
+
+    Task<ChannelOutboxSummary> RetryDeadLetterAsync(
+        ChannelDeadLetterRetryRequest request,
         CancellationToken cancellationToken = default);
 }

@@ -39,8 +39,17 @@ public static class OpenCoWorkSessionExtensions
         services.TryAddSingleton<IWorkspaceStateStore>(serviceProvider =>
             serviceProvider.GetRequiredService<StateRuntime>());
         services.TryAddSingleton<IOperationsQueryService, OperationsQueryService>();
+        services.TryAddSingleton<OperationsChangeHub>();
+        services.TryAddSingleton<IOperationsChangeSource>(serviceProvider =>
+            serviceProvider.GetRequiredService<OperationsChangeHub>());
         services.TryAddSingleton<OperationsTraceCollector>();
-        services.TryAddSingleton<WorkspaceRegistryService>();
+        services.TryAddSingleton(serviceProvider =>
+            serviceProvider.GetService<WorkspaceRegistryRoot>() is { } root
+                ? new WorkspaceRegistryService(
+                    root.UserProfileDirectory,
+                    serviceProvider.GetRequiredService<TimeProvider>())
+                : new WorkspaceRegistryService(
+                    serviceProvider.GetRequiredService<TimeProvider>()));
         services.TryAddSingleton<IWorkspaceRegistryService>(serviceProvider =>
             serviceProvider.GetRequiredService<WorkspaceRegistryService>());
         services.TryAddSingleton<WorkspaceInsightService>();
@@ -69,7 +78,8 @@ public static class OpenCoWorkSessionExtensions
                         serviceProvider.GetService<GatewayReconciler>()
                             ?.LastSuccessfulReconcileAtUtc);
                 },
-                serviceProvider.GetRequiredService<IWorkspaceInsightService>());
+                serviceProvider.GetRequiredService<IWorkspaceInsightService>(),
+                serviceProvider.GetRequiredService<OperationsChangeHub>());
         });
         services.TryAddSingleton<ProjectWriterLeaseService>();
         services.TryAddSingleton<IProjectWriterLeaseService>(serviceProvider =>

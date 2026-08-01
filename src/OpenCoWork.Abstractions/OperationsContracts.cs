@@ -153,6 +153,8 @@ public sealed record WorkspaceRegistration(
     DateTimeOffset RegisteredAtUtc,
     DateTimeOffset LastSeenAtUtc);
 
+public sealed record WorkspaceRegistryRoot(string UserProfileDirectory);
+
 public enum HubWorkspaceAvailability
 {
     Online,
@@ -167,6 +169,10 @@ public sealed record HubWorkspaceSummary(
     HubWorkspaceAvailability Availability,
     OperationsHealthStatus? HealthStatus,
     string? Diagnostic);
+
+public sealed record HubWorkspaceQuery(
+    int PageSize = 100,
+    string? Cursor = null);
 
 public interface IWorkspaceRegistryService
 {
@@ -184,6 +190,14 @@ public interface IWorkspaceRegistryService
 public interface IHubService
 {
     Task<IReadOnlyList<HubWorkspaceSummary>> ListWorkspacesAsync(
+        CancellationToken cancellationToken = default);
+
+    Task<OperationsPage<HubWorkspaceSummary>> ListWorkspacesAsync(
+        HubWorkspaceQuery query,
+        CancellationToken cancellationToken = default);
+
+    Task<HubWorkspaceSummary?> GetWorkspaceAsync(
+        Guid workspaceId,
         CancellationToken cancellationToken = default);
 
     Task<OperationsDashboardSnapshot?> GetDashboardAsync(
@@ -235,6 +249,10 @@ public sealed record InsightRunSnapshot(
     DateTimeOffset? CompletedAtUtc,
     long Revision);
 
+public sealed record InsightRunRequest(
+    Guid CommandId,
+    InsightRunTrigger Trigger);
+
 public sealed record ImprovementProposalSnapshot(
     Guid ProposalId,
     string FingerprintSha256,
@@ -254,7 +272,16 @@ public interface IWorkspaceInsightService
         InsightRunTrigger trigger,
         CancellationToken cancellationToken = default);
 
+    Task<InsightRunSnapshot> RunAsync(
+        InsightRunRequest request,
+        CancellationToken cancellationToken = default);
+
     Task<OperationsPage<ImprovementProposalSnapshot>> ListAsync(
+        int pageSize = 100,
+        string? cursor = null,
+        CancellationToken cancellationToken = default);
+
+    Task<OperationsPage<InsightRunSnapshot>> ListRunsAsync(
         int pageSize = 100,
         string? cursor = null,
         CancellationToken cancellationToken = default);
@@ -267,6 +294,23 @@ public interface IWorkspaceInsightService
         Guid proposalId,
         long expectedRevision,
         CancellationToken cancellationToken = default);
+}
+
+public enum OperationsChangeKind
+{
+    Channel,
+    Heartbeat,
+    Insight,
+}
+
+public sealed record OperationsChangedEvent(
+    OperationsChangeKind Kind,
+    string ChangeKind,
+    string? EntityId = null);
+
+public interface IOperationsChangeSource
+{
+    event EventHandler<OperationsChangedEvent>? Changed;
 }
 
 public static class OpenCoWorkTelemetry

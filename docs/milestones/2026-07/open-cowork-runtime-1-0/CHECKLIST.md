@@ -79,9 +79,9 @@ Milestone standard: [README.md](README.md)
 - [ ] 11. M10 - Gateway and Operations
   - Status: In Progress
   - Related spec: docs/superpowers/specs/2026-08-01-open-cowork-m10-gateway-operations-design.md (Design Freeze; 2026-08-01 用户确认)
-  - Related plan: docs/superpowers/plans/2026-08-01-open-cowork-m10-gateway-operations-implementation-plan.md (In Progress; Gate 0 and Outcomes 1-7 complete)
+  - Related plan: docs/superpowers/plans/2026-08-01-open-cowork-m10-gateway-operations-implementation-plan.md (In Progress; Gate 0 and Outcomes 1-8 complete)
   - Related archive: None yet.
-  - Completion signal: Outcomes 1-7 已完成 Gateway 契约/主宿主、State v9、Loopback Webhook HMAC、严格 Envelope、内容寻址媒体、Inbound 去重与持久映射、带 Lease/Retry/Dead Letter 的 Outbox、跨 Gateway/Session/Provider/Tool/Automation/CoWork/Outbox 的持久 Correlation、BCL Trace/Usage 查询，以及由现有模块生命周期管理的 Heartbeat、用户级 Workspace Registry、只读 Hub/Dashboard 和确定性 Workspace Insights；Wire 1.4、固定负载与双平台验收待后续 Outcome。
+  - Completion signal: Outcomes 1-8 已完成 Gateway 契约/主宿主、State v9、Loopback Webhook HMAC、严格 Envelope、内容寻址媒体、Inbound 去重与持久映射、带 Lease/Retry/Dead Letter 的 Outbox、持久 Correlation、BCL Trace/Usage 查询、Heartbeat、用户级 Workspace Registry、只读 Hub/Dashboard、确定性 Workspace Insights，以及 Wire 1.4 全方法、通知、版本隐藏、CLI 和 TestClient 黑盒；固定负载与双平台验收待后续 Outcome。
 - [ ] 12. M11 - OpenCoWork 1.0 Closure
   - Status: Not Started
   - Related spec: docs/superpowers/specs/2026-07-25-open-cowork-runtime-1-0-roadmap.md

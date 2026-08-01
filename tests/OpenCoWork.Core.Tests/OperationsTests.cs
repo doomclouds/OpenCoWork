@@ -10,6 +10,10 @@ using Xunit;
 
 namespace OpenCoWork.Core.Tests;
 
+[CollectionDefinition("Operations telemetry", DisableParallelization = true)]
+public sealed class OperationsTelemetryCollection;
+
+[Collection("Operations telemetry")]
 public sealed class OperationsTests
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)

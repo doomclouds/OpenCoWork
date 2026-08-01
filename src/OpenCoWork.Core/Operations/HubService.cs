@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Microsoft.Data.Sqlite;
 using OpenCoWork.Abstractions;
 
@@ -7,6 +8,8 @@ internal sealed class HubService(
     IWorkspaceRegistryService registry,
     TimeProvider timeProvider) : IHubService
 {
+    private const int MaximumPageSize = 200;
+
     public async Task<IReadOnlyList<HubWorkspaceSummary>> ListWorkspacesAsync(
         CancellationToken cancellationToken = default)
     {
@@ -17,6 +20,57 @@ internal sealed class HubService(
             items.Add(await ReadSummaryAsync(registration, cancellationToken));
         }
         return items;
+    }
+
+    public async Task<OperationsPage<HubWorkspaceSummary>> ListWorkspacesAsync(
+        HubWorkspaceQuery query,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(query);
+        if (query.PageSize is < 1 or > MaximumPageSize)
+        {
+            throw new ArgumentOutOfRangeException(nameof(query));
+        }
+
+        var after = DecodeCursor(query.Cursor);
+        var registrations = (await registry.ListAsync(cancellationToken))
+            .Where(item => after is null ||
+                           string.CompareOrdinal(item.DisplayName, after.DisplayName) > 0 ||
+                           string.Equals(item.DisplayName, after.DisplayName, StringComparison.Ordinal) &&
+                           item.WorkspaceId.CompareTo(after.WorkspaceId) > 0)
+            .OrderBy(item => item.DisplayName, StringComparer.Ordinal)
+            .ThenBy(item => item.WorkspaceId)
+            .Take(query.PageSize + 1)
+            .ToArray();
+        var hasMore = registrations.Length > query.PageSize;
+        var page = hasMore ? registrations[..query.PageSize] : registrations;
+        var items = new List<HubWorkspaceSummary>(page.Length);
+        foreach (var registration in page)
+        {
+            items.Add(await ReadSummaryAsync(registration, cancellationToken));
+        }
+        var last = page.LastOrDefault();
+        return new OperationsPage<HubWorkspaceSummary>(
+            items,
+            hasMore && last is not null
+                ? EncodeCursor(last.DisplayName, last.WorkspaceId)
+                : null);
+    }
+
+    public async Task<HubWorkspaceSummary?> GetWorkspaceAsync(
+        Guid workspaceId,
+        CancellationToken cancellationToken = default)
+    {
+        if (workspaceId.Version != 7)
+        {
+            throw new ArgumentException("Workspace id must be UUIDv7.", nameof(workspaceId));
+        }
+
+        var registration = (await registry.ListAsync(cancellationToken))
+            .SingleOrDefault(item => item.WorkspaceId == workspaceId);
+        return registration is null
+            ? null
+            : await ReadSummaryAsync(registration, cancellationToken);
     }
 
     public async Task<OperationsDashboardSnapshot?> GetDashboardAsync(
@@ -120,4 +174,30 @@ internal sealed class HubService(
     private static bool IsUnavailable(Exception exception) =>
         exception is SqliteException or IOException or UnauthorizedAccessException or
             InvalidDataException;
+
+    private static HubCursor? DecodeCursor(string? cursor)
+    {
+        if (cursor is null)
+        {
+            return null;
+        }
+        try
+        {
+            return JsonSerializer.Deserialize<HubCursor>(
+                       Convert.FromBase64String(cursor)) is { WorkspaceId.Version: 7 } value &&
+                   !string.IsNullOrWhiteSpace(value.DisplayName)
+                ? value
+                : throw new ArgumentException("Hub cursor is invalid.", nameof(cursor));
+        }
+        catch (Exception exception) when (exception is FormatException or JsonException)
+        {
+            throw new ArgumentException("Hub cursor is invalid.", nameof(cursor));
+        }
+    }
+
+    private static string EncodeCursor(string displayName, Guid workspaceId) =>
+        Convert.ToBase64String(JsonSerializer.SerializeToUtf8Bytes(
+            new HubCursor(displayName, workspaceId)));
+
+    private sealed record HubCursor(string DisplayName, Guid WorkspaceId);
 }

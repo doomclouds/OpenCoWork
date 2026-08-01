@@ -129,6 +129,7 @@ public sealed class GatewayInboundTests
                 cancellationToken);
         }
 
+        files.Sessions.RequireConcurrentEnqueues = true;
         while (await files.Service.DispatchPendingAsync(
                    files.RuntimeInstanceId,
                    maxConcurrency: 32,
@@ -383,6 +384,8 @@ public sealed class GatewayInboundTests
         private readonly ConcurrentDictionary<Guid, List<string>> _texts = [];
         private int _activeEnqueues;
         private int _maximumConcurrentEnqueues;
+        private readonly TaskCompletionSource _concurrentEnqueues =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public ISessionService Service { get; set; } = null!;
         public IWorkspaceStateStore State { get; set; } = null!;
@@ -393,6 +396,7 @@ public sealed class GatewayInboundTests
         public int UniqueThreadCount => _creates.Count;
         public int UniqueEnqueueCount => _enqueues.Count;
         public int MaximumConcurrentEnqueues => Volatile.Read(ref _maximumConcurrentEnqueues);
+        public bool RequireConcurrentEnqueues { get; set; }
 
         protected override object? Invoke(MethodInfo? targetMethod, object?[]? args) =>
             targetMethod?.Name switch
@@ -504,7 +508,16 @@ public sealed class GatewayInboundTests
             InterlockedExtensions.Max(ref _maximumConcurrentEnqueues, active);
             try
             {
-                await Task.Delay(2, TestContext.Current.CancellationToken);
+                if (RequireConcurrentEnqueues)
+                {
+                    if (active > 1)
+                    {
+                        _concurrentEnqueues.TrySetResult();
+                    }
+                    await _concurrentEnqueues.Task.WaitAsync(
+                        TimeSpan.FromSeconds(5),
+                        TestContext.Current.CancellationToken);
+                }
                 var thread = _threads[request.ThreadId];
                 Assert.Equal(thread.CurrentSequence, request.ExpectedSequence);
                 Assert.NotNull(request.CorrelationId);

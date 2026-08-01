@@ -44,6 +44,21 @@ public sealed class GatewayMediaStoreTests
         Assert.Equal(1L, await files.ScalarAsync<long>(
             "SELECT count(*) FROM channel_media;",
             cancellationToken));
+
+        var firstChunk = await files.Store.ReadAsync(
+            new ChannelMediaReadRequest(item.MediaId, Length: 4),
+            cancellationToken);
+        Assert.Equal(contents[..4], firstChunk.Data);
+        Assert.False(firstChunk.EndOfFile);
+        var lastChunk = await files.Store.ReadAsync(
+            new ChannelMediaReadRequest(item.MediaId, Offset: 4),
+            cancellationToken);
+        Assert.Equal(contents[4..], lastChunk.Data);
+        Assert.True(lastChunk.EndOfFile);
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() =>
+            files.Store.ReadAsync(
+                new ChannelMediaReadRequest(item.MediaId, Length: (256 * 1024) + 1),
+                cancellationToken));
     }
 
     [Fact]

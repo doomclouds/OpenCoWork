@@ -9,6 +9,7 @@ using Xunit;
 
 namespace OpenCoWork.Core.Tests;
 
+[Collection("Operations telemetry")]
 public sealed class OperationsRuntimeTests
 {
     [Fact]
@@ -137,7 +138,15 @@ public sealed class OperationsRuntimeTests
         var beforeThreads = await files.ScalarAsync<long>(
             "SELECT count(*) FROM threads;",
             cancellationToken);
-        var firstRun = await insights.RunAsync(InsightRunTrigger.Manual, cancellationToken);
+        var insightCommandId = Guid.CreateVersion7(clock.GetUtcNow());
+        var firstRun = await insights.RunAsync(
+            new InsightRunRequest(insightCommandId, InsightRunTrigger.Manual),
+            cancellationToken);
+        Assert.Equal(
+            firstRun,
+            await insights.RunAsync(
+                new InsightRunRequest(insightCommandId, InsightRunTrigger.Manual),
+                cancellationToken));
         var firstPage = await insights.ListAsync(1, cancellationToken: cancellationToken);
         Assert.Equal(InsightRunStatus.Completed, firstRun.Status);
         Assert.True(firstRun.ProposalCount >= 2);
@@ -166,6 +175,13 @@ public sealed class OperationsRuntimeTests
             deduplicated.Revision,
             cancellationToken);
         Assert.Equal(ImprovementProposalStatus.Archived, archived.Status);
+        var archiveReplay = await insights.ArchiveAsync(
+            tracked.ProposalId,
+            deduplicated.Revision,
+            cancellationToken);
+        Assert.Equal(archived.ProposalId, archiveReplay.ProposalId);
+        Assert.Equal(archived.Revision, archiveReplay.Revision);
+        Assert.Equal(archived.Evidence.GetRawText(), archiveReplay.Evidence.GetRawText());
 
         _ = await insights.RunAsync(InsightRunTrigger.Manual, cancellationToken);
         Assert.Equal(

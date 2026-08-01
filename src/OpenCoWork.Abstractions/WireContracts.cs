@@ -8,7 +8,8 @@ public static class OpenCoWorkWire
     public const string CapabilityVersion = "1.1";
     public const string CoWorkVersion = "1.2";
     public const string AutomationVersion = "1.3";
-    public const string LatestVersion = AutomationVersion;
+    public const string OperationsVersion = "1.4";
+    public const string LatestVersion = OperationsVersion;
     public const string ClientToServer = "clientToServer";
     public const string ServerToClient = "serverToClient";
     public const string SessionOwner = "session";
@@ -16,6 +17,7 @@ public static class OpenCoWorkWire
     public const string ConnectionAuthority = "connection";
     public const string ThreadAuthority = "thread";
     public const string WorkspaceAuthority = "workspace";
+    public const string UserAuthority = "user";
     public const string NoIdempotency = "none";
     public const string RequiredIdempotency = "required";
     public const int MaximumMessageBytes = 1024 * 1024;

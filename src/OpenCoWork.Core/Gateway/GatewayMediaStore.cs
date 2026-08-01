@@ -16,6 +16,83 @@ public sealed class GatewayMediaStore(
     private const int MaximumTotalBytes = 16 * 1024 * 1024;
     private static readonly UTF8Encoding StrictUtf8 = new(false, true);
 
+    public async Task<ChannelMediaChunk> ReadAsync(
+        ChannelMediaReadRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        ValidateVersionSeven(request.MediaId, nameof(request.MediaId));
+        ArgumentOutOfRangeException.ThrowIfNegative(request.Offset);
+        if (request.Length is < 1 or > 256 * 1024)
+        {
+            throw new ArgumentOutOfRangeException(nameof(request));
+        }
+
+        var metadata = await state.ReadAsync(
+            async (connection, token) =>
+            {
+                await using var command = connection.CreateCommand();
+                command.CommandText =
+                    """
+                    SELECT relative_path, media_type, content_length
+                    FROM channel_media WHERE media_id = $mediaId;
+                    """;
+                Add(command, "$mediaId", request.MediaId.ToString("D"));
+                await using var reader = await command.ExecuteReaderAsync(token);
+                return await reader.ReadAsync(token)
+                    ? new MediaReadMetadata(
+                        reader.GetString(0),
+                        reader.GetString(1),
+                        reader.GetInt64(2))
+                    : null;
+            },
+            cancellationToken);
+        if (metadata is null)
+        {
+            throw new ChannelServiceException(
+                ChannelErrorCodes.MediaNotFound,
+                "Channel media was not found.");
+        }
+        if (request.Offset > metadata.ContentLength)
+        {
+            throw new ArgumentOutOfRangeException(nameof(request));
+        }
+
+        var root = Path.TrimEndingDirectorySeparator(
+            Path.GetFullPath(paths.ExternalChannelMediaDirectory));
+        var path = Path.GetFullPath(metadata.RelativePath, root);
+        var comparison = OperatingSystem.IsWindows()
+            ? StringComparison.OrdinalIgnoreCase
+            : StringComparison.Ordinal;
+        if (!path.StartsWith(root + Path.DirectorySeparatorChar, comparison))
+        {
+            throw new IOException("Media path escapes its root.");
+        }
+        EnsureSafeFile(path);
+        if (new FileInfo(path).Length != metadata.ContentLength)
+        {
+            throw new IOException("Media length does not match its metadata.");
+        }
+
+        var count = (int)Math.Min(request.Length, metadata.ContentLength - request.Offset);
+        var data = new byte[count];
+        await using var stream = new FileStream(
+            path,
+            FileMode.Open,
+            FileAccess.Read,
+            FileShare.Read,
+            64 * 1024,
+            FileOptions.Asynchronous | FileOptions.SequentialScan);
+        stream.Position = request.Offset;
+        await stream.ReadExactlyAsync(data, cancellationToken);
+        return new ChannelMediaChunk(
+            request.MediaId,
+            metadata.MediaType,
+            request.Offset,
+            data,
+            request.Offset + count == metadata.ContentLength);
+    }
+
     public async Task<IReadOnlyList<ChannelMediaReference>> CommitAsync(
         string channelId,
         Guid inboundMessageId,
@@ -536,4 +613,9 @@ public sealed class GatewayMediaStore(
         string TemporaryPath,
         long ContentLength,
         string ContentSha256);
+
+    private sealed record MediaReadMetadata(
+        string RelativePath,
+        string MediaType,
+        long ContentLength);
 }

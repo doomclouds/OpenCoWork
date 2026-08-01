@@ -487,6 +487,17 @@ internal sealed class GatewayReconciler
                         "Outbox revision does not match.");
                 }
 
+                await using var operations = connection.CreateCommand();
+                operations.Transaction = transaction;
+                operations.CommandText =
+                    """
+                    UPDATE operations_state
+                    SET current_revision = current_revision + 1, updated_utc = $now
+                    WHERE id = 1;
+                    """;
+                Add(operations, "$now", now);
+                await operations.ExecuteNonQueryAsync(token);
+
                 return revision + 1;
             },
             cancellationToken);

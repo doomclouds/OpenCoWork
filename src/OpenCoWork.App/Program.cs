@@ -1,6 +1,8 @@
 using System.Collections;
 using System.CommandLine;
 using System.CommandLine.Invocation;
+using System.Text;
+using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
@@ -158,6 +160,9 @@ namespace OpenCoWork.App
                       app-server  Serve the Desktop wire protocol.
                       acp       Serve the ACP v1 bridge over stdio.
                       gateway   Run the local external-channel host.
+                      channel   Inspect and administer local channels.
+                      hub       Inspect registered workspaces.
+                      ops       Query local operations data.
 
                     Options:
                       --version  Show version information.
@@ -434,8 +439,530 @@ namespace OpenCoWork.App
                     configureServices,
                     cancellationToken));
             root.Subcommands.Add(gateway);
+            AddOperationsCommands(
+                root,
+                workingDirectory,
+                userProfileDirectory,
+                input,
+                isInteractive,
+                configureServices);
             return root;
         }
+
+        private static void AddOperationsCommands(
+            RootCommand root,
+            string workingDirectory,
+            string userProfileDirectory,
+            TextReader input,
+            bool isInteractive,
+            Action<IServiceCollection>? configureServices)
+        {
+            var channel = new Command("channel", "Inspect and administer local channels.");
+            var channelOptions = AddServiceOptions(channel);
+
+            var channelList = new Command("list", "List configured channels.");
+            var channelStatus = new Option<ChannelRuntimeStatus?>("--status");
+            var channelPageSize = new Option<int?>("--page-size");
+            var channelCursor = new Option<string?>("--cursor");
+            channelList.Add(channelStatus);
+            channelList.Add(channelPageSize);
+            channelList.Add(channelCursor);
+            channelList.SetAction((result, token) => RunServiceCommandAsync(
+                channelOptions, result, workingDirectory, userProfileDirectory,
+                configureServices,
+                services => services.GetRequiredService<IChannelService>().ListChannelsAsync(
+                    new ChannelListQuery(
+                        result.GetValue(channelStatus),
+                        result.GetValue(channelPageSize) ?? 100,
+                        result.GetValue(channelCursor)),
+                    token),
+                token));
+            channel.Subcommands.Add(channelList);
+
+            AddChannelQueueCommand(
+                channel,
+                "inbound",
+                channelOptions,
+                workingDirectory,
+                userProfileDirectory,
+                configureServices,
+                static (service, channelId, status, pageSize, cursor, token) =>
+                    service.ListInboundAsync(
+                        new ChannelInboundQuery(
+                            channelId,
+                            ParseOptional<ChannelInboundStatus>(status),
+                            pageSize,
+                            cursor),
+                        token));
+            AddChannelQueueCommand(
+                channel,
+                "outbox",
+                channelOptions,
+                workingDirectory,
+                userProfileDirectory,
+                configureServices,
+                static (service, channelId, status, pageSize, cursor, token) =>
+                    service.ListOutboxAsync(
+                        new ChannelOutboxQuery(
+                            channelId,
+                            ParseOptional<ChannelOutboxStatus>(status),
+                            pageSize,
+                            cursor),
+                        token));
+
+            var retry = new Command("retry", "Retry one dead-lettered outbox message.");
+            var retryId = new Option<Guid?>("--id");
+            var retryRevision = new Option<long?>("--revision");
+            retry.Add(retryId);
+            retry.Add(retryRevision);
+            retry.SetAction((result, token) => RunServiceCommandAsync(
+                channelOptions, result, workingDirectory, userProfileDirectory,
+                configureServices,
+                services => services.GetRequiredService<IChannelService>()
+                    .RetryDeadLetterAsync(
+                        new ChannelDeadLetterRetryRequest(
+                            result.GetValue(retryId)
+                                ?? throw new ArgumentException("--id is required."),
+                            Guid.CreateVersion7(),
+                            result.GetValue(retryRevision)
+                                ?? throw new ArgumentException("--revision is required.")),
+                        token),
+                token));
+            channel.Subcommands.Add(retry);
+
+            var secret = new Command("secret", "Set or clear a local channel secret.");
+            var secretSet = new Command("set", "Read and store a secret from secure input.");
+            var secretSetId = new Option<string?>("--channel-id");
+            secretSet.Add(secretSetId);
+            secretSet.SetAction((result, token) => RunServiceCommandAsync(
+                channelOptions, result, workingDirectory, userProfileDirectory,
+                configureServices,
+                async services =>
+                {
+                    var channelId = result.GetValue(secretSetId)
+                                    ?? throw new ArgumentException("--channel-id is required.");
+                    var value = await ReadSecretAsync(input, isInteractive, token);
+                    services.GetRequiredService<IChannelCredentialAdmin>()
+                        .Set(channelId, value);
+                    return new { channelId, changed = true };
+                },
+                token));
+            var secretClear = new Command("clear", "Clear a local channel secret.");
+            var secretClearId = new Option<string?>("--channel-id");
+            secretClear.Add(secretClearId);
+            secretClear.SetAction((result, token) => RunServiceCommandAsync(
+                channelOptions, result, workingDirectory, userProfileDirectory,
+                configureServices,
+                services =>
+                {
+                    var channelId = result.GetValue(secretClearId)
+                                    ?? throw new ArgumentException("--channel-id is required.");
+                    services.GetRequiredService<IChannelCredentialAdmin>()
+                        .Clear(channelId);
+                    return Task.FromResult(new { channelId, changed = true });
+                },
+                token));
+            secret.Subcommands.Add(secretSet);
+            secret.Subcommands.Add(secretClear);
+            channel.Subcommands.Add(secret);
+            root.Subcommands.Add(channel);
+
+            AddHubCommands(root, workingDirectory, userProfileDirectory, configureServices);
+            AddOpsCommands(root, workingDirectory, userProfileDirectory, configureServices);
+        }
+
+        private static ServiceCommandOptions AddServiceOptions(Command command)
+        {
+            var options = new ServiceCommandOptions(
+                Recursive(CreateWorkspaceOption()),
+                Recursive(new Option<string?>("--config")),
+                Recursive(new Option<string[]>("--set")),
+                Recursive(new Option<bool>("--strict-config")),
+                Recursive(new Option<bool>("--json")));
+            command.Add(options.Workspace);
+            command.Add(options.Config);
+            command.Add(options.Set);
+            command.Add(options.StrictConfig);
+            command.Add(options.Json);
+            return options;
+        }
+
+        private static Option<T> Recursive<T>(Option<T> option)
+        {
+            option.Recursive = true;
+            return option;
+        }
+
+        private static void AddChannelQueueCommand<T>(
+            Command parent,
+            string name,
+            ServiceCommandOptions options,
+            string workingDirectory,
+            string userProfileDirectory,
+            Action<IServiceCollection>? configureServices,
+            Func<IChannelService, string?, string?, int, string?, CancellationToken, Task<T>> query)
+        {
+            var command = new Command(name, $"List channel {name} records.");
+            var channelId = new Option<string?>("--channel-id");
+            var status = new Option<string?>("--status");
+            var pageSize = new Option<int?>("--page-size");
+            var cursor = new Option<string?>("--cursor");
+            command.Add(channelId);
+            command.Add(status);
+            command.Add(pageSize);
+            command.Add(cursor);
+            command.SetAction((result, token) => RunServiceCommandAsync(
+                options, result, workingDirectory, userProfileDirectory,
+                configureServices,
+                services => query(
+                    services.GetRequiredService<IChannelService>(),
+                    result.GetValue(channelId),
+                    result.GetValue(status),
+                    result.GetValue(pageSize) ?? 100,
+                    result.GetValue(cursor),
+                    token),
+                token));
+            parent.Subcommands.Add(command);
+        }
+
+        private static void AddHubCommands(
+            RootCommand root,
+            string workingDirectory,
+            string userProfileDirectory,
+            Action<IServiceCollection>? configureServices)
+        {
+            var hub = new Command("hub", "Inspect registered workspaces.");
+            var options = AddServiceOptions(hub);
+            var list = new Command("list", "List registered workspaces.");
+            var pageSize = new Option<int?>("--page-size");
+            var cursor = new Option<string?>("--cursor");
+            list.Add(pageSize);
+            list.Add(cursor);
+            list.SetAction((result, token) => RunServiceCommandAsync(
+                options, result, workingDirectory, userProfileDirectory,
+                configureServices,
+                services => services.GetRequiredService<IHubService>().ListWorkspacesAsync(
+                    new HubWorkspaceQuery(
+                        result.GetValue(pageSize) ?? 100,
+                        result.GetValue(cursor)),
+                    token),
+                token));
+            hub.Subcommands.Add(list);
+
+            var dashboard = new Command("dashboard", "Read one workspace dashboard.");
+            var workspaceId = new Option<Guid?>("--workspace-id");
+            dashboard.Add(workspaceId);
+            dashboard.SetAction((result, token) => RunServiceCommandAsync(
+                options, result, workingDirectory, userProfileDirectory,
+                configureServices,
+                async services =>
+                    await services.GetRequiredService<IHubService>()
+                        .GetDashboardAsync(
+                            result.GetValue(workspaceId)
+                                ?? throw new ArgumentException(
+                                    "--workspace-id is required."),
+                            token)
+                    ?? throw new KeyNotFoundException("Workspace was not found."),
+                token));
+            hub.Subcommands.Add(dashboard);
+            root.Subcommands.Add(hub);
+        }
+
+        private static void AddOpsCommands(
+            RootCommand root,
+            string workingDirectory,
+            string userProfileDirectory,
+            Action<IServiceCollection>? configureServices)
+        {
+            var ops = new Command("ops", "Query local operations data.");
+            var options = AddServiceOptions(ops);
+
+            var usage = new Command("usage", "Query provider usage.");
+            var from = new Option<DateTimeOffset?>("--from");
+            var to = new Option<DateTimeOffset?>("--to");
+            var bucket = new Option<OperationsTimeBucket?>("--bucket");
+            usage.Add(from);
+            usage.Add(to);
+            usage.Add(bucket);
+            usage.SetAction((result, token) =>
+            {
+                var end = result.GetValue(to) ?? DateTimeOffset.UtcNow;
+                return RunServiceCommandAsync(
+                    options, result, workingDirectory, userProfileDirectory,
+                    configureServices,
+                    services => services.GetRequiredService<IOperationsQueryService>()
+                        .QueryUsageAsync(
+                            new UsageQuery(
+                                result.GetValue(from) ?? end.AddHours(-24),
+                                end,
+                                result.GetValue(bucket) ?? OperationsTimeBucket.Hour),
+                            token),
+                    token);
+            });
+            ops.Subcommands.Add(usage);
+
+            var trace = new Command("trace", "List or read traces.");
+            var traceList = new Command("list", "List trace summaries.");
+            var tracePageSize = new Option<int?>("--page-size");
+            var traceCursor = new Option<string?>("--cursor");
+            traceList.Add(tracePageSize);
+            traceList.Add(traceCursor);
+            traceList.SetAction((result, token) => RunServiceCommandAsync(
+                options, result, workingDirectory, userProfileDirectory,
+                configureServices,
+                services => services.GetRequiredService<IOperationsQueryService>()
+                    .ListTracesAsync(
+                        new TraceListQuery(
+                            PageSize: result.GetValue(tracePageSize) ?? 100,
+                            Cursor: result.GetValue(traceCursor)),
+                        token),
+                token));
+            var traceGet = new Command("get", "Read one trace.");
+            var traceId = new Option<string?>("--trace-id");
+            traceGet.Add(traceId);
+            traceGet.SetAction((result, token) => RunServiceCommandAsync(
+                options, result, workingDirectory, userProfileDirectory,
+                configureServices,
+                services => services.GetRequiredService<IOperationsQueryService>()
+                    .GetTraceAsync(
+                        result.GetValue(traceId)
+                            ?? throw new ArgumentException("--trace-id is required."),
+                        token),
+                token));
+            trace.Subcommands.Add(traceList);
+            trace.Subcommands.Add(traceGet);
+            ops.Subcommands.Add(trace);
+
+            var heartbeat = new Command("heartbeat", "Read workspace heartbeat.");
+            heartbeat.SetAction((result, token) => RunServiceCommandAsync(
+                options, result, workingDirectory, userProfileDirectory,
+                configureServices,
+                async services =>
+                    await services.GetRequiredService<IOperationsQueryService>()
+                        .GetHeartbeatAsync(token)
+                    ?? throw new KeyNotFoundException("Heartbeat is unavailable."),
+                token));
+            ops.Subcommands.Add(heartbeat);
+
+            AddInsightCommands(
+                ops, options, workingDirectory, userProfileDirectory, configureServices);
+            root.Subcommands.Add(ops);
+        }
+
+        private static void AddInsightCommands(
+            Command ops,
+            ServiceCommandOptions options,
+            string workingDirectory,
+            string userProfileDirectory,
+            Action<IServiceCollection>? configureServices)
+        {
+            var insight = new Command("insight", "Run or inspect workspace insights.");
+            var list = new Command("list", "List proposals or runs.");
+            var kind = new Option<string?>("--kind");
+            var pageSize = new Option<int?>("--page-size");
+            var cursor = new Option<string?>("--cursor");
+            list.Add(kind);
+            list.Add(pageSize);
+            list.Add(cursor);
+            list.SetAction((result, token) => RunServiceCommandAsync(
+                options, result, workingDirectory, userProfileDirectory,
+                configureServices,
+                async services =>
+                {
+                    var service = services.GetRequiredService<IWorkspaceInsightService>();
+                    return string.Equals(
+                        result.GetValue(kind), "runs", StringComparison.OrdinalIgnoreCase)
+                        ? (object)await service.ListRunsAsync(
+                            result.GetValue(pageSize) ?? 100,
+                            result.GetValue(cursor), token)
+                        : await service.ListAsync(
+                            result.GetValue(pageSize) ?? 100,
+                            result.GetValue(cursor), token);
+                },
+                token));
+            var run = new Command("run", "Run local deterministic insight rules.");
+            run.SetAction((result, token) => RunServiceCommandAsync(
+                options, result, workingDirectory, userProfileDirectory,
+                configureServices,
+                services => services.GetRequiredService<IWorkspaceInsightService>()
+                    .RunAsync(
+                        new InsightRunRequest(
+                            Guid.CreateVersion7(),
+                            InsightRunTrigger.Manual),
+                        token),
+                token));
+
+            var get = new Command("get", "Read one proposal.");
+            var getId = new Option<Guid?>("--proposal-id");
+            get.Add(getId);
+            get.SetAction((result, token) => RunServiceCommandAsync(
+                options, result, workingDirectory, userProfileDirectory,
+                configureServices,
+                async services =>
+                    await services.GetRequiredService<IWorkspaceInsightService>()
+                        .GetAsync(
+                            result.GetValue(getId)
+                                ?? throw new ArgumentException(
+                                    "--proposal-id is required."),
+                            token)
+                    ?? throw new KeyNotFoundException("Proposal was not found."),
+                token));
+            var archive = new Command("archive", "Archive one proposal.");
+            var archiveId = new Option<Guid?>("--proposal-id");
+            var revision = new Option<long?>("--revision");
+            archive.Add(archiveId);
+            archive.Add(revision);
+            archive.SetAction((result, token) => RunServiceCommandAsync(
+                options, result, workingDirectory, userProfileDirectory,
+                configureServices,
+                services => services.GetRequiredService<IWorkspaceInsightService>()
+                    .ArchiveAsync(
+                        result.GetValue(archiveId)
+                            ?? throw new ArgumentException("--proposal-id is required."),
+                        result.GetValue(revision)
+                            ?? throw new ArgumentException("--revision is required."),
+                        token),
+                token));
+            insight.Subcommands.Add(list);
+            insight.Subcommands.Add(run);
+            insight.Subcommands.Add(get);
+            insight.Subcommands.Add(archive);
+            ops.Subcommands.Add(insight);
+        }
+
+        private static async Task<int> RunServiceCommandAsync<T>(
+            ServiceCommandOptions options,
+            ParseResult result,
+            string workingDirectory,
+            string userProfileDirectory,
+            Action<IServiceCollection>? configureServices,
+            Func<IServiceProvider, Task<T>> action,
+            CancellationToken cancellationToken)
+        {
+            var error = result.InvocationConfiguration.Error;
+            var redactor = new SecretRedactor([]);
+            try
+            {
+                var paths = WorkspaceDiscovery.Discover(
+                    workingDirectory,
+                    result.GetValue(options.Workspace));
+                var loaded = LoadConfig(
+                    paths,
+                    ResolveOptionalPath(result.GetValue(options.Config), workingDirectory),
+                    result.GetValue(options.Set) ?? [],
+                    result.GetValue(options.StrictConfig),
+                    userProfileDirectory);
+                if (!loaded.Validation.IsValid || loaded.Snapshot is null)
+                {
+                    foreach (var diagnostic in loaded.Validation.Diagnostics)
+                    {
+                        await error.WriteLineAsync($"{diagnostic.Code}: {diagnostic.Message}");
+                    }
+                    return 3;
+                }
+
+                var snapshot = loaded.Snapshot;
+                redactor = SecretRedactor.FromSnapshot(snapshot);
+                using var host = OpenCoWorkCompositionRoot.Build(
+                    [], paths.WorkspaceRoot,
+                    services => ConfigureRuntimeServices(
+                        services,
+                        snapshot,
+                        configureServices,
+                        userProfileDirectory),
+                    snapshot.GetRequiredSection<RuntimeConfig>(),
+                    "cli");
+                await host.StartAsync(cancellationToken);
+                try
+                {
+                    var value = await action(host.Services);
+                    await result.InvocationConfiguration.Output.WriteLineAsync(
+                        JsonSerializer.Serialize(
+                            value,
+                            new JsonSerializerOptions(JsonSerializerDefaults.Web)
+                            {
+                                WriteIndented = !result.GetValue(options.Json),
+                            }));
+                    return 0;
+                }
+                finally
+                {
+                    await host.StopAsync(CancellationToken.None);
+                }
+            }
+            catch (ArgumentException exception)
+            {
+                await error.WriteLineAsync(exception.Message);
+                return 2;
+            }
+            catch (Exception exception) when (exception is not OperationCanceledException)
+            {
+                await error.WriteLineAsync(redactor.RedactText(exception.Message));
+                return 1;
+            }
+        }
+
+        private static T? ParseOptional<T>(string? value)
+            where T : struct, Enum =>
+            value is null
+                ? null
+                : Enum.TryParse<T>(value, ignoreCase: true, out var parsed)
+                    ? parsed
+                    : throw new ArgumentException($"Invalid {typeof(T).Name} value.");
+
+        private static async Task<string> ReadSecretAsync(
+            TextReader input,
+            bool isInteractive,
+            CancellationToken cancellationToken)
+        {
+            if (!isInteractive)
+            {
+                throw new ArgumentException(
+                    "Secret input requires an interactive terminal.");
+            }
+
+            string? value;
+            if (ReferenceEquals(input, Console.In) && !Console.IsInputRedirected)
+            {
+                var buffer = new StringBuilder();
+                while (true)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    var key = Console.ReadKey(intercept: true);
+                    if (key.Key == ConsoleKey.Enter)
+                    {
+                        break;
+                    }
+                    if (key.Key == ConsoleKey.Backspace)
+                    {
+                        if (buffer.Length > 0)
+                        {
+                            buffer.Length--;
+                        }
+                    }
+                    else if (!char.IsControl(key.KeyChar))
+                    {
+                        buffer.Append(key.KeyChar);
+                    }
+                }
+                value = buffer.ToString();
+            }
+            else
+            {
+                value = await input.ReadLineAsync(cancellationToken);
+            }
+
+            return string.IsNullOrWhiteSpace(value)
+                ? throw new ArgumentException("Secret input is empty.")
+                : value;
+        }
+
+        private sealed record ServiceCommandOptions(
+            Option<string?> Workspace,
+            Option<string?> Config,
+            Option<string[]> Set,
+            Option<bool> StrictConfig,
+            Option<bool> Json);
 
         private static string? ResolveOptionalPath(string? path, string basePath) =>
             string.IsNullOrWhiteSpace(path)
@@ -571,7 +1098,8 @@ namespace OpenCoWork.App
                     services => ConfigureRuntimeServices(
                         services,
                         snapshot,
-                        configureServices),
+                        configureServices,
+                        userProfileDirectory),
                     runtimeConfig,
                     "cli");
                 redactor = host.Services.GetRequiredService<SecretRedactor>();
@@ -659,7 +1187,8 @@ namespace OpenCoWork.App
                     services => ConfigureRuntimeServices(
                         services,
                         snapshot,
-                        configureServices),
+                        configureServices,
+                        userProfileDirectory),
                     snapshot.GetRequiredSection<RuntimeConfig>(),
                     "gateway");
                 redactor = host.Services.GetRequiredService<SecretRedactor>();
@@ -762,7 +1291,8 @@ namespace OpenCoWork.App
                     services => ConfigureRuntimeServices(
                         services,
                         snapshot,
-                        configureServices),
+                        configureServices,
+                        userProfileDirectory),
                     snapshot.GetRequiredSection<RuntimeConfig>(),
                     acp ? "acp" : "app-server");
                 redactor = host.Services.GetRequiredService<SecretRedactor>();
@@ -775,6 +1305,11 @@ namespace OpenCoWork.App
                     var coWork = host.Services.GetService<ICoWorkService>();
                     var automations =
                         host.Services.GetService<IAutomationService>();
+                    var channels = host.Services.GetService<IChannelService>();
+                    var hub = host.Services.GetService<IHubService>();
+                    var operations = host.Services.GetService<IOperationsQueryService>();
+                    var insights = host.Services.GetService<IWorkspaceInsightService>();
+                    var changes = host.Services.GetService<IOperationsChangeSource>();
                     if (acp)
                     {
                         var models = snapshot.GetRequiredSection<ModelsConfig>();
@@ -808,6 +1343,11 @@ namespace OpenCoWork.App
                             capabilities,
                             coWork,
                             automations,
+                            channels,
+                            hub,
+                            operations,
+                            insights,
+                            changes,
                             paths.WorkspaceRoot,
                             port!.Value,
                             token!,
@@ -820,6 +1360,11 @@ namespace OpenCoWork.App
                             capabilities,
                             coWork,
                             automations,
+                            channels,
+                            hub,
+                            operations,
+                            insights,
+                            changes,
                             paths.WorkspaceRoot,
                             protocolInput,
                             protocolOutput,
@@ -832,6 +1377,11 @@ namespace OpenCoWork.App
                             capabilities,
                             coWork,
                             automations,
+                            channels,
+                            hub,
+                            operations,
+                            insights,
+                            changes,
                             paths.WorkspaceRoot,
                             input,
                             output,
@@ -881,7 +1431,8 @@ namespace OpenCoWork.App
         private static void ConfigureRuntimeServices(
             IServiceCollection services,
             EffectiveConfigSnapshot snapshot,
-            Action<IServiceCollection>? configureServices)
+            Action<IServiceCollection>? configureServices,
+            string? userProfileDirectory = null)
         {
             services.AddSingleton(snapshot);
             services.AddSingleton(snapshot.GetRequiredSection<SessionConfig>());
@@ -890,6 +1441,10 @@ namespace OpenCoWork.App
             services.AddSingleton(snapshot.GetRequiredSection<GatewayConfig>());
             services.AddSingleton(snapshot.GetRequiredSection<CoWorkConfig>());
             services.AddSingleton(snapshot.GetRequiredSection<AutomationsConfig>());
+            if (!string.IsNullOrWhiteSpace(userProfileDirectory))
+            {
+                services.AddSingleton(new WorkspaceRegistryRoot(userProfileDirectory));
+            }
             configureServices?.Invoke(services);
         }
 
@@ -936,9 +1491,9 @@ namespace OpenCoWork.App
             var primaryHost = registry.SelectPrimaryModule(
                 primaryModuleId ?? "cli");
             var builder = Host.CreateApplicationBuilder(args);
+            builder.Logging.ClearProviders();
             if (primaryHost.Id != "cli")
             {
-                builder.Logging.ClearProviders();
                 builder.Logging.AddConsole(options =>
                     options.LogToStandardErrorThreshold = LogLevel.Trace);
             }
@@ -1135,9 +1690,17 @@ namespace OpenCoWork.App
             }
 
             services.TryAddSingleton<GatewayMediaStore>();
-            services.TryAddSingleton<GatewayService>();
+            services.TryAddSingleton(services => new GatewayService(
+                services.GetRequiredService<IWorkspaceStateStore>(),
+                services.GetRequiredService<GatewayMediaStore>(),
+                services.GetRequiredService<ISessionService>(),
+                services.GetRequiredService<TimeProvider>(),
+                services.GetRequiredService<OperationsChangeHub>()));
             services.TryAddSingleton<GatewayChannelRuntime>();
             services.TryAddSingleton<GatewayReconciler>();
+            services.TryAddSingleton<ChannelOperationsService>();
+            services.TryAddSingleton<IChannelService>(services =>
+                services.GetRequiredService<ChannelOperationsService>());
             services.TryAddSingleton<IChannelInboundSink>(services =>
                 services.GetRequiredService<GatewayService>());
             services.TryAddSingleton<IChannelSender, WebhookChannelSender>();

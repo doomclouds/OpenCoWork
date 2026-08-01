@@ -227,7 +227,7 @@ public sealed partial class OpenCoWorkJsonRpcConnection
         WireAutomationChangedNotification notification,
         CancellationToken cancellationToken)
     {
-        if (_wireVersion != OpenCoWorkWire.AutomationVersion)
+        if (VersionRank(_wireVersion) < VersionRank(OpenCoWorkWire.AutomationVersion))
         {
             return;
         }

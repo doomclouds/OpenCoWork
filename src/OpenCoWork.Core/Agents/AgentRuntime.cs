@@ -60,6 +60,8 @@ public static class OpenCoWorkAgentExtensions
                 serviceProvider.GetRequiredService<IOsSecretStore>(),
                 serviceProvider.GetRequiredService<SecretRedactor>(),
                 serviceProvider.GetRequiredService<OpenCoWorkPaths>()));
+        services.TryAddSingleton<IChannelCredentialAdmin>(serviceProvider =>
+            serviceProvider.GetRequiredService<ChannelCredentialService>());
         services.TryAddSingleton(serviceProvider =>
             new ProviderAuthService(
                 serviceProvider.GetRequiredService<ProviderDeclarationCatalog>(),
