@@ -57,6 +57,7 @@ public static class AgentErrorCodes
     public const string ProviderContentFiltered = "provider.contentFiltered";
     public const string ProviderUnsupportedToolCall = "provider.unsupportedToolCall";
     public const string ProviderEmptyResponse = "provider.emptyResponse";
+    public const string ProviderResponseFailed = "provider.responseFailed";
     public const string ContextInputInvalid = "context.inputInvalid";
     public const string ContextInputTooLarge = "context.inputTooLarge";
     public const string ContextInstructionsInvalid = "context.instructionsInvalid";

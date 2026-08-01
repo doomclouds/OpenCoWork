@@ -98,11 +98,12 @@ public sealed class AgentContractTests
         Assert.False(exception.IsPromptTooLong);
 
         Assert.Equal(
-            19,
+            20,
             typeof(AgentErrorCodes)
                 .GetFields()
                 .Count(field => field.IsLiteral && !field.IsInitOnly));
         Assert.Equal("provider.invalidStream", AgentErrorCodes.ProviderInvalidStream);
+        Assert.Equal("provider.responseFailed", AgentErrorCodes.ProviderResponseFailed);
         Assert.Equal("context.compactionFailed", AgentErrorCodes.ContextCompactionFailed);
         Assert.Contains(
             ChatCompletionMessageRole.Tool,
