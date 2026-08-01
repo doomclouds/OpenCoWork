@@ -58,8 +58,8 @@ Passed`，不得把目标平台状态改为 `Passed`。M11 必须在最终发布
 | M8 Automations and Scheduler | `osx-arm64` | Passed | `a710866ec2f812dce3bb03a72d5723ac72e68427` | Apple Silicon macOS 26.5.2 (`25F84`)；.NET SDK `10.0.302`；Runtime `10.0.10`；Git `2.50.1` | 536 项回归、100 项 M8 专项、固定负载、Release build 0/0、App/TestClient Mach-O arm64 发布目录 Wire 1.0–1.3、DST、热更新、恢复、Symlink、Worktree、取消、Secret Canary 与残留检查 | [M8 实施计划 Outcome 10](superpowers/plans/2026-07-30-open-cowork-m8-automations-scheduler-implementation-plan.md) |
 | M9 DeepSeek Responses Provider | `win-x64` | Pending | `be8c90053b468a8a1c8032e87e49cf968168ca2a`；Cross-publish Passed | 从 macOS 26.5.2 交叉发布；Windows 真机环境待登记 | App/TestClient `win-x64` 独立 restore/publish 与 PE32+ x64 产物通过；真实 `deepseek-v4-flash` 六场景、迁移/恢复和残留仍待 Windows 真机 | [Provider 台账](provider-validation-backlog.md) |
 | M9 DeepSeek Responses Provider | `osx-arm64` | Passed | `058b505174602653385c51cb35fb654dd0b31262` | Apple Silicon macOS 26.5.2 (`25F84`)；.NET SDK `10.0.302`；Runtime `10.0.10` | 577 项离线回归、Release build 0/0、App/TestClient/Runner Mach-O arm64 发布目录真实运行；Protocol TestClient 7 场景和 DeepSeek Flash Responses 六场景、Usage 容差、Secret Canary、残留扫描全部通过 | [Provider 台账](provider-validation-backlog.md) |
-| M10 Gateway and Operations | `win-x64` | Pending | 待实现 | 待登记 | Gateway/Hub、Channel 生命周期、媒体路径、后台服务和发布目录验收 | [Runtime 1.0 里程碑](milestones/2026-07/open-cowork-runtime-1-0/README.md) |
-| M10 Gateway and Operations | `osx-arm64` | Pending | 待实现 | 待登记 | Gateway/Hub、Channel 生命周期、媒体路径、后台服务和发布目录验收 | [Runtime 1.0 里程碑](milestones/2026-07/open-cowork-runtime-1-0/README.md) |
+| M10 Gateway and Operations | `win-x64` | Pending | `9b714bcb7dc0c526a3f7bce1b47f4e6b12d0360f`；Cross-publish Passed | 从 macOS 26.5.2 交叉发布；Windows 真机环境待登记 | App/TestClient/Runner `win-x64` 独立 restore/publish 与 PE32+ x64 摘要通过；Gateway、Junction/Reparse Point、Credential Manager、Wire 1.4 和残留仍待 Windows 真机 | [M10 实施计划 Outcome 10](superpowers/plans/2026-08-01-open-cowork-m10-gateway-operations-implementation-plan.md) |
+| M10 Gateway and Operations | `osx-arm64` | Pending | `9b714bcb7dc0c526a3f7bce1b47f4e6b12d0360f`；Runner partial Passed | Apple Silicon macOS 26.5.2 (`25F84`)；.NET SDK `10.0.302`；Runtime `10.0.10` | App/TestClient/Runner Mach-O arm64 发布；Runner 13 项 Gateway/Outbox/Operations CLI/Runtime Composition 通过；Protocol TestClient、Keychain、完整发布矩阵与残留扫描未授权执行 | [M10 实施计划 Outcome 10](superpowers/plans/2026-08-01-open-cowork-m10-gateway-operations-implementation-plan.md) |
 | M11 OpenCoWork 1.0 Closure | `win-x64` | Pending | 最终发布候选待定 | 待登记 | 安装、升级、迁移、恢复、安全、性能、签名和完整发布候选验收 | [Runtime 1.0 里程碑](milestones/2026-07/open-cowork-runtime-1-0/README.md) |
 | M11 OpenCoWork 1.0 Closure | `osx-arm64` | Pending | 最终发布候选待定 | 待登记 | 安装、升级、迁移、恢复、安全、性能、签名/公证和完整发布候选验收 | [Runtime 1.0 里程碑](milestones/2026-07/open-cowork-runtime-1-0/README.md) |
 
@@ -263,6 +263,44 @@ Passed`，不得把目标平台状态改为 `Passed`。M11 必须在最终发布
 - Runner 内部完成全输出面 Secret 扫描与临时 Workspace/User Profile 删除；外部复查
   未发现残留测试目录或 `OpenCoWork.IntegrationTests` / `opencowork` 进程。
   Windows 真机仍未执行，因此 `M9-ACC-018`、`M9-ACC-019` 与完整 M9 保持未关闭。
+
+## M10 当前验证结果（macOS 部分验证 2026-08-01；Windows 待验）
+
+- 代码基线为 `9b714bcb7dc0c526a3f7bce1b47f4e6b12d0360f`；验证前工作树干净。
+  Outcome 9 全量门禁为 Core `429`、Integration `142`、Protocol `44`、Generators
+  `15`、Architecture `8`，合计 `638` passed / `0` failed；Release build 为
+  `0` warning / `0` error，format 门禁通过。
+- App、Protocol TestClient 与 Integration Runner 已按 `osx-arm64`、`win-x64`
+  分别独立 restore/publish。三套 macOS Host 均为 Mach-O arm64，三套 Windows Host
+  均为 PE32+ x64；Windows 结果不是 Windows 真机证据。
+- 从 Runner 的 `osx-arm64` 发布目录执行 `GatewayOperationsLoadTests`、
+  `GatewayOutboxIntegrationTests`、`OperationsCliIntegrationTests` 和
+  `RuntimeCompositionIntegrationTests`，共 `13 passed / 0 failed / 0 skipped`，
+  xUnit 记录时间 `22.636s`。发布目录 App `--version` 返回 `opencowork 0.1.0`。
+- `osx-arm64` App Host/DLL SHA-256 为
+  `162a965f8f20ad7e6b78e03d2d76c396a6e7ba193c9bb1b69ab06944f36f0212` /
+  `92b7208d61b0124da4e5de5574f965c146be79ca9b6c2655eb241910bf3bff1b`；
+  TestClient Host/DLL 为
+  `bd55da6603c19010bf549dab4cd6decc03e1d9d67ed7f45b2a54169150927306` /
+  `f025087319205b57620a8fadad80d93dfee499d558af41bb09d05e3ddf16c6bf`；
+  Runner Host/DLL 为
+  `006ccbe2ac0b7576d8034f10d0192a787cb1e8e260f4d84ac2deab361ed9f3fa` /
+  `7b293771f82287230b836dfa469b37cab3e2ba7ff404a6ee37fb34e00bb97c77`。
+- `win-x64` App Host/DLL SHA-256 为
+  `4a023005b69a60b520a74069059aec39edfb88e66fc8a4c7a505b0a6b0861afe` /
+  `767885f7f6a5a18b36f153e33ff3ceef80928db70b42f996b3c22cf33ceeb86d`；
+  TestClient Host/DLL 为
+  `12c3c373d1fd58c2480fb8fefc5f4eb45ad8afcf39c38ce6172984923cde5e72` /
+  `2f87113f5dab1850e2fdcd54e47e745a2176f00fa81a799d2f1759c4f6e3b07a`；
+  Runner Host/DLL 为
+  `d0e5d86e439a9b37fdfa4a4a9cc9eb495234769e1d65e6be158e3449e5d347fe` /
+  `6dc386e18e0b60ac7cb1a4b4af33929b9ab0fcaf3ccfdd7e6be7f14633087d88`。
+- Runner 使用临时 Workspace/User Profile；测试后对应临时目录为零，调用者用户级
+  Workspace Registry SHA-256 前后均为
+  `3b984c42b554f73befa318006f1f179712a6f47da78a920de19dbf6d555c0fec`。
+  当前 Protocol TestClient 会真实执行 Keychain Set/Clear 并使用调用者用户级 Profile，
+  本轮未获授权，故未执行。`osx-arm64`、`win-x64` 与完整 M10 均保持 Pending，不创建
+  交付归档。
 
 ## 更新规则
 

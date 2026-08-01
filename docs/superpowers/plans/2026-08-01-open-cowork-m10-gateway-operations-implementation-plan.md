@@ -1,7 +1,9 @@
 # OpenCoWork M10 Gateway and Operations 实施计划
 
-**Status:** In Progress；Gate 0 和 Outcome 1–9 已完成。2026-08-01 用户已授权按本计划实施
-并提交；公网访问、真实 Secret/第三方 Webhook、推送和非本机平台操作仍未授权。
+**Status:** In Progress；Gate 0 和 Outcome 1–9 已完成；Outcome 10 已完成双 RID 三套
+产物发布与 `osx-arm64` Release Runner 部分真机验证，Protocol TestClient、OS Secret
+与 `win-x64` 真机仍待执行。2026-08-01 用户已授权按本计划实施并提交；公网访问、真实
+Secret/第三方 Webhook、推送和非本机平台操作仍未授权。
 
 **Goal:** 在现有七程序集、单 Workspace SQLite、唯一 Session Core 和
 `WorkspaceRuntime` 生命周期内，交付内建 Webhook Gateway、可靠 Inbound/Outbox、
@@ -317,6 +319,18 @@ Gate 0 不形成独立 Commit，也不改变 Milestone 状态。
 - Commit: `test(m10): close gateway reliability matrix`
 
 ### Outcome 10：完成双 RID 发布、真机台账与交付归档
+
+当前部分证据（2026-08-01，基线 `9b714bcb7dc0c526a3f7bce1b47f4e6b12d0360f`）：
+
+- App、Protocol TestClient 与 Integration Runner 已分别按 `osx-arm64`、`win-x64`
+  独立 restore/publish；三套 macOS Host 均为 Mach-O arm64，三套 Windows Host 均为
+  PE32+ x64，Windows 结果只登记为 Cross-publish Passed；
+- `osx-arm64` Runner 从发布目录执行 Gateway/Outbox/Operations CLI/Runtime
+  Composition 共 13 项，`13 passed / 0 failed / 0 skipped`，固定负载与临时状态清理
+  通过，用户级 Workspace Registry SHA-256 前后一致；
+- 当前 Protocol TestClient 会执行真实 Keychain Set/Clear，并使用调用者用户级
+  Profile。该动作未获本轮授权，因此未执行，`osx-arm64` 仍为 Pending；Windows 真机
+  也未执行。没有创建交付归档，没有把 M10 或任一平台标为 Passed。
 
 - Red:
   - 发布 Runner/TestClient 必须在目标发布目录缺能力时失败，并显式区分
