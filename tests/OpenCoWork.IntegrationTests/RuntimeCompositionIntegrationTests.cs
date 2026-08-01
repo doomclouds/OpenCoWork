@@ -1,3 +1,5 @@
+using System.Net;
+using System.Net.Sockets;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using OpenCoWork.Abstractions;
@@ -174,9 +176,83 @@ public sealed class RuntimeCompositionIntegrationTests
             var runtime = host.Services.GetRequiredService<WorkspaceRuntime>();
             Assert.Equal("gateway", runtime.StartedState.PrimaryHost.Id);
             Assert.Equal(WorkspaceRuntimeStatus.Running, runtime.Status);
+            Assert.True(
+                host.Services.GetRequiredService<GatewayReconciler>().IsRunning);
 
             await host.StopAsync(cancellationToken);
             Assert.Equal(WorkspaceRuntimeStatus.Stopped, runtime.Status);
+            Assert.False(
+                host.Services.GetRequiredService<GatewayReconciler>().IsRunning);
+        }
+        finally
+        {
+            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Gateway_primary_opens_and_closes_the_configured_loopback_intake()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var root = Path.Combine(
+            Path.GetTempPath(),
+            $"opencowork-gateway-intake-{Guid.NewGuid():N}");
+        var user = Path.Combine(root, "user");
+        Directory.CreateDirectory(root);
+        Directory.CreateDirectory(user);
+        var port = UnusedLoopbackPort();
+        var paths = new OpenCoWorkPaths(root);
+        var channel = new GatewayChannelConfig
+        {
+            Id = "integration",
+            CallbackUrl = "https://integration.example.test/result",
+            Credential = new GatewayCredentialConfig
+            {
+                Source = GatewayCredentialSource.Environment,
+                EnvironmentVariable = "INTEGRATION_SECRET",
+            },
+        };
+        var config = new GatewayConfig { ListenPort = port, Channels = [channel] };
+        var persistencePaths = new CapabilityPersistencePaths(paths, user);
+        var trust = new CapabilityFileStore(persistencePaths);
+        await trust.SaveTrustDecisionsAsync(
+            new TrustDecisionsDocument(
+                1,
+                [
+                    new CapabilityTrustDecision(
+                        root,
+                        CapabilitySourceKind.Workspace,
+                        "channel/integration",
+                        "1",
+                        GatewayConfig.ComputeChannelSha256(channel),
+                        [CapabilityTrustScope.ExternalChannel],
+                        []),
+                ]),
+            cancellationToken);
+        try
+        {
+            using var host = OpenCoWorkCompositionRoot.Build(
+                [],
+                root,
+                services =>
+                {
+                    services.AddSingleton(config);
+                    services.AddSingleton(persistencePaths);
+                    services.AddSingleton(trust);
+                    services.AddSingleton(new ChannelCredentialService(
+                        new InMemoryOsSecretStore(),
+                        new SecretRedactor([]),
+                        paths,
+                        _ => "integration-secret"));
+                },
+                primaryModuleId: "gateway");
+
+            await host.StartAsync(cancellationToken);
+            Assert.True(await CanConnectAsync(port, cancellationToken));
+
+            await host.StopAsync(cancellationToken);
+            Assert.False(await CanConnectAsync(port, cancellationToken));
         }
         finally
         {
@@ -209,6 +285,31 @@ public sealed class RuntimeCompositionIntegrationTests
         finally
         {
             Directory.Delete(root, recursive: true);
+        }
+    }
+
+    private static int UnusedLoopbackPort()
+    {
+        var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+        listener.Stop();
+        return port;
+    }
+
+    private static async Task<bool> CanConnectAsync(
+        int port,
+        CancellationToken cancellationToken)
+    {
+        using var client = new TcpClient();
+        try
+        {
+            await client.ConnectAsync(IPAddress.Loopback, port, cancellationToken);
+            return true;
+        }
+        catch (SocketException)
+        {
+            return false;
         }
     }
 

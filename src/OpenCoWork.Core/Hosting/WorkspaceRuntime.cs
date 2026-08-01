@@ -317,6 +317,9 @@ public sealed class WorkspaceRuntime : IAsyncDisposable, IModuleHealthReporter
     public WorkspaceRuntimeStatus Status =>
         (WorkspaceRuntimeStatus)Volatile.Read(ref _status);
 
+    internal bool IsPrimaryHost(string moduleId) =>
+        string.Equals(_primaryHost.Id, moduleId, StringComparison.Ordinal);
+
     public WorkspaceRuntimeStartedState StartedState
     {
         get

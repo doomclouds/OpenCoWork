@@ -127,7 +127,7 @@ public sealed class WebhookChannelTests
     }
 
     [Fact]
-    public async Task Webhook_sender_does_not_follow_redirects()
+    public async Task WebhookSender_does_not_follow_redirects()
     {
         var handler = new RedirectHandler();
         using var sender = new WebhookChannelSender(handler, new FixedTimeProvider(Now));
@@ -160,6 +160,49 @@ public sealed class WebhookChannelTests
         Assert.False(result.Succeeded);
         Assert.False(result.Retryable);
         Assert.Equal(1, handler.Count);
+    }
+
+    [Fact]
+    public async Task WebhookSender_caps_retry_after_and_reuses_exact_body()
+    {
+        var handler = new RetryHandler();
+        using var sender = new WebhookChannelSender(handler, new FixedTimeProvider(Now));
+        var envelope = new ChannelOutboundEnvelope(
+            1,
+            Guid.CreateVersion7(),
+            "m-1",
+            "c-1",
+            Guid.CreateVersion7(),
+            Guid.CreateVersion7(),
+            "completed",
+            "done",
+            null,
+            Guid.CreateVersion7(),
+            Now);
+        var body = JsonSerializer.SerializeToUtf8Bytes(
+            envelope,
+            new JsonSerializerOptions(JsonSerializerDefaults.Web));
+        var request = new ChannelSendRequest(
+            "build-bot",
+            new Uri("https://callback.example.test/result"),
+            envelope,
+            Convert.ToHexString(SHA256.HashData(body)).ToLowerInvariant());
+
+        var first = await sender.SendAsync(
+            request,
+            Encoding.UTF8.GetBytes(Secret),
+            TestContext.Current.CancellationToken);
+        var second = await sender.SendAsync(
+            request,
+            Encoding.UTF8.GetBytes(Secret),
+            TestContext.Current.CancellationToken);
+
+        Assert.True(first.Retryable);
+        Assert.Equal(TimeSpan.FromMinutes(10), first.RetryAfter);
+        Assert.Equal(first, second);
+        Assert.Equal(2, handler.Bodies.Count);
+        Assert.Equal(handler.Bodies[0], handler.Bodies[1]);
+        Assert.Equal(body, handler.Bodies[0]);
     }
 
     [Fact]
@@ -388,6 +431,22 @@ public sealed class WebhookChannelTests
             {
                 Headers = { Location = new Uri("https://redirect.example.test/") },
             });
+        }
+    }
+
+    private sealed class RetryHandler : HttpMessageHandler
+    {
+        public List<byte[]> Bodies { get; } = [];
+
+        protected override async Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            Bodies.Add(await request.Content!.ReadAsByteArrayAsync(cancellationToken));
+            var response = new HttpResponseMessage(HttpStatusCode.TooManyRequests);
+            response.Headers.RetryAfter = new System.Net.Http.Headers.RetryConditionHeaderValue(
+                TimeSpan.FromHours(1));
+            return response;
         }
     }
 

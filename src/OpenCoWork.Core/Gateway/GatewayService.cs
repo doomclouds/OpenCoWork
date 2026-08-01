@@ -31,6 +31,8 @@ public sealed class GatewayService : IChannelInboundSink
     private readonly TimeProvider _timeProvider;
     private readonly Action<GatewayInboundFaultPoint>? _faultInjector;
 
+    internal event Action? Changed;
+
     public GatewayService(
         IWorkspaceStateStore state,
         GatewayMediaStore media,
@@ -78,7 +80,7 @@ public sealed class GatewayService : IChannelInboundSink
             request.Envelope.Attachments,
             cancellationToken);
         var now = _timeProvider.GetUtcNow().ToUnixTimeMilliseconds();
-        return await _state.WriteAsync(
+        var receipt = await _state.WriteAsync(
             async (connection, transaction, token) =>
             {
                 var existing = await FindReceiptAsync(
@@ -154,6 +156,12 @@ public sealed class GatewayService : IChannelInboundSink
                 return new ChannelInboundReceipt(inboundId, correlationId, false);
             },
             cancellationToken);
+        if (!receipt.Duplicate)
+        {
+            Changed?.Invoke();
+        }
+
+        return receipt;
     }
 
     public async Task<int> DispatchPendingAsync(

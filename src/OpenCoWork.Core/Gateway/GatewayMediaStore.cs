@@ -113,6 +113,57 @@ public sealed class GatewayMediaStore(
         }
     }
 
+    internal async Task<int> CleanupOrphansAsync(
+        DateTimeOffset olderThan,
+        CancellationToken cancellationToken = default)
+    {
+        EnsureSafeDirectory(paths.RuntimeDirectory);
+        EnsureSafeDirectory(paths.ExternalChannelMediaDirectory);
+        var referenced = await state.ReadAsync(
+            async (connection, token) =>
+            {
+                await using var command = connection.CreateCommand();
+                command.CommandText = "SELECT relative_path FROM channel_media;";
+                await using var reader = await command.ExecuteReaderAsync(token);
+                var result = new HashSet<string>(StringComparer.Ordinal);
+                while (await reader.ReadAsync(token))
+                {
+                    result.Add(reader.GetString(0));
+                }
+                return result;
+            },
+            cancellationToken);
+        var removed = 0;
+        foreach (var channelDirectory in Directory.EnumerateDirectories(
+                     paths.ExternalChannelMediaDirectory))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            EnsureSafeDirectory(channelDirectory);
+            foreach (var contentDirectory in Directory.EnumerateDirectories(channelDirectory))
+            {
+                EnsureSafeDirectory(contentDirectory);
+                foreach (var file in Directory.EnumerateFiles(contentDirectory))
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    EnsureSafeFile(file);
+                    var relative = Path.GetRelativePath(
+                            paths.ExternalChannelMediaDirectory,
+                            file)
+                        .Replace(Path.DirectorySeparatorChar, '/')
+                        .Replace(Path.AltDirectorySeparatorChar, '/');
+                    if (!referenced.Contains(relative) &&
+                        File.GetLastWriteTimeUtc(file) <= olderThan.UtcDateTime)
+                    {
+                        File.Delete(file);
+                        removed++;
+                    }
+                }
+            }
+        }
+
+        return removed;
+    }
+
     internal static async ValueTask InsertMetadataAsync(
         DbConnection connection,
         DbTransaction transaction,

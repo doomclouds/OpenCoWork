@@ -81,7 +81,8 @@ internal sealed class GatewayStateMigrationContributor
                 "turn_id", "correlation_id", "partition_sequence", "envelope_json",
                 "body_sha256", "status", "attempt_count", "next_attempt_utc",
                 "lease_owner_instance_id", "lease_expires_utc", "error_code",
-                "diagnostic", "revision", "created_utc", "updated_utc", "sent_utc",
+                "diagnostic", "retry_idempotency_key", "revision", "created_utc",
+                "updated_utc", "sent_utc",
             ],
             ["workspace_heartbeat"] =
             [
@@ -346,6 +347,14 @@ internal sealed class GatewayStateMigrationContributor
             error_code TEXT NULL,
             diagnostic TEXT NULL CHECK (
                 diagnostic IS NULL OR length(CAST(diagnostic AS BLOB)) <= 4096),
+            retry_idempotency_key TEXT NULL CHECK (
+                retry_idempotency_key IS NULL OR (
+                    length(retry_idempotency_key) = 36 AND
+                    retry_idempotency_key = lower(retry_idempotency_key) AND
+                    retry_idempotency_key GLOB
+                        '????????-????-7???-[89ab]???-????????????' AND
+                    length(replace(retry_idempotency_key, '-', '')) = 32 AND
+                    replace(retry_idempotency_key, '-', '') NOT GLOB '*[^0-9a-f]*')),
             revision INTEGER NOT NULL CHECK (revision > 0),
             created_utc INTEGER NOT NULL,
             updated_utc INTEGER NOT NULL,

@@ -1110,6 +1110,9 @@ namespace OpenCoWork.App
         CanBePrimaryHost = true)]
     public sealed class GatewayModule : IOpenCoWorkModule
     {
+        private CancellationTokenSource? _intakeLifetime;
+        private Task? _intake;
+
         public void ConfigureServices(IServiceCollection services)
         {
             foreach (var contributor in GatewayStateMigrationContributors.Create())
@@ -1119,20 +1122,140 @@ namespace OpenCoWork.App
 
             services.TryAddSingleton<GatewayMediaStore>();
             services.TryAddSingleton<GatewayService>();
+            services.TryAddSingleton<GatewayChannelRuntime>();
+            services.TryAddSingleton<GatewayReconciler>();
             services.TryAddSingleton<IChannelInboundSink>(services =>
                 services.GetRequiredService<GatewayService>());
             services.TryAddSingleton<IChannelSender, WebhookChannelSender>();
         }
 
-        public ValueTask StartAsync(
+        public async ValueTask StartAsync(
             IServiceProvider services,
-            CancellationToken cancellationToken) =>
-            ValueTask.CompletedTask;
+            CancellationToken cancellationToken)
+        {
+            if (!services.GetRequiredService<WorkspaceRuntime>()
+                    .IsPrimaryHost("gateway"))
+            {
+                return;
+            }
 
-        public ValueTask StopAsync(
+            var reconciler = services.GetRequiredService<GatewayReconciler>();
+            await reconciler.StartAsync(cancellationToken);
+            if (!reconciler.HasEnabledChannels)
+            {
+                return;
+            }
+
+            var lifetime = new CancellationTokenSource();
+            var started = new TaskCompletionSource(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            var sink = services.GetRequiredService<IChannelInboundSink>();
+            var port = services.GetRequiredService<GatewayConfig>().ListenPort;
+            var intake = WebhookChannelServer.RunAsync(
+                port,
+                channelId => reconciler.AcquireInboundSecret(channelId) is { } secret
+                    ? new WebhookChannelBinding(ready: true, secret)
+                    : null,
+                sink,
+                services.GetRequiredService<TimeProvider>(),
+                lifetime.Token,
+                () => started.TrySetResult());
+            _intakeLifetime = lifetime;
+            _intake = intake;
+            try
+            {
+                var completed = await Task.WhenAny(started.Task, intake);
+                if (completed == intake)
+                {
+                    await intake;
+                }
+                await started.Task.WaitAsync(cancellationToken);
+            }
+            catch (Exception startupError)
+            {
+                await lifetime.CancelAsync();
+                try
+                {
+                    await intake;
+                }
+                catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
+                {
+                }
+                catch
+                {
+                }
+                _intake = null;
+                _intakeLifetime = null;
+                lifetime.Dispose();
+                try
+                {
+                    await reconciler.StopAsync(CancellationToken.None);
+                }
+                catch (Exception cleanupError)
+                {
+                    throw new AggregateException(
+                        "Gateway intake startup failed and cleanup reported an error.",
+                        startupError,
+                        cleanupError);
+                }
+
+                System.Runtime.ExceptionServices.ExceptionDispatchInfo
+                    .Capture(startupError)
+                    .Throw();
+                throw;
+            }
+        }
+
+        public async ValueTask StopAsync(
             IServiceProvider services,
-            CancellationToken cancellationToken) =>
-            ValueTask.CompletedTask;
+            CancellationToken cancellationToken)
+        {
+            Exception? intakeError = null;
+            var lifetime = Interlocked.Exchange(ref _intakeLifetime, null);
+            var intake = Interlocked.Exchange(ref _intake, null);
+            if (lifetime is not null)
+            {
+                await lifetime.CancelAsync();
+                if (intake is not null)
+                {
+                    try
+                    {
+                        await intake.WaitAsync(cancellationToken);
+                    }
+                    catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
+                    {
+                    }
+                    catch (Exception error)
+                    {
+                        intakeError = error;
+                    }
+                }
+                lifetime.Dispose();
+            }
+
+            try
+            {
+                var reconciler = services.GetRequiredService<GatewayReconciler>();
+                if (reconciler.IsRunning)
+                {
+                    await reconciler.StopAsync(cancellationToken);
+                }
+            }
+            catch (Exception reconcilerError) when (intakeError is not null)
+            {
+                throw new AggregateException(
+                    "Gateway intake and reconciliation failed to stop.",
+                    intakeError,
+                    reconcilerError);
+            }
+
+            if (intakeError is not null)
+            {
+                System.Runtime.ExceptionServices.ExceptionDispatchInfo
+                    .Capture(intakeError)
+                    .Throw();
+            }
+        }
     }
 
     [OpenCoWorkModule(

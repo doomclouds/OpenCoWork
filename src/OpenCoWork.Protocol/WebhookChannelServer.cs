@@ -63,7 +63,8 @@ public static class WebhookChannelServer
         Func<string, WebhookChannelBinding?> resolveChannel,
         IChannelInboundSink sink,
         TimeProvider? timeProvider = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        Action? started = null)
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(port, 1);
         ArgumentOutOfRangeException.ThrowIfGreaterThan(port, 65_535);
@@ -94,6 +95,7 @@ public static class WebhookChannelServer
                     timeProvider,
                     context.RequestAborted));
         await app.StartAsync(cancellationToken);
+        started?.Invoke();
         await app.WaitForShutdownAsync(cancellationToken);
     }
 

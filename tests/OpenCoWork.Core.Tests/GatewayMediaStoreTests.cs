@@ -147,6 +147,39 @@ public sealed class GatewayMediaStoreTests
             cancellationToken));
     }
 
+    [Fact]
+    public async Task Orphan_cleanup_deletes_only_old_unreferenced_internal_files()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        await using var files = await MediaWorkspace.CreateAsync(cancellationToken);
+        var registered = Assert.Single(await files.Store.CommitAsync(
+            "build-bot",
+            files.InboundId,
+            [new ChannelMediaInput("text/plain", "kept.txt", "a2VwdA==")],
+            cancellationToken));
+        var prefix = Path.Combine(
+            files.Paths.ExternalChannelMediaDirectory,
+            "build-bot",
+            "ff");
+        Directory.CreateDirectory(prefix);
+        var oldOrphan = Path.Combine(prefix, new string('f', 64));
+        var recentOrphan = Path.Combine(prefix, new string('e', 64));
+        await File.WriteAllTextAsync(oldOrphan, "old", cancellationToken);
+        await File.WriteAllTextAsync(recentOrphan, "recent", cancellationToken);
+        File.SetLastWriteTimeUtc(oldOrphan, DateTime.UtcNow.AddHours(-2));
+
+        var removed = await files.Store.CleanupOrphansAsync(
+            DateTimeOffset.UtcNow.AddHours(-1),
+            cancellationToken);
+
+        Assert.Equal(1, removed);
+        Assert.False(File.Exists(oldOrphan));
+        Assert.True(File.Exists(recentOrphan));
+        Assert.True(File.Exists(Path.Combine(
+            files.Paths.ExternalChannelMediaDirectory,
+            registered.RelativePath)));
+    }
+
     private sealed class MediaWorkspace : IAsyncDisposable
     {
         private readonly StateRuntime _state;
