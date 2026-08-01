@@ -1,10 +1,8 @@
 # OpenCoWork M9 DeepSeek Responses Provider 实施计划
 
-**Status:** In Progress；Gate 0 与 Outcome 1-8 已完成；Outcome 9 的离线 Runner、
-全量回归、双 RID 交叉发布和 `osx-arm64` 发布目录 Protocol TestClient 已在
-`be8c90053b468a8a1c8032e87e49cf968168ca2a` 完成。当前环境未提供
-`DEEPSEEK_API_KEY`，六场景真实 Provider 矩阵保持 NotRun；Outcome 9、Outcome 10
-和 M9 均未关闭。
+**Status:** In Progress；Gate 0 与 Outcome 1-9 已完成；`osx-arm64` 发布目录真实
+Provider 六场景已在 `058b505174602653385c51cb35fb654dd0b31262` 通过。Outcome 10
+的 `win-x64` 真机验证待执行，M9 未关闭。
 
 **Goal:** 用 DeepSeek 官方 Responses API 的专用最小实现替换现有通用
 OpenAI-compatible Chat Completions 与千问 Token Plan 路径；首发只支持
@@ -409,7 +407,7 @@ dotnet build OpenCoWork.slnx -c Release --no-restore
 - Commit:
   - `refactor(m9): remove legacy provider paths`
 
-### Outcome 9：交付发布 Runner、离线关闭矩阵与 `osx-arm64` 真机证据
+### Outcome 9：交付发布 Runner、离线关闭矩阵与 `osx-arm64` 真机证据（已完成）
 
 - Red:
   - 令 `ProviderReleaseValidationTests` 在未显式启用、Commit SHA 非法、Secret 缺失、
@@ -424,6 +422,8 @@ dotnet build OpenCoWork.slnx -c Release --no-restore
   - 真实矩阵分别执行 Text、Function、Web Search、Apply Patch、Usage 对账和 Secret
     Canary；证据只保存 Commit、RID、OS/runtime、模型/API、场景、终态、Token 数、
     时间和 Pass/Fail，不保存 Prompt、正文、Reasoning、Call/Response ID；
+  - Tokenizer/Provider Prompt 对账只使用规格冻结的有界容差，不向生产计数注入
+    服务端模板校准常量；越界时重新探针而不是扩大容差；
   - 运行全部离线 Release test/build/format、State v8 迁移/故障、SSE Fault Matrix、
     Authority/Patch/恢复 Corpus 和 Protocol TestClient；
   - 为 App 与 Protocol TestClient 按 `osx-arm64`、`win-x64` 分别独立 restore/publish，

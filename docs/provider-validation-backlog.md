@@ -2,14 +2,14 @@
 
 ## 状态与边界
 
-- 状态：M9 In Progress；离线实现与交叉发布已完成，双平台真实 Provider 验证待执行。
+- 状态：M9 In Progress；`osx-arm64` 真实 Provider 验证已通过，`win-x64` 待执行。
 - 2026-08-01 用户确认 1.0 Provider 实现收敛为 DeepSeek-only Responses API。
 - M9 首发只支持 DeepSeek 官方 `deepseek-v4-flash`。
 - `deepseek-v4-pro` 只有在 DeepSeek 官方支持 Responses API 且完成独立真实验证后
   才能激活；“未来会支持”不是当前兼容性声明。
 - 千问 Token Plan、其他 Provider 和通用 `openaiCompatible` Chat Completions
   协议路径退出 1.0 目标支持面。
-- `be8c90053b468a8a1c8032e87e49cf968168ca2a` 已移除生产
+- `058b505174602653385c51cb35fb654dd0b31262` 已移除生产
   OpenAI-compatible/Qwen 路径并完成 DeepSeek Responses 离线实现；在本表两条
   Flash 真实验证均通过前仍不得对外宣称 M9 支持完成。
 
@@ -44,7 +44,7 @@ Responses API 实现或当前 1.0 目标已经完成：
 
 | Provider | 平台 | 模型 | 协议 | 状态 | 进展/关闭条件 |
 | --- | --- | --- | --- | --- | --- |
-| DeepSeek 官方 | `osx-arm64` | `deepseek-v4-flash` | Responses API | Pending | `be8c900` 已完成全量离线回归、App/TestClient 发布和发布目录 Protocol TestClient；当前环境无 `DEEPSEEK_API_KEY`，真实 Text、Function、`web_search`、`custom/apply_patch`、Usage 与 Secret Canary 为 NotRun。 |
+| DeepSeek 官方 | `osx-arm64` | `deepseek-v4-flash` | Responses API | Passed | `058b505174602653385c51cb35fb654dd0b31262`；macOS 26.5.2 / .NET Runtime 10.0.10；从 `osx-arm64` 发布目录执行 Text、Function、`web_search`、`custom/apply_patch`、Usage、Secret Canary 六场景，均为 `response.completed` 且 Usage/容差/Secret/临时残留门禁通过；证据时间 `2026-08-01T09:33:19.229679Z`。 |
 | DeepSeek 官方 | `win-x64` | `deepseek-v4-flash` | Responses API | Pending | `be8c900` 从 macOS 完成 App/TestClient `win-x64` 交叉发布；仍须 Windows 真机从发布目录执行同等六场景，交叉发布不算真实证据。 |
 | DeepSeek 官方 | `osx-arm64`、`win-x64` | `deepseek-v4-pro` | Responses API | Deferred | DeepSeek 官方明确支持该模型的 Responses API，且用户激活双平台真实验证。 |
 
@@ -58,15 +58,20 @@ Responses API 实现或当前 1.0 目标已经完成：
 
 ## M9 当前实现证据（2026-08-01）
 
-- 基线：`be8c90053b468a8a1c8032e87e49cf968168ca2a`；默认离线回归为
-  `571` passed / `0` failed，真实 Provider 显式用例未启用；Release build 为
+- 基线：`058b505174602653385c51cb35fb654dd0b31262`；默认离线回归为
+  `577` passed / `0` failed，真实 Provider 显式用例未启用；Release build 为
   `0` warning / `0` error，format 与 diff 门禁通过。
 - 固定 Runner 只接受 `deepseek-v4-flash`、官方 `/v1/responses`、合法 Commit SHA
   和 `DEEPSEEK_API_KEY`；Text、Function、Web Search、Apply Patch、Usage、Secret
   Canary 任一 NotRun/Fail、Usage/终态异常、Secret 命中或临时残留都会拒绝 Pass。
-- `osx-arm64` 和 `win-x64` App/TestClient 已独立 restore/publish；macOS 发布目录
-  Protocol TestClient 的 7 个离线协议/恢复/安全场景通过。该结果不替代上表真实
-  DeepSeek 六场景，也不改变两平台 `Pending` 状态。
+- Usage 对账不修改生产 Tokenizer 计数：普通/Function/Apply Patch 的允许偏差为
+  `max(1536, ceil(Provider Prompt × 0.5%))`；服务端搜索因包含不可预知的检索上下文，
+  为 `max(8192, ceil(Provider Prompt × 0.5%))`；越界即失败并重新探针。
+- `osx-arm64` App/TestClient/Runner 已从该提交独立发布；Protocol TestClient 的 7 个
+  离线协议/恢复/安全场景通过。真实六场景聚合 Usage 分别为 Text `1954/21/1975`、
+  Function `4144/81/4225`、Web Search `6207/224/6431`、Apply Patch
+  `6613/103/6716`、Usage `1953/16/1969`、Secret Canary `1957/34/1991`
+  （Input/Output/Total），全部终态为 Completed，且未发现 Secret 或临时残留。
 
 ## 激活规则
 

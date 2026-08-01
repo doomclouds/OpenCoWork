@@ -207,6 +207,13 @@ DeepSeek 请求按无状态方式重建。不得依赖官方当前明确不支�
 - DeepSeek Usage 必须满足 Cached Prompt 不大于 Prompt、Reasoning Completion 不大于
   Completion，且 Total 等于 Prompt 与 Completion 之和。`ChatCompletionInvocationPurpose`
   重命名为 `ProviderInvocationPurpose`，现有 `response` / `compaction` JSON 值不变。
+- 本地 Tokenizer 继续负责调用前预算，Provider 终态 Usage 继续负责调用后权威计量；
+  不允许用服务端模板反推常量修改生产计数。真实发布对账只允许
+  `max(1536, ceil(providerPromptTokens × 0.005))` 的普通/Function/Apply Patch 偏差；
+  服务端 `web_search` 因包含本地无法预知的检索上下文，允许
+  `max(8192, ceil(providerPromptTokens × 0.005))`。本轮 macOS 探针观察到的最大
+  非搜索偏差为 `1183`、搜索偏差约为 `3605`；任一偏差越界必须失败并重新探针，
+  不得继续扩大容差或写入新的模型校准常量。
 - `ToolCallItemEntry` 增加向后兼容的 `ProviderCallKind`：旧 Journal 缺失时解释为
   `Function`，Apply Patch 使用 `CustomApplyPatch`。Reasoning 继续使用现有 Item 类型：
   当前活动 Turn 的工具循环和恢复需要回注，已完成的历史 Turn 不回注。

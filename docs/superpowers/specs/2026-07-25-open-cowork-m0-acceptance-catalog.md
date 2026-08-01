@@ -233,8 +233,8 @@ M11 仍须在最终发布候选上重跑完整双平台验收。
 | M9-ACC-015 | 官方 400/401/402/422 稳定失败，429/500/503 与超时按策略瞬态处理；只有已识别的上下文过长 400 触发压缩，所有重试遵守 Attempt 已提交边界。 | CAP-029, CAP-040 | FaultInjection | All | 全部官方 HTTP 错误码、响应头/空闲超时、首增量/Web Search/本地工具尝试前后断流和响应式压缩测试。 | Passed | — |
 | M9-ACC-016 | ThreadJournal 仍是唯一恢复事实源；进程重启不依赖官方明确不支持的 `previous_response_id`、`conversation` 或 `store`。 | CAP-020, CAP-039 | FaultInjection | All | 响应中断、进程重启、State v8 迁移/重建、Provider Action/Checkpoint 回放与工具副作用唯一性测试。 | Passed | — |
 | M9-ACC-017 | 旧 OpenAI-compatible/Qwen 配置和不受支持模型以稳定迁移诊断失败，不静默回退或别名映射。 | CAP-008, CAP-026 | MigrationTest | All | 旧配置 Corpus、Schema/Doctor/CLI 错误快照与无网络调用断言。 | Passed | — |
-| M9-ACC-018 | `deepseek-v4-flash` 在 `win-x64` 与 `osx-arm64` 发布目录通过 Responses API 真实冒烟、Function、`web_search`、`custom/apply_patch`、Usage 对账和 Secret Canary。 | CAP-026, CAP-027, CAP-028, CAP-036 | RealPlatformValidation | DualPlatform | 两平台独立发布目录记录、精确模型/API、Provider 工具、Usage、终态与全输出面 Secret 扫描。 | Planned | — |
-| M9-ACC-019 | DeepSeek 服务端 `web_search` 只有在有效 `NetworkRead` Authority 已授权时才进入请求并映射官方状态事件；本地 `web.fetch/CoreWebTool` 与模型侧 `file.write` 退出 Catalog。 | CAP-032, CAP-034, CAP-036 | SecurityTest | DualPlatform | Provider 请求 Snapshot、Web Search 事件 Fixture、Authority 拒绝/允许矩阵、旧工具不存在断言，以及双平台真实搜索。 | Planned | — |
+| M9-ACC-018 | `deepseek-v4-flash` 在 `win-x64` 与 `osx-arm64` 发布目录通过 Responses API 真实冒烟、Function、`web_search`、`custom/apply_patch`、Usage 对账和 Secret Canary。 | CAP-026, CAP-027, CAP-028, CAP-036 | RealPlatformValidation | DualPlatform | `osx-arm64` 已在 `058b505` 通过六场景、Usage、终态、Secret 与残留扫描；`win-x64` 真机待验。 | Planned | — |
+| M9-ACC-019 | DeepSeek 服务端 `web_search` 只有在有效 `NetworkRead` Authority 已授权时才进入请求并映射官方状态事件；本地 `web.fetch/CoreWebTool` 与模型侧 `file.write` 退出 Catalog。 | CAP-032, CAP-034, CAP-036 | SecurityTest | DualPlatform | Provider 请求 Snapshot、Authority 矩阵与旧工具退出已通过；`osx-arm64` 真实搜索在 `058b505` 通过，`win-x64` 待验。 | Planned | — |
 
 ## 12. M10 - Gateway and Operations（10，沿用稳定 `M9-ACC-*`）
 
