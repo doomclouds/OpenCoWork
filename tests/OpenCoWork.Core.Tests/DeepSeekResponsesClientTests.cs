@@ -213,7 +213,12 @@ public sealed class DeepSeekResponsesClientTests
                 "web_search_call",
             ],
             input.EnumerateArray().Select(item => item.GetProperty("type").GetString()));
-        Assert.Equal("thought", input[1].GetProperty("content").GetString());
+        Assert.Equal(
+            "reasoning_text",
+            input[1].GetProperty("content")[0].GetProperty("type").GetString());
+        Assert.Equal(
+            "thought",
+            input[1].GetProperty("content")[0].GetProperty("text").GetString());
         Assert.Equal("completed", input[6].GetProperty("status").GetString());
     }
 

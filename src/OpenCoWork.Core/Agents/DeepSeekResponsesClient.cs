@@ -336,7 +336,12 @@ internal sealed class DeepSeekResponsesClient
                 break;
             case "reasoning":
                 WriteOptionalString(writer, item, "id");
-                writer.WriteString("content", RequiredString(item, "content"));
+                writer.WriteStartArray("content");
+                writer.WriteStartObject();
+                writer.WriteString("type", "reasoning_text");
+                writer.WriteString("text", RequiredString(item, "content"));
+                writer.WriteEndObject();
+                writer.WriteEndArray();
                 break;
             case "function_call":
                 WriteCall(writer, item, "arguments");

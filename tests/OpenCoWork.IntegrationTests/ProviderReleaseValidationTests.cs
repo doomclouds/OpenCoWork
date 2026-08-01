@@ -17,6 +17,8 @@ public sealed class ProviderReleaseValidationTests(ITestOutputHelper output)
 {
     private const string CommitVariable =
         "OPENCOWORK_RELEASE_COMMIT_SHA";
+    private const int PromptUsageToleranceTokens = 1_536;
+    private const int WebSearchPromptUsageToleranceTokens = 8_192;
     private static readonly ProviderCase[] Paths =
     [
         new(
@@ -27,7 +29,7 @@ public sealed class ProviderReleaseValidationTests(ITestOutputHelper output)
     private static readonly ProviderScenario[] Scenarios =
     [
         new("text", "Reply with exactly OK."),
-        new("function", "Use file.list on the workspace root, then reply with exactly OK."),
+        new("function", "Use file.list on release-fixture, then reply with exactly OK."),
         new("webSearch", "Use web search to find the official DeepSeek Responses API page, then reply with exactly OK.", NetworkRead: true),
         new("applyPatch", "Use apply_patch to create m9-release-patch.txt containing OK, then reply with exactly OK.", WorkspaceWrite: true),
         new("usage", "Reply with exactly USAGE."),
@@ -123,6 +125,25 @@ public sealed class ProviderReleaseValidationTests(ITestOutputHelper output)
         Assert.Equal(6, complete.Scenarios.Count);
     }
 
+    [Theory]
+    [InlineData(1_000, 2_536, false, true)]
+    [InlineData(1_000, 2_537, false, false)]
+    [InlineData(1_000, 9_192, true, true)]
+    [InlineData(1_000, 9_193, true, false)]
+    [InlineData(398_000, 400_000, false, true)]
+    [InlineData(397_999, 400_000, false, false)]
+    public void Prompt_usage_reconciliation_has_bounded_protocol_tolerance(
+        int localPromptTokens,
+        int providerPromptTokens,
+        bool serverSearch,
+        bool expected) =>
+        Assert.Equal(
+            expected,
+            UsageMatches(
+                localPromptTokens,
+                providerPromptTokens,
+                serverSearch));
+
     private static async Task<ProviderReleaseEvidence> RunAsync(
         ProviderCase path,
         string commitSha,
@@ -168,13 +189,16 @@ public sealed class ProviderReleaseValidationTests(ITestOutputHelper output)
         {
             Directory.CreateDirectory(root);
             Directory.CreateDirectory(userProfile);
+            Directory.CreateDirectory(Path.Combine(root, "release-fixture"));
             var paths = new OpenCoWorkPaths(root);
             await WorkspaceInitializer.InitializeAsync(
                 paths,
                 TimeSpan.FromSeconds(5),
                 cancellationToken);
+            var userConfigDirectory = Path.Combine(userProfile, ".opencowork");
+            Directory.CreateDirectory(userConfigDirectory);
             await File.WriteAllTextAsync(
-                paths.ConfigPath,
+                Path.Combine(userConfigDirectory, "config.jsonc"),
                 Config(path, scenario),
                 cancellationToken);
 
@@ -318,13 +342,16 @@ public sealed class ProviderReleaseValidationTests(ITestOutputHelper output)
 
     private static bool UsageMatches(
         int localPromptTokens,
-        int providerPromptTokens)
+        int providerPromptTokens,
+        bool serverSearch)
     {
-        var maximumOverestimate = Math.Max(
-            32,
-            (int)Math.Ceiling(providerPromptTokens * 0.005));
-        return localPromptTokens >= providerPromptTokens &&
-               localPromptTokens - providerPromptTokens <= maximumOverestimate;
+        var absoluteTolerance = serverSearch
+            ? WebSearchPromptUsageToleranceTokens
+            : PromptUsageToleranceTokens;
+        var tolerance = Math.Max(
+            absoluteTolerance,
+            (providerPromptTokens + 199L) / 200L);
+        return Math.Abs((long)localPromptTokens - providerPromptTokens) <= tolerance;
     }
 
     private static bool ScenarioPassed(
@@ -444,6 +471,7 @@ public sealed class ProviderReleaseValidationTests(ITestOutputHelper output)
     private sealed class ProviderProbe
     {
         private readonly List<string> _reasoningDeltas = [];
+        private bool _currentRequestHasServerSearch;
 
         public int RequestCount { get; private set; }
 
@@ -476,12 +504,13 @@ public sealed class ProviderReleaseValidationTests(ITestOutputHelper output)
             DeepSeekResponsesRequest request)
         {
             RequestCount++;
-            LocalPromptTokens =
-                AgentFactory.CountPromptTokens(
-                    tokenizer,
-                    request.Instructions,
-                    request.Input,
-                    request.Tools);
+            _currentRequestHasServerSearch =
+                request.Tools.Any(tool => tool is DeepSeekWebSearchTool);
+            LocalPromptTokens = AgentFactory.CountPromptTokens(
+                tokenizer,
+                request.Instructions,
+                request.Input,
+                request.Tools);
         }
 
         public void Observe(DeepSeekResponseEvent item)
@@ -515,7 +544,8 @@ public sealed class ProviderReleaseValidationTests(ITestOutputHelper output)
                     {
                         PromptUsageMatches &= UsageMatches(
                             LocalPromptTokens,
-                            terminal.Usage.InputTokens);
+                            terminal.Usage.InputTokens,
+                            _currentRequestHasServerSearch);
                         UsageCount++;
                         Usage = Usage is null
                             ? terminal.Usage
