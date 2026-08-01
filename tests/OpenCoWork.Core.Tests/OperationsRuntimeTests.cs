@@ -182,6 +182,15 @@ public sealed class OperationsRuntimeTests
         Assert.Equal(archived.ProposalId, archiveReplay.ProposalId);
         Assert.Equal(archived.Revision, archiveReplay.Revision);
         Assert.Equal(archived.Evidence.GetRawText(), archiveReplay.Evidence.GetRawText());
+        var archiveConflict = await Assert.ThrowsAsync<OperationsServiceException>(() =>
+            insights.ArchiveAsync(
+                tracked.ProposalId,
+                archived.Revision,
+                cancellationToken));
+        Assert.Equal(
+            OperationsErrorCodes.InsightRevisionConflict,
+            archiveConflict.Code);
+        Assert.Equal(archived.Revision, archiveConflict.CurrentRevision);
 
         _ = await insights.RunAsync(InsightRunTrigger.Manual, cancellationToken);
         Assert.Equal(

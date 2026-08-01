@@ -121,11 +121,69 @@ public sealed class OperationsWireTests
         Assert.Equal("heartbeat/changed", output[2].GetProperty("method").GetString());
     }
 
+    [Fact]
+    public async Task Wire_14_maps_the_frozen_operations_error_classes()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var output = new List<JsonElement>();
+        await using var connection = CreateConnection(
+            output,
+            withOperations: true,
+            hub: new NullHubService(),
+            operations: new EmptyOperationsService(),
+            insights: new ConflictInsightService());
+        await InitializeAsync(connection, ["1.4"], cancellationToken);
+        var workspaceId = Guid.CreateVersion7();
+        var proposalId = Guid.CreateVersion7();
+        var commandId = Guid.CreateVersion7();
+        await connection.ProcessAsync(
+            JsonSerializer.SerializeToUtf8Bytes(new
+            {
+                jsonrpc = "2.0",
+                id = 2,
+                method = "hub/workspace/get",
+                @params = new { workspaceId },
+            }), cancellationToken);
+        await connection.ProcessAsync(
+            """{"jsonrpc":"2.0","id":3,"method":"trace/get","params":{"traceId":"00000000000000000000000000000000"}}"""u8.ToArray(),
+            cancellationToken);
+        await connection.ProcessAsync(
+            """{"jsonrpc":"2.0","id":4,"method":"heartbeat/get","params":{}}"""u8.ToArray(),
+            cancellationToken);
+        await connection.ProcessAsync(
+            JsonSerializer.SerializeToUtf8Bytes(new
+            {
+                jsonrpc = "2.0",
+                id = 5,
+                method = "insight/get",
+                @params = new { proposalId },
+            }), cancellationToken);
+        await connection.ProcessAsync(
+            JsonSerializer.SerializeToUtf8Bytes(new
+            {
+                jsonrpc = "2.0",
+                id = 6,
+                method = "insight/archive",
+                @params = new { proposalId, commandId, expectedRevision = 6 },
+            }), cancellationToken);
+
+        Assert.Equal([-32002, -32002, -32004, -32002, -32001],
+            output.Skip(1).Select(item => item.GetProperty("error")
+                .GetProperty("code").GetInt32()));
+        Assert.Equal(
+            7,
+            output[5].GetProperty("error").GetProperty("data")
+                .GetProperty("currentRevision").GetInt64());
+    }
+
     private static OpenCoWorkJsonRpcConnection CreateConnection(
         List<JsonElement> output,
         bool withOperations,
         IChannelService? channels = null,
-        IOperationsChangeSource? changes = null) =>
+        IOperationsChangeSource? changes = null,
+        IHubService? hub = null,
+        IOperationsQueryService? operations = null,
+        IWorkspaceInsightService? insights = null) =>
         new(
             DispatchProxy.Create<ISessionService, ThrowingProxy>(),
             capabilities: null,
@@ -134,12 +192,14 @@ public sealed class OperationsWireTests
             channels: withOperations
                 ? channels ?? DispatchProxy.Create<IChannelService, ThrowingProxy>()
                 : null,
-            hub: withOperations ? DispatchProxy.Create<IHubService, ThrowingProxy>() : null,
+            hub: withOperations
+                ? hub ?? DispatchProxy.Create<IHubService, ThrowingProxy>()
+                : null,
             operations: withOperations
-                ? DispatchProxy.Create<IOperationsQueryService, ThrowingProxy>()
+                ? operations ?? DispatchProxy.Create<IOperationsQueryService, ThrowingProxy>()
                 : null,
             insights: withOperations
-                ? DispatchProxy.Create<IWorkspaceInsightService, ThrowingProxy>()
+                ? insights ?? DispatchProxy.Create<IWorkspaceInsightService, ThrowingProxy>()
                 : null,
             changes,
             "/workspace",
@@ -222,6 +282,82 @@ public sealed class OperationsWireTests
             ChannelDeadLetterRetryRequest request,
             CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
+    }
+
+    private sealed class NullHubService : IHubService
+    {
+        public Task<HubWorkspaceSummary?> GetWorkspaceAsync(
+            Guid workspaceId,
+            CancellationToken cancellationToken = default) => Task.FromResult<HubWorkspaceSummary?>(null);
+
+        public Task<OperationsDashboardSnapshot?> GetDashboardAsync(
+            Guid workspaceId,
+            CancellationToken cancellationToken = default) => Task.FromResult<OperationsDashboardSnapshot?>(null);
+
+        public Task<IReadOnlyList<HubWorkspaceSummary>> ListWorkspacesAsync(
+            CancellationToken cancellationToken = default) => throw new NotSupportedException();
+
+        public Task<OperationsPage<HubWorkspaceSummary>> ListWorkspacesAsync(
+            HubWorkspaceQuery query,
+            CancellationToken cancellationToken = default) => throw new NotSupportedException();
+    }
+
+    private sealed class EmptyOperationsService : IOperationsQueryService
+    {
+        public Task<IReadOnlyList<TraceSpanSnapshot>> GetTraceAsync(
+            string traceId,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult<IReadOnlyList<TraceSpanSnapshot>>([]);
+
+        public Task<OperationsHeartbeatSnapshot?> GetHeartbeatAsync(
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult<OperationsHeartbeatSnapshot?>(null);
+
+        public Task<IReadOnlyList<UsageAggregate>> QueryUsageAsync(
+            UsageQuery query,
+            CancellationToken cancellationToken = default) => throw new NotSupportedException();
+
+        public Task<OperationsPage<TraceSummary>> ListTracesAsync(
+            TraceListQuery query,
+            CancellationToken cancellationToken = default) => throw new NotSupportedException();
+
+        public Task<OperationsDashboardSnapshot> GetDashboardAsync(
+            CancellationToken cancellationToken = default) => throw new NotSupportedException();
+    }
+
+    private sealed class ConflictInsightService : IWorkspaceInsightService
+    {
+        public Task<ImprovementProposalSnapshot?> GetAsync(
+            Guid proposalId,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult<ImprovementProposalSnapshot?>(null);
+
+        public Task<ImprovementProposalSnapshot> ArchiveAsync(
+            Guid proposalId,
+            long expectedRevision,
+            CancellationToken cancellationToken = default) =>
+            throw new OperationsServiceException(
+                OperationsErrorCodes.InsightRevisionConflict,
+                "private-detail",
+                currentRevision: 7);
+
+        public Task<InsightRunSnapshot> RunAsync(
+            InsightRunTrigger trigger,
+            CancellationToken cancellationToken = default) => throw new NotSupportedException();
+
+        public Task<InsightRunSnapshot> RunAsync(
+            InsightRunRequest request,
+            CancellationToken cancellationToken = default) => throw new NotSupportedException();
+
+        public Task<OperationsPage<ImprovementProposalSnapshot>> ListAsync(
+            int pageSize = 100,
+            string? cursor = null,
+            CancellationToken cancellationToken = default) => throw new NotSupportedException();
+
+        public Task<OperationsPage<InsightRunSnapshot>> ListRunsAsync(
+            int pageSize = 100,
+            string? cursor = null,
+            CancellationToken cancellationToken = default) => throw new NotSupportedException();
     }
 
     private class ThrowingProxy : DispatchProxy

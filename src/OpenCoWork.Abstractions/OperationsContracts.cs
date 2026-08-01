@@ -3,6 +3,38 @@ using System.Text.Json;
 
 namespace OpenCoWork.Abstractions;
 
+public static class OperationsErrorCodes
+{
+    public const string HubWorkspaceNotFound = "hub.workspaceNotFound";
+    public const string HubRegistryInvalid = "hub.registryInvalid";
+    public const string TraceNotFound = "trace.notFound";
+    public const string TraceUnavailable = "trace.unavailable";
+    public const string HeartbeatUnavailable = "heartbeat.unavailable";
+    public const string InsightNotFound = "insight.notFound";
+    public const string InsightRevisionConflict = "insight.revisionConflict";
+    public const string InsightInvalidState = "insight.invalidState";
+}
+
+public sealed class OperationsServiceException : Exception
+{
+    public OperationsServiceException(
+        string code,
+        string message,
+        bool retryable = false,
+        long? currentRevision = null)
+        : base(message)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(code);
+        Code = code;
+        Retryable = retryable;
+        CurrentRevision = currentRevision;
+    }
+
+    public string Code { get; }
+    public bool Retryable { get; }
+    public long? CurrentRevision { get; }
+}
+
 public enum OperationsTimeBucket
 {
     Hour,

@@ -302,14 +302,22 @@ internal sealed class WorkspaceInsightService(
                         transaction,
                         proposalId,
                         token);
-                    return replay is
+                    if (replay is
+                        {
+                            Status: ImprovementProposalStatus.Archived,
+                            Revision: var revision,
+                        } && revision == expectedRevision + 1)
                     {
-                        Status: ImprovementProposalStatus.Archived,
-                        Revision: var revision,
-                    } && revision == expectedRevision + 1
-                            ? (Snapshot: replay, Changed: false)
-                            : throw new InvalidOperationException(
-                                "Improvement Proposal changed or is not open.");
+                        return (Snapshot: replay, Changed: false);
+                    }
+                    throw new OperationsServiceException(
+                        replay is null
+                            ? OperationsErrorCodes.InsightNotFound
+                            : OperationsErrorCodes.InsightRevisionConflict,
+                        replay is null
+                            ? "Improvement Proposal was not found."
+                            : "Improvement Proposal revision changed.",
+                        currentRevision: replay?.Revision);
                 }
 
                 await ExecuteAsync(

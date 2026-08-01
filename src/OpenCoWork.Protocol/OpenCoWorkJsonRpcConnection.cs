@@ -393,6 +393,22 @@ public sealed partial class OpenCoWorkJsonRpcConnection : IAsyncDisposable
                     cancellationToken);
             }
         }
+        catch (OperationsServiceException exception)
+        {
+            if (hasId)
+            {
+                await SendBusinessErrorAsync(
+                    id,
+                    new SessionError(
+                        exception.Code,
+                        "Operations request failed.",
+                        exception.Retryable),
+                    currentSequence: null,
+                    exception.CurrentRevision,
+                    correlationId,
+                    cancellationToken);
+            }
+        }
         catch (OperationCanceledException) when (
             requestCancellation?.IsCancellationRequested == true &&
             !cancellationToken.IsCancellationRequested &&
@@ -2505,11 +2521,15 @@ public sealed partial class OpenCoWorkJsonRpcConnection : IAsyncDisposable
             ChannelErrorCodes.RevisionConflict or
             ChannelErrorCodes.IdempotencyConflict or
             ChannelErrorCodes.MessageConflict => ConflictError,
+            OperationsErrorCodes.InsightRevisionConflict => ConflictError,
             SessionErrorCodes.NotFound or
             SessionErrorCodes.QueueItemNotFound or
             AutomationErrorCodes.NotFound or
             ChannelErrorCodes.NotFound or
             ChannelErrorCodes.MediaNotFound => NotFoundError,
+            OperationsErrorCodes.HubWorkspaceNotFound or
+            OperationsErrorCodes.TraceNotFound or
+            OperationsErrorCodes.InsightNotFound => NotFoundError,
             SessionErrorCodes.InvalidState or
             SessionErrorCodes.InvalidCursor or
             SessionErrorCodes.DeleteTokenInvalid or
@@ -2519,6 +2539,8 @@ public sealed partial class OpenCoWorkJsonRpcConnection : IAsyncDisposable
             AutomationErrorCodes.InvalidCursor or
             ChannelErrorCodes.CursorInvalid or
             ChannelErrorCodes.StateUnavailable => InvalidStateError,
+            OperationsErrorCodes.HubRegistryInvalid or
+            OperationsErrorCodes.InsightInvalidState => InvalidStateError,
             SessionErrorCodes.ProjectionUnavailable or
             SessionErrorCodes.RecoveryRequired or
             SessionErrorCodes.RuntimeExecutorUnavailable or
@@ -2529,6 +2551,8 @@ public sealed partial class OpenCoWorkJsonRpcConnection : IAsyncDisposable
             ChannelErrorCodes.Unavailable or
             ChannelErrorCodes.RateLimited or
             ChannelErrorCodes.CredentialUnavailable => UnavailableError,
+            OperationsErrorCodes.TraceUnavailable or
+            OperationsErrorCodes.HeartbeatUnavailable => UnavailableError,
             _ => BusinessError,
         };
 

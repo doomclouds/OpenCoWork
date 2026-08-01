@@ -117,7 +117,9 @@ public sealed partial class OpenCoWorkJsonRpcConnection
     {
         RequireWire14();
         return await _hub!.GetWorkspaceAsync(request.WorkspaceId, cancellationToken)
-               ?? throw NotFound("hub.workspaceNotFound", "Workspace was not found.");
+               ?? throw NotFound(
+                   OperationsErrorCodes.HubWorkspaceNotFound,
+                   "Workspace was not found.");
     }
 
     [OpenCoWorkWireMethod(
@@ -131,7 +133,9 @@ public sealed partial class OpenCoWorkJsonRpcConnection
     {
         RequireWire14();
         return await _hub!.GetDashboardAsync(request.WorkspaceId, cancellationToken)
-               ?? throw NotFound("hub.workspaceNotFound", "Workspace was not found.");
+               ?? throw NotFound(
+                   OperationsErrorCodes.HubWorkspaceNotFound,
+                   "Workspace was not found.");
     }
 
     [OpenCoWorkWireMethod(
@@ -172,7 +176,7 @@ public sealed partial class OpenCoWorkJsonRpcConnection
         RequireWire14();
         var trace = await _operations!.GetTraceAsync(request.TraceId, cancellationToken);
         return trace.Count == 0
-            ? throw NotFound("trace.notFound", "Trace was not found.")
+            ? throw NotFound(OperationsErrorCodes.TraceNotFound, "Trace was not found.")
             : [.. trace];
     }
 
@@ -190,7 +194,7 @@ public sealed partial class OpenCoWorkJsonRpcConnection
             ? (await _hub!.GetDashboardAsync(workspaceId, cancellationToken))?.Heartbeat
             : await _operations!.GetHeartbeatAsync(cancellationToken);
         return heartbeat ?? throw NotFound(
-            "heartbeat.unavailable",
+            OperationsErrorCodes.HeartbeatUnavailable,
             "Workspace heartbeat is unavailable.");
     }
 
@@ -251,7 +255,9 @@ public sealed partial class OpenCoWorkJsonRpcConnection
     {
         RequireWire14();
         return await _insights!.GetAsync(request.ProposalId, cancellationToken)
-               ?? throw NotFound("insight.notFound", "Insight was not found.");
+               ?? throw NotFound(
+                   OperationsErrorCodes.InsightNotFound,
+                   "Insight was not found.");
     }
 
     [OpenCoWorkWireMethod(
