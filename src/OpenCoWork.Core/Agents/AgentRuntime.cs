@@ -1871,7 +1871,8 @@ internal sealed class AgentRuntimeExecutor : ISessionExecutor
         ISessionExecutionSink sink,
         CancellationToken cancellationToken)
     {
-        var anyToolAttempted = false;
+        var anyToolAttempted = frame.States.Any(state =>
+            state?.Invocation.AttemptCount > 0);
         for (var callIndex = 0;
              callIndex < frame.Content.Calls.Count;
              callIndex++)

@@ -7,6 +7,7 @@ using OpenCoWork.Abstractions;
 using OpenCoWork.Core.Agents;
 using OpenCoWork.Core.Configuration;
 using OpenCoWork.Core.Logging;
+using OpenCoWork.Core.Sessions;
 using OpenCoWork.Core.Tools;
 using OpenCoWork.Core.Workspaces;
 using Xunit;
@@ -224,6 +225,39 @@ public sealed class AgentRuntimeExecutorTests
             Assert.Single(
                 afterVisibleSink.Intents,
                 intent => intent is RecordAgentInvocationSnapshotIntent);
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Function_assembly_before_terminal_does_not_commit_the_attempt()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var directory = Path.Combine(
+            Path.GetTempPath(),
+            $"opencowork-function-assembly-retry-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        try
+        {
+            var client = new FunctionAssemblyTransientClient();
+            var pipeline = new CountingToolPipeline();
+            var sink = new RecordingSink();
+
+            await Executor(
+                    directory,
+                    "secret",
+                    _ => client,
+                    toolPipeline: pipeline)
+                .ExecuteAsync(Session(), sink, cancellationToken);
+
+            Assert.Equal(2, client.Attempts);
+            Assert.Equal([1, 2], client.AttemptNumbers);
+            Assert.Equal(0, pipeline.BindingCalls);
+            Assert.Empty(sink.Intents.OfType<RecordToolCallIntent>());
+            Assert.IsType<CompleteTurnIntent>(sink.Intents[^1]);
         }
         finally
         {
@@ -491,6 +525,47 @@ public sealed class AgentRuntimeExecutorTests
             Assert.Single(resumedClient.Requests);
             Assert.Equal(2, resumedClient.Requests[0].AttemptNumber);
             Assert.IsType<CompleteTurnIntent>(resumedSink.Intents[^1]);
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Resumed_tool_frame_keeps_a_prior_local_attempt_committed()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var directory = Path.Combine(
+            Path.GetTempPath(),
+            $"opencowork-tool-commit-recovery-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        try
+        {
+            var original = Session();
+            var invocation = Factory(directory, "secret")
+                .Create(
+                    original,
+                    Guid.CreateVersion7(),
+                    instructions: null)
+                .Snapshot;
+            var client = new AlwaysTransientClient();
+            var pipeline = new NoAttemptToolPipeline();
+            var sink = new RecordingSink();
+
+            await Executor(
+                    directory,
+                    "secret",
+                    _ => client,
+                    toolPipeline: pipeline)
+                .ExecuteAsync(
+                    PartiallyCompletedToolFrame(original, invocation),
+                    sink,
+                    cancellationToken);
+
+            Assert.Equal(1, pipeline.Calls);
+            Assert.Equal(1, client.Attempts);
+            Assert.IsType<FailTurnIntent>(sink.Intents[^1]);
         }
         finally
         {
@@ -1101,6 +1176,112 @@ public sealed class AgentRuntimeExecutorTests
                     IsEstimate: true)));
     }
 
+    private static AgentSession PartiallyCompletedToolFrame(
+        AgentSession original,
+        AgentInvocationSnapshot invocation)
+    {
+        var timestamp = original.Turn.UpdatedAt.AddMinutes(1);
+        using var firstArguments = JsonDocument.Parse("""{"path":"src"}""");
+        using var secondArguments = JsonDocument.Parse("""{"path":"tests"}""");
+        using var output = JsonDocument.Parse("""{"entries":[]}""");
+        var firstHash = Sha256(firstArguments.RootElement);
+        var secondHash = Sha256(secondArguments.RootElement);
+        var toolCallItemId = Guid.CreateVersion7(timestamp.AddTicks(1));
+        var toolInvocationId = Guid.CreateVersion7(timestamp.AddTicks(2));
+        var resultItemId = Guid.CreateVersion7(timestamp.AddTicks(3));
+        var result = new ToolResultSnapshot(
+            toolInvocationId,
+            "call-1",
+            ToolInvocationStatus.Completed,
+            output.RootElement,
+            Error: null,
+            IsTruncated: false,
+            OriginalByteCount: 14,
+            new string('d', 64),
+            AttemptCount: 1);
+        return new AgentSession(
+            original.Thread,
+            original.Turn,
+            [
+                .. original.ModelHistory,
+                new SessionItemSnapshot(
+                    toolCallItemId,
+                    original.Turn.TurnId,
+                    SessionItemType.ToolCall,
+                    SessionItemStatus.Completed,
+                    new ToolCallItemContent(
+                        providerRound: 1,
+                        agentMessageItemId: null,
+                        [
+                            new ToolCallItemEntry(
+                                "call-1",
+                                "file__list",
+                                firstArguments.RootElement,
+                                firstHash,
+                                sensitiveInputDetected: false),
+                            new ToolCallItemEntry(
+                                "call-2",
+                                "file__list",
+                                secondArguments.RootElement,
+                                secondHash,
+                                sensitiveInputDetected: false),
+                        ]),
+                    3,
+                    timestamp,
+                    timestamp),
+                new SessionItemSnapshot(
+                    resultItemId,
+                    original.Turn.TurnId,
+                    SessionItemType.ToolResult,
+                    SessionItemStatus.Completed,
+                    new ToolResultItemContent(result),
+                    4,
+                    timestamp,
+                    timestamp),
+            ],
+            invocation: invocation,
+            toolInvocations:
+            [
+                new AgentToolInvocationSnapshot(
+                    new ToolInvocationSnapshot(
+                        toolInvocationId,
+                        original.Thread.ThreadId,
+                        original.Turn.TurnId,
+                        "call-1",
+                        "file__list",
+                        ToolDefinitionId: null,
+                        RuntimeBindingId: null,
+                        invocation.Tools!.SnapshotSha256,
+                        firstHash,
+                        ToolInvocationStatus.Completed,
+                        AttemptCount: 1,
+                        resultItemId,
+                        ErrorCode: null,
+                        timestamp,
+                        timestamp,
+                        timestamp),
+                    toolCallItemId,
+                    CallIndex: 0),
+            ],
+            providerUsage:
+            [
+                new ProviderUsageSnapshot(
+                    invocation.InvocationId,
+                    AttemptNumber: 1,
+                    ProviderInvocationPurpose.Response,
+                    PromptTokens: 0,
+                    CompletionTokens: 0,
+                    TotalTokens: 0,
+                    ProviderUsageSource.LocalEstimate,
+                    IsEstimate: true),
+            ]);
+    }
+
+    private static string Sha256(JsonElement value) =>
+        Convert.ToHexString(
+                SHA256.HashData(ThreadJournal.Canonicalize(value)))
+            .ToLowerInvariant();
+
     private interface IResponsesTestClient
     {
         IAsyncEnumerable<DeepSeekResponseEvent> StreamAsync(
@@ -1201,6 +1382,62 @@ public sealed class AgentRuntimeExecutorTests
                 "transient",
                 retryAfter: TimeSpan.Zero,
                 isTransient: true);
+    }
+
+    private sealed class AlwaysTransientClient : IResponsesTestClient
+    {
+        public int Attempts { get; private set; }
+
+        public async IAsyncEnumerable<DeepSeekResponseEvent> StreamAsync(
+            DeepSeekResponsesRequest request,
+            [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            Attempts++;
+            await Task.Yield();
+            cancellationToken.ThrowIfCancellationRequested();
+            if (request.AttemptNumber > 0)
+            {
+                throw new ProviderException(
+                    AgentErrorCodes.ProviderServerUnavailable,
+                    "transient",
+                    retryAfter: TimeSpan.Zero,
+                    isTransient: true);
+            }
+
+            yield break;
+        }
+    }
+
+    private sealed class FunctionAssemblyTransientClient : IResponsesTestClient
+    {
+        public int Attempts { get; private set; }
+
+        public List<int> AttemptNumbers { get; } = [];
+
+        public async IAsyncEnumerable<DeepSeekResponseEvent> StreamAsync(
+            DeepSeekResponsesRequest request,
+            [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            Attempts++;
+            AttemptNumbers.Add(request.AttemptNumber);
+            await Task.Yield();
+            cancellationToken.ThrowIfCancellationRequested();
+            if (Attempts == 1)
+            {
+                yield return Function(
+                    "call-not-committed",
+                    "file__list",
+                    """{"path":"src"}""");
+                throw new ProviderException(
+                    AgentErrorCodes.ProviderServerUnavailable,
+                    "transient",
+                    retryAfter: TimeSpan.Zero,
+                    isTransient: true);
+            }
+
+            yield return Output("done");
+            yield return Completed();
+        }
     }
 
     private sealed class BlockingClient : IResponsesTestClient
@@ -1553,6 +1790,38 @@ public sealed class AgentRuntimeExecutorTests
                 OriginalByteCount: 15,
                 new string('a', 64),
                 AttemptCount: context.ReplayResult is null ? 1 : 0);
+            await sink.EmitAsync(
+                new RecordToolInvocationTerminalIntent(
+                    Guid.CreateVersion7(),
+                    result),
+                cancellationToken);
+            return result;
+        }
+    }
+
+    private sealed class NoAttemptToolPipeline : IToolInvocationPipeline
+    {
+        public int Calls { get; private set; }
+
+        public async ValueTask<ToolResultSnapshot> InvokeAsync(
+            ToolInvocationContext context,
+            ISessionExecutionSink sink,
+            CancellationToken cancellationToken)
+        {
+            Calls++;
+            var result = new ToolResultSnapshot(
+                context.ToolInvocationId,
+                context.ProviderToolCallId,
+                ToolInvocationStatus.Rejected,
+                Output: null,
+                new SessionError(
+                    ToolErrorCodes.NotFound,
+                    "Tool was not found.",
+                    IsRetryable: false),
+                IsTruncated: false,
+                OriginalByteCount: 0,
+                new string('e', 64),
+                AttemptCount: 0);
             await sink.EmitAsync(
                 new RecordToolInvocationTerminalIntent(
                     Guid.CreateVersion7(),

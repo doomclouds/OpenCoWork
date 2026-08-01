@@ -1,6 +1,6 @@
 # OpenCoWork M9 DeepSeek Responses Provider 实施计划
 
-**Status:** In Progress；Gate 0 与 Outcome 1-4 已完成，下一步为 Outcome 5。
+**Status:** In Progress；Gate 0 与 Outcome 1-5 已完成，下一步为 Outcome 6。
 
 **Goal:** 用 DeepSeek 官方 Responses API 的专用最小实现替换现有通用
 OpenAI-compatible Chat Completions 与千问 Token Plan 路径；首发只支持
