@@ -42,7 +42,6 @@ public sealed class ToolSnapshotTests
                 "terminal.stop",
                 "terminal.write",
                 "tool.search",
-                "web.fetch",
             ],
             first.Registrations.Select(CanonicalName));
         Assert.Equal(
@@ -68,7 +67,6 @@ public sealed class ToolSnapshotTests
                 ToolReplaySafety.Unsafe,
                 ToolReplaySafety.Unsafe,
                 ToolReplaySafety.Safe,
-                ToolReplaySafety.Unsafe,
             ],
             first.Registrations.Select(item => item.Definition.ReplaySafety));
         Assert.Equal(
@@ -106,7 +104,6 @@ public sealed class ToolSnapshotTests
                 ToolEffect.NetworkRead |
                 ToolEffect.ExternalMutation,
                 ToolEffect.None,
-                ToolEffect.NetworkRead,
             ],
             first.Registrations.Select(item => item.Definition.Effects));
         Assert.All(
@@ -146,7 +143,6 @@ public sealed class ToolSnapshotTests
                 "terminal__stop",
                 "terminal__write",
                 "tool__search",
-                "web__fetch",
             ],
             first.Registrations.Select(item =>
                 first.CanonicalToProviderNames[CanonicalName(item)]));
@@ -162,12 +158,11 @@ public sealed class ToolSnapshotTests
                 character is >= '0' and <= '9' or >= 'a' and <= 'f'));
 
         Assert.Equal(
-            [TimeSpan.FromSeconds(30), TimeSpan.FromMinutes(10), TimeSpan.FromMinutes(2)],
+            [TimeSpan.FromSeconds(30), TimeSpan.FromMinutes(10)],
             new[]
             {
                 RequiredBinding(runtime, "core.file.list.v1").DefaultTimeout,
                 RequiredBinding(runtime, "core.shell.run.v1").DefaultTimeout,
-                RequiredBinding(runtime, "core.web.fetch.v1").DefaultTimeout,
             });
         Assert.Equal(
             first.Registrations.Count,
@@ -209,7 +204,7 @@ public sealed class ToolSnapshotTests
                     new ToolsConfig()),
                 TestContext.Current.CancellationToken)));
 
-        Assert.All(snapshots, snapshot => Assert.Equal(22, snapshot.Registrations.Count));
+        Assert.All(snapshots, snapshot => Assert.Equal(21, snapshot.Registrations.Count));
         Assert.Single(snapshots.Select(snapshot => snapshot.SnapshotSha256).Distinct());
     }
 
@@ -249,7 +244,6 @@ public sealed class ToolSnapshotTests
                 "terminal.list",
                 "terminal.read",
                 "tool.search",
-                "web.fetch",
             ],
             plan.Registrations.Select(CanonicalName));
         Assert.Equal(
@@ -284,6 +278,25 @@ public sealed class ToolSnapshotTests
         Assert.Contains(
             networkDenied.Diagnostics,
             item => item.Code == ToolErrorCodes.AuthorityDenied);
+
+        var networkAllowed = runtime.BuildSnapshot(
+            AgentMode.Agent,
+            new ToolsConfig
+            {
+                Effects = new ToolEffectPoliciesConfig
+                {
+                    NetworkRead = ToolAuthorityDecision.Allow,
+                },
+            });
+        Assert.Single(
+            runtime.CreateProviderDefinitions(networkAllowed),
+            tool => tool is DeepSeekWebSearchTool);
+        Assert.DoesNotContain(
+            runtime.CreateProviderDefinitions(plan),
+            tool => tool is DeepSeekWebSearchTool);
+        Assert.DoesNotContain(
+            runtime.CreateProviderDefinitions(networkDenied),
+            tool => tool is DeepSeekWebSearchTool);
     }
 
     [Fact]

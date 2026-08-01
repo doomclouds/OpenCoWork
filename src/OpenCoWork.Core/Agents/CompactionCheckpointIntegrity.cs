@@ -182,6 +182,12 @@ internal static class CompactionCheckpointIntegrity
                 Append(canonical, NormalizeLf(item.GetProperty("output").GetString()!));
                 Append(canonical, item.GetProperty("call_id").GetString()!);
             }
+            else if (type == "web_search_call")
+            {
+                Append(canonical, "provider");
+                Append(canonical, NormalizeLf(item.GetRawText()));
+                Append(canonical, item.GetProperty("id").GetString()!);
+            }
 
             canonical.Append('\n');
         }

@@ -152,6 +152,39 @@ public sealed class AgentFactoryTests
     }
 
     [Fact]
+    public void Responses_history_replays_only_the_completed_provider_action()
+    {
+        var timestamp = DateTimeOffset.UtcNow;
+        var turnId = Guid.CreateVersion7(timestamp);
+        using var replay = JsonDocument.Parse(
+            """{"type":"web_search_call","id":"search-1","status":"completed"}""");
+        SessionItemSnapshot Action(
+            ProviderActionStatus status,
+            long sequence,
+            JsonElement? replayItem = null) =>
+            new(
+                Guid.CreateVersion7(timestamp.AddTicks(sequence)),
+                turnId,
+                SessionItemType.ProviderAction,
+                SessionItemStatus.Completed,
+                new ProviderActionItemContent("search-1", status, replayItem),
+                sequence,
+                timestamp,
+                timestamp);
+
+        var input = ProviderResponsesHistory.Build(
+        [
+            Action(ProviderActionStatus.InProgress, 1),
+            Action(ProviderActionStatus.Searching, 2),
+            Action(ProviderActionStatus.Completed, 3, replay.RootElement),
+        ]);
+
+        var item = Assert.Single(input);
+        Assert.Equal("web_search_call", item.GetProperty("type").GetString());
+        Assert.Equal("search-1", item.GetProperty("id").GetString());
+    }
+
+    [Fact]
     public void Custom_tokenizer_is_local_sha_pinned_and_uses_the_same_tiktoken_engine()
     {
         var directory = Path.Combine(
@@ -527,7 +560,7 @@ public sealed class AgentFactoryTests
                 first.Input,
                 item => item.TryGetProperty("content", out var content) &&
                         content.GetString() == "Current question");
-            Assert.Equal(22, first.Tools.Count);
+            Assert.Equal(21, first.Tools.Count);
             Assert.NotNull(first.Snapshot.Tools);
             Assert.Equal(capabilities.CurrentCatalog.Revision, first.Snapshot.CapabilityRevision);
             Assert.Empty(first.Snapshot.Skills!.Items);

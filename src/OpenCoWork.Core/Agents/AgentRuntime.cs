@@ -363,6 +363,7 @@ internal static class ProviderResponsesHistory
                     SessionItemType.UserMessage or
                     SessionItemType.AgentMessage or
                     SessionItemType.Reasoning or
+                    SessionItemType.ProviderAction or
                     SessionItemType.ToolCall or
                     SessionItemType.ToolResult)
             .OrderBy(item => item.Sequence)
@@ -397,6 +398,18 @@ internal static class ProviderResponsesHistory
                     if (item.TurnId == activeTurnId)
                     {
                         input.Add(Reasoning(Text(item)));
+                    }
+
+                    break;
+                case SessionItemType.ProviderAction:
+                    if (item.Content is not ProviderActionItemContent action)
+                    {
+                        throw InvalidHistory();
+                    }
+
+                    if (action.Status == ProviderActionStatus.Completed)
+                    {
+                        input.Add(action.ReplayItem!.Value.Clone());
                     }
 
                     break;
@@ -1317,6 +1330,7 @@ internal sealed class AgentRuntimeExecutor : ISessionExecutor
                     var content = new StringBuilder();
                     var reasoning = new StringBuilder();
                     var toolCalls = new List<ProviderToolCallFrame>();
+                    var providerActionCount = 0;
                     activeContentItemId = Guid.Empty;
                     activeReasoningItemId = Guid.Empty;
                     DeepSeekTerminalEvent? terminal = null;
@@ -1431,10 +1445,45 @@ internal sealed class AgentRuntimeExecutor : ISessionExecutor
                                 case DeepSeekTerminalEvent completed:
                                     terminal = completed;
                                     break;
-                                case DeepSeekWebSearchEvent:
-                                    throw new ProviderException(
-                                        AgentErrorCodes.ProviderUnsupportedToolCall,
-                                        "Provider returned a tool call that is not enabled yet.");
+                                case DeepSeekWebSearchEvent search:
+                                    var action = new ProviderActionItemContent(
+                                        search.CallId,
+                                        search.Status switch
+                                        {
+                                            DeepSeekWebSearchStatus.InProgress =>
+                                                ProviderActionStatus.InProgress,
+                                            DeepSeekWebSearchStatus.Searching =>
+                                                ProviderActionStatus.Searching,
+                                            DeepSeekWebSearchStatus.Completed =>
+                                                ProviderActionStatus.Completed,
+                                            _ => throw new ProviderException(
+                                                AgentErrorCodes.ProviderInvalidStream,
+                                                "Provider returned an invalid Web Search status."),
+                                        },
+                                        search.ReplayItem);
+                                    var actionItemId = Guid.CreateVersion7(
+                                        _timeProvider.GetUtcNow());
+                                    await sink.EmitAsync(
+                                        new StartItemIntent(
+                                            actionItemId,
+                                            SessionItemType.ProviderAction,
+                                            action),
+                                        cancellationToken);
+                                    await sink.EmitAsync(
+                                        new CompleteItemIntent(actionItemId),
+                                        cancellationToken);
+                                    providerActionCount++;
+                                    if (search.Status == DeepSeekWebSearchStatus.InProgress)
+                                    {
+                                        stepVisible = true;
+                                    }
+
+                                    if (search.ReplayItem is { } replayItem)
+                                    {
+                                        input.Add(replayItem.Clone());
+                                    }
+
+                                    break;
                             }
                         }
 
@@ -1641,7 +1690,7 @@ internal sealed class AgentRuntimeExecutor : ISessionExecutor
                                 "Provider returned tool calls with an invalid terminal status.");
                         }
 
-                        if (content.Length == 0)
+                        if (content.Length == 0 && providerActionCount == 0)
                         {
                             await FailAsync(
                                 sink,

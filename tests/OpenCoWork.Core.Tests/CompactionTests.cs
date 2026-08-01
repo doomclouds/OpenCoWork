@@ -39,7 +39,7 @@ public sealed class CompactionTests
             Assert.Equal([1, 2], client.Requests.Select(request => request.AttemptNumber));
             Assert.All(client.Requests, request => Assert.Equal("high", request.ReasoningEffort));
             Assert.Empty(client.Requests[0].Tools);
-            Assert.Equal(22, client.Requests[1].Tools.Count);
+            Assert.Equal(21, client.Requests[1].Tools.Count);
             var checkpoint = Assert.Single(
                     sink.Intents.OfType<RecordCompactionCheckpointIntent>())
                 .Checkpoint;

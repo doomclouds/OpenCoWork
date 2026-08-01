@@ -68,7 +68,6 @@ internal sealed partial class ToolRuntime
         : this(CreateCoreTools(
             fileTools: null,
             shellTool: null,
-            webTool: null,
             sourceControl: null,
             terminal: null,
             memory: null))
@@ -108,7 +107,6 @@ internal sealed partial class ToolRuntime
                     models?.Providers.Values
                         .Select(provider => provider.ApiKey.Environment) ??
                     []),
-                new CoreWebTool(),
                 sourceControl,
                 terminal,
                 memory),
@@ -456,7 +454,7 @@ internal sealed partial class ToolRuntime
     {
         ArgumentNullException.ThrowIfNull(snapshot);
         ArgumentNullException.ThrowIfNull(activatedDeferredTools);
-        return Array.AsReadOnly(snapshot.Registrations
+        var tools = snapshot.Registrations
             .Where(registration =>
                 registration.Exposure == ToolExposure.Direct ||
                 registration.Exposure == ToolExposure.Deferred &&
@@ -471,7 +469,15 @@ internal sealed partial class ToolRuntime
                         registration.Definition.Description,
                         registration.Definition.InputSchema);
             })
-            .ToArray());
+            .ToList();
+        if (snapshot.Authority.Single(policy =>
+                policy.Effect == ToolEffect.NetworkRead).Decision ==
+            ToolAuthorityDecision.Allow)
+        {
+            tools.Add(new DeepSeekWebSearchTool());
+        }
+
+        return tools.AsReadOnly();
     }
 
     public bool ValidateArguments(
@@ -1197,7 +1203,6 @@ internal sealed partial class ToolRuntime
     private static CoreTools CreateCoreTools(
         CoreFileTools? fileTools,
         CoreShellTool? shellTool,
-        CoreWebTool? webTool,
         CoreSourceControlTool? sourceControl,
         BackgroundTerminalRuntime? terminal,
         WorkspaceMemoryRuntime? memory)
@@ -1458,28 +1463,6 @@ internal sealed partial class ToolRuntime
             TimeSpan.FromSeconds(30),
             PlaceholderExecutor,
             ToolSearchAsync);
-        Add(
-            "web.fetch",
-            new ToolName("web", "fetch"),
-            "Fetch an unauthenticated HTTP or HTTPS text resource.",
-            """
-            {
-              "$schema":"https://json-schema.org/draft/2020-12/schema",
-              "type":"object",
-              "properties":{
-                "url":{"type":"string","minLength":1},
-                "method":{"type":"string","enum":["GET","HEAD"]}
-              },
-              "required":["url"],
-              "additionalProperties":false
-            }
-            """,
-            ToolEffect.NetworkRead,
-            ToolReplaySafety.Unsafe,
-            TimeSpan.FromMinutes(2),
-            webTool is null
-                ? PlaceholderExecutor
-                : webTool.FetchAsync);
         Add(
             "source_control.status",
             new ToolName("source_control", "status"),

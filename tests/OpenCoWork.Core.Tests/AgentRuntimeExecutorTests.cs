@@ -382,6 +382,88 @@ public sealed class AgentRuntimeExecutorTests
     }
 
     [Fact]
+    public async Task Web_search_records_provider_actions_and_replays_only_completed_item()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var directory = Path.Combine(
+            Path.GetTempPath(),
+            $"opencowork-web-search-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        try
+        {
+            var client = new WebSearchToolLoopClient();
+            var sink = new RecordingSink();
+            await Executor(
+                    directory,
+                    "secret",
+                    _ => client,
+                    toolsConfig: NetworkAllowed())
+                .ExecuteAsync(Session(), sink, cancellationToken);
+
+            Assert.Equal(2, client.Requests.Count);
+            Assert.Single(
+                client.Requests[0].Tools,
+                tool => tool is DeepSeekWebSearchTool);
+            Assert.Equal(
+                ["web_search_call", "function_call", "function_call_output"],
+                client.Requests[1].Input.TakeLast(3)
+                    .Select(item => item.GetProperty("type").GetString()));
+            var actions = sink.Intents
+                .OfType<StartItemIntent>()
+                .Where(intent => intent.Type == SessionItemType.ProviderAction)
+                .Select(intent => Assert.IsType<ProviderActionItemContent>(intent.Content))
+                .ToArray();
+            Assert.Equal(
+                [
+                    ProviderActionStatus.InProgress,
+                    ProviderActionStatus.Searching,
+                    ProviderActionStatus.Completed,
+                ],
+                actions.Select(action => action.Status));
+            Assert.Null(actions[0].ReplayItem);
+            Assert.Null(actions[1].ReplayItem);
+            Assert.NotNull(actions[2].ReplayItem);
+            Assert.DoesNotContain(
+                sink.Intents,
+                intent => intent is RecordToolInvocationStartedIntent started &&
+                          started.ProviderToolCallId == "search-1");
+            Assert.IsType<CompleteTurnIntent>(sink.Intents[^1]);
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Web_search_in_progress_prevents_transient_retry()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var directory = Path.Combine(
+            Path.GetTempPath(),
+            $"opencowork-web-search-retry-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        try
+        {
+            var client = new WebSearchTransientClient();
+            var sink = new RecordingSink();
+            await Executor(
+                    directory,
+                    "secret",
+                    _ => client,
+                    toolsConfig: NetworkAllowed())
+                .ExecuteAsync(Session(), sink, cancellationToken);
+
+            Assert.Equal(1, client.Attempts);
+            Assert.IsType<FailTurnIntent>(sink.Intents[^1]);
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task Deferred_tool_activation_changes_the_next_provider_round()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
@@ -932,6 +1014,15 @@ public sealed class AgentRuntimeExecutorTests
 
     private static ModelsConfig Models() =>
         new();
+
+    private static ToolsConfig NetworkAllowed() =>
+        new()
+        {
+            Effects = new ToolEffectPoliciesConfig
+            {
+                NetworkRead = ToolAuthorityDecision.Allow,
+            },
+        };
 
     private static AgentSession Session(
         ExecutionWorkspaceDescriptor? executionWorkspace = null)
@@ -1520,6 +1611,74 @@ public sealed class AgentRuntimeExecutorTests
             Started.TrySetResult();
             await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
             yield break;
+        }
+    }
+
+    private sealed class WebSearchToolLoopClient : IResponsesTestClient
+    {
+        public List<DeepSeekResponsesRequest> Requests { get; } = [];
+
+        public async IAsyncEnumerable<DeepSeekResponseEvent> StreamAsync(
+            DeepSeekResponsesRequest request,
+            [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            Requests.Add(request);
+            await Task.Yield();
+            cancellationToken.ThrowIfCancellationRequested();
+            if (Requests.Count == 1)
+            {
+                yield return new DeepSeekWebSearchEvent(
+                    "1:search-1",
+                    "search-1",
+                    DeepSeekWebSearchStatus.InProgress);
+                yield return new DeepSeekWebSearchEvent(
+                    "1:search-1",
+                    "search-1",
+                    DeepSeekWebSearchStatus.Searching);
+                yield return new DeepSeekWebSearchEvent(
+                    "1:search-1",
+                    "search-1",
+                    DeepSeekWebSearchStatus.Completed,
+                    JsonSerializer.SerializeToElement(new
+                    {
+                        type = "web_search_call",
+                        id = "search-1",
+                        status = "completed",
+                        action = new { type = "search", query = "OpenCoWork" },
+                    }));
+                yield return Function(
+                    "call-list",
+                    "file__list",
+                    """{"path":"."}""");
+                yield return Completed();
+                yield break;
+            }
+
+            yield return Output("done");
+            yield return Completed();
+        }
+    }
+
+    private sealed class WebSearchTransientClient : IResponsesTestClient
+    {
+        public int Attempts { get; private set; }
+
+        public async IAsyncEnumerable<DeepSeekResponseEvent> StreamAsync(
+            DeepSeekResponsesRequest request,
+            [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            Attempts++;
+            await Task.Yield();
+            cancellationToken.ThrowIfCancellationRequested();
+            yield return new DeepSeekWebSearchEvent(
+                "1:search-1",
+                "search-1",
+                DeepSeekWebSearchStatus.InProgress);
+            throw new ProviderException(
+                AgentErrorCodes.ProviderServerUnavailable,
+                "transient",
+                retryAfter: TimeSpan.Zero,
+                isTransient: true);
         }
     }
 
