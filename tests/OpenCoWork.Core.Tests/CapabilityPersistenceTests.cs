@@ -58,6 +58,43 @@ public sealed class CapabilityPersistenceTests
         Assert.Empty((await store.LoadUserOverridesAsync(cancellationToken)).SkillVariants);
     }
 
+    [Fact]
+    public async Task External_channel_trust_is_bound_to_workspace_source_and_digest()
+    {
+        using var files = new TempDirectory();
+        var store = files.CreateStore();
+        var workspace = Path.GetFullPath(files.Workspace);
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var trusted = new CapabilityTrustDecision(
+            workspace,
+            CapabilitySourceKind.Workspace,
+            "channel/build-bot",
+            "1",
+            ShaA,
+            [CapabilityTrustScope.ExternalChannel],
+            []);
+
+        await store.SaveTrustDecisionsAsync(
+            new TrustDecisionsDocument(1, [trusted]),
+            cancellationToken);
+
+        var decision = Assert.Single(
+            (await store.LoadTrustDecisionsAsync(cancellationToken)).Decisions);
+        Assert.True(decision.Matches(
+            workspace,
+            CapabilitySourceKind.Workspace,
+            "channel/build-bot",
+            "1",
+            ShaA));
+        Assert.False(decision.Matches(
+            workspace,
+            CapabilitySourceKind.Workspace,
+            "channel/build-bot",
+            "1",
+            ShaB));
+        Assert.Equal([CapabilityTrustScope.ExternalChannel], decision.AllowedScopes);
+    }
+
     [Theory]
     [InlineData(
         """

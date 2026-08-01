@@ -153,6 +153,7 @@ namespace OpenCoWork.App
                       chat      Run a local multi-turn agent conversation.
                       app-server  Serve the Desktop wire protocol.
                       acp       Serve the ACP v1 bridge over stdio.
+                      gateway   Run the local external-channel host.
 
                     Options:
                       --version  Show version information.
@@ -386,6 +387,49 @@ namespace OpenCoWork.App
                     acp: true,
                     cancellationToken));
             root.Subcommands.Add(acp);
+
+            var gatewayWorkspace = CreateWorkspaceOption();
+            var gatewayConfig = new Option<string?>("--config")
+            {
+                Description = "Use an additional JSONC configuration file.",
+            };
+            var gatewaySet = new Option<string[]>("--set")
+            {
+                Description = "Override configuration with path=value; repeatable.",
+            };
+            var gatewayStrictConfig = new Option<bool>("--strict-config")
+            {
+                Description = "Treat unknown configuration fields as failures.",
+            };
+            var gatewayPort = new Option<int?>("--port")
+            {
+                Description = "Override the loopback Webhook port.",
+            };
+            var gateway = new Command(
+                "gateway",
+                "Run the local external-channel host.")
+            {
+                gatewayWorkspace,
+                gatewayConfig,
+                gatewaySet,
+                gatewayStrictConfig,
+                gatewayPort,
+            };
+            gateway.SetAction((parseResult, cancellationToken) =>
+                RunGatewayAsync(
+                    parseResult.GetValue(gatewayWorkspace),
+                    ResolveOptionalPath(
+                        parseResult.GetValue(gatewayConfig),
+                        workingDirectory),
+                    parseResult.GetValue(gatewaySet) ?? [],
+                    parseResult.GetValue(gatewayStrictConfig),
+                    parseResult.GetValue(gatewayPort),
+                    workingDirectory,
+                    userProfileDirectory,
+                    parseResult.InvocationConfiguration.Error,
+                    configureServices,
+                    cancellationToken));
+            root.Subcommands.Add(gateway);
             return root;
         }
 
@@ -550,6 +594,89 @@ namespace OpenCoWork.App
             {
                 await error.WriteLineAsync(
                     redactor.RedactText(exception.Message));
+                return 1;
+            }
+        }
+
+        private static async Task<int> RunGatewayAsync(
+            string? explicitWorkspace,
+            string? explicitConfigPath,
+            IReadOnlyList<string> setOverrides,
+            bool strictConfig,
+            int? port,
+            string workingDirectory,
+            string userProfileDirectory,
+            TextWriter error,
+            Action<IServiceCollection>? configureServices,
+            CancellationToken cancellationToken)
+        {
+            var redactor = new SecretRedactor([]);
+            try
+            {
+                if (port is < 1 or > 65_535)
+                {
+                    await error.WriteLineAsync("--port must be between 1 and 65535.");
+                    return 2;
+                }
+
+                var paths = WorkspaceDiscovery.Discover(
+                    workingDirectory,
+                    explicitWorkspace);
+                var loaded = LoadConfig(
+                    paths,
+                    explicitConfigPath,
+                    setOverrides,
+                    strictConfig,
+                    userProfileDirectory,
+                    port is null
+                        ? null
+                        : new Dictionary<string, string>(StringComparer.Ordinal)
+                        {
+                            ["gateway.listenPort"] = port.Value.ToString(
+                                System.Globalization.CultureInfo.InvariantCulture),
+                        });
+                if (!loaded.Validation.IsValid || loaded.Snapshot is null)
+                {
+                    foreach (var diagnostic in loaded.Validation.Diagnostics)
+                    {
+                        await error.WriteLineAsync(
+                            $"{diagnostic.Code}: {diagnostic.Message}");
+                    }
+
+                    return 3;
+                }
+
+                var snapshot = loaded.Snapshot;
+                redactor = SecretRedactor.FromSnapshot(snapshot);
+                using var host = OpenCoWorkCompositionRoot.Build(
+                    [],
+                    paths.WorkspaceRoot,
+                    services => ConfigureRuntimeServices(
+                        services,
+                        snapshot,
+                        configureServices),
+                    snapshot.GetRequiredSection<RuntimeConfig>(),
+                    "gateway");
+                redactor = host.Services.GetRequiredService<SecretRedactor>();
+                await host.StartAsync(cancellationToken);
+                try
+                {
+                    await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                }
+                finally
+                {
+                    await host.StopAsync(CancellationToken.None);
+                }
+
+                return 0;
+            }
+            catch (Exception exception) when (
+                exception is not OperationCanceledException)
+            {
+                await error.WriteLineAsync(redactor.RedactText(exception.Message));
                 return 1;
             }
         }
@@ -727,7 +854,8 @@ namespace OpenCoWork.App
             string? explicitConfigPath,
             IReadOnlyList<string> setOverrides,
             bool strictConfig,
-            string userProfileDirectory) =>
+            string userProfileDirectory,
+            IReadOnlyDictionary<string, string>? dedicatedOptions = null) =>
             ConfigLoader.Load(
                 new ConfigLoadRequest(RuntimeCatalog.ConfigSections)
                 {
@@ -740,6 +868,8 @@ namespace OpenCoWork.App
                     ExplicitConfigPath = explicitConfigPath,
                     Environment = ReadEnvironment(),
                     SetOverrides = setOverrides,
+                    DedicatedOptions = dedicatedOptions ??
+                        new Dictionary<string, string>(StringComparer.Ordinal),
                     Strict = strictConfig,
                 });
 
@@ -752,6 +882,7 @@ namespace OpenCoWork.App
             services.AddSingleton(snapshot.GetRequiredSection<SessionConfig>());
             services.AddSingleton(snapshot.GetRequiredSection<ModelsConfig>());
             services.AddSingleton(snapshot.GetRequiredSection<ToolsConfig>());
+            services.AddSingleton(snapshot.GetRequiredSection<GatewayConfig>());
             services.AddSingleton(snapshot.GetRequiredSection<CoWorkConfig>());
             services.AddSingleton(snapshot.GetRequiredSection<AutomationsConfig>());
             configureServices?.Invoke(services);
@@ -814,6 +945,7 @@ namespace OpenCoWork.App
                     workspaceRoot));
             builder.Services.AddSingleton(runtimeConfig);
             builder.Services.AddSingleton(new SessionConfig());
+            builder.Services.AddSingleton(new GatewayConfig());
             configureServices?.Invoke(builder.Services);
             builder.Services.AddOpenCoWorkRuntime(
                 registry,
@@ -952,6 +1084,27 @@ namespace OpenCoWork.App
         Dependencies = ["session"],
         CanBePrimaryHost = true)]
     public sealed class AppServerModule : IOpenCoWorkModule
+    {
+        public void ConfigureServices(IServiceCollection services)
+        {
+        }
+
+        public ValueTask StartAsync(
+            IServiceProvider services,
+            CancellationToken cancellationToken) =>
+            ValueTask.CompletedTask;
+
+        public ValueTask StopAsync(
+            IServiceProvider services,
+            CancellationToken cancellationToken) =>
+            ValueTask.CompletedTask;
+    }
+
+    [OpenCoWorkModule(
+        "gateway",
+        Dependencies = ["session"],
+        CanBePrimaryHost = true)]
+    public sealed class GatewayModule : IOpenCoWorkModule
     {
         public void ConfigureServices(IServiceCollection services)
         {

@@ -61,6 +61,13 @@ public sealed class ConfigurationPipelineTests
             {"type":"object","properties":{"enabled":{"type":"boolean"},"maxConcurrentRuns":{"type":"integer","minimum":1,"maximum":16},"maximumAttentionTimeout":{"type":"string","format":"duration"},"maximumRunTimeout":{"type":"string","format":"duration"}},"additionalProperties":false}
             """),
         new(
+            "gateway",
+            typeof(GatewayConfig),
+            static () => new GatewayConfig(),
+            """
+            {"type":"object","properties":{"channels":{"type":"array","items":{"type":"object"}},"listenPort":{"type":"integer","minimum":1,"maximum":65535}},"additionalProperties":false}
+            """),
+        new(
             "teams",
             typeof(CoWorkConfig),
             static () => new CoWorkConfig(),
@@ -68,6 +75,111 @@ public sealed class ConfigurationPipelineTests
             {"type":"object","properties":{"dispatchLease":{"type":"string","format":"duration"},"leaseRenewalInterval":{"type":"string","format":"duration"},"maxConcurrentAgentRuns":{"type":"integer","minimum":1,"maximum":64},"maxConcurrentAgentRunsPerMission":{"type":"integer","minimum":1,"maximum":16},"maxDepth":{"type":"integer","minimum":1,"maximum":4},"maximumArtifactBytes":{"type":"integer","minimum":1,"maximum":67108864},"maximumDispatchAttempts":{"type":"integer","minimum":5,"maximum":5},"maximumMailboxMessageBytes":{"type":"integer","minimum":1,"maximum":65536},"maximumMembersPerMission":{"type":"integer","minimum":1,"maximum":16},"maximumOwnedFileBytes":{"type":"integer","minimum":1,"maximum":536870912},"maximumTasksPerMission":{"type":"integer","minimum":1,"maximum":256}},"additionalProperties":false}
             """),
     ];
+
+    [Fact]
+    public void Gateway_configuration_is_strict_bounded_and_disabled_without_channels()
+    {
+        var defaults = ConfigLoader.Load(new ConfigLoadRequest(Descriptors));
+
+        Assert.True(defaults.Validation.IsValid);
+        var gateway = defaults.Snapshot!.GetRequiredSection<GatewayConfig>();
+        Assert.Equal(9_200, gateway.ListenPort);
+        Assert.Empty(gateway.Channels);
+
+        using var files = new TempDirectory();
+        var valid = files.Write(
+            "gateway.jsonc",
+            """
+            {
+              "gateway": {
+                "listenPort": 9443,
+                "channels": [{
+                  "id": "build-bot",
+                  "kind": "webhook",
+                  "enabled": true,
+                  "callbackUrl": "https://example.test/opencowork/result",
+                  "credential": { "source": "environment", "environmentVariable": "BUILD_BOT_SECRET" },
+                  "maxConcurrentSends": 4,
+                  "minimumSendIntervalMs": 250
+                }]
+              }
+            }
+            """);
+        var loaded = ConfigLoader.Load(new ConfigLoadRequest(Descriptors)
+        {
+            WorkspaceConfigPath = valid,
+        });
+
+        Assert.True(
+            loaded.Validation.IsValid,
+            string.Join(
+                Environment.NewLine,
+                loaded.Validation.Diagnostics.Select(item =>
+                    $"{item.Code}:{item.Path}:{item.Message}")));
+        var channel = Assert.Single(
+            loaded.Snapshot!.GetRequiredSection<GatewayConfig>().Channels);
+        Assert.Equal("build-bot", channel.Id);
+        Assert.Equal(GatewayCredentialSource.Environment, channel.Credential.Source);
+        Assert.Equal("BUILD_BOT_SECRET", channel.Credential.EnvironmentVariable);
+        Assert.Equal(250, channel.MinimumSendIntervalMs);
+        var configurationSha256 = GatewayConfig.ComputeChannelSha256(channel);
+        Assert.Equal(64, configurationSha256.Length);
+        Assert.Equal(
+            configurationSha256,
+            GatewayConfig.ComputeChannelSha256(channel with { }));
+        Assert.NotEqual(
+            configurationSha256,
+            GatewayConfig.ComputeChannelSha256(
+                channel with
+                {
+                    CallbackUrl = "https://example.test/changed",
+                }));
+
+        var invalid = files.Write(
+            "invalid-gateway.jsonc",
+            """
+            {
+              "gateway": {
+                "listenPort": 9200,
+                "channels": [
+                  {
+                    "id": "Build_Bot",
+                    "kind": "future",
+                    "callbackUrl": "http://example.test/result",
+                    "credential": { "source": "environment" },
+                    "maxConcurrentSends": 17,
+                    "minimumSendIntervalMs": 60001
+                  },
+                  {
+                    "id": "Build_Bot",
+                    "kind": "webhook",
+                    "callbackUrl": "https://example.test/result",
+                    "credential": { "source": "osSecretStore" }
+                  }
+                ]
+              }
+            }
+            """);
+        var rejected = ConfigLoader.Load(new ConfigLoadRequest(Descriptors)
+        {
+            WorkspaceConfigPath = invalid,
+        });
+
+        Assert.False(rejected.Validation.IsValid);
+        Assert.Contains(
+            rejected.Validation.Diagnostics,
+            item => item.Path == "gateway" &&
+                    item.Message.Contains("Channel", StringComparison.Ordinal));
+
+        var invalidPort = ConfigLoader.Load(new ConfigLoadRequest(Descriptors)
+        {
+            SetOverrides = ["gateway.listenPort=0"],
+        });
+        Assert.False(invalidPort.Validation.IsValid);
+        Assert.Contains(
+            invalidPort.Validation.Diagnostics,
+            item => item.Path == "gateway.listenPort");
+    }
 
     [Fact]
     public void Automations_configuration_is_disabled_by_default_and_enforces_workspace_caps()

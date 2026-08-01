@@ -1,7 +1,7 @@
 # OpenCoWork M10 Gateway and Operations 实施计划
 
-**Status:** Ready；Design Freeze 已确认，实施未开始。本计划不授权实现、外部监听、
-Secret 写入、真实 Webhook 请求、真机验证、提交或推送。
+**Status:** In Progress；Gate 0 和 Outcome 1 已完成。2026-08-01 用户已授权按本计划实施
+并提交；公网访问、真实 Secret/第三方 Webhook、推送和非本机平台操作仍未授权。
 
 **Goal:** 在现有七程序集、单 Workspace SQLite、唯一 Session Core 和
 `WorkspaceRuntime` 生命周期内，交付内建 Webhook Gateway、可靠 Inbound/Outbox、

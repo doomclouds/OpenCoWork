@@ -53,12 +53,17 @@ public static class OpenCoWorkAgentExtensions
         });
         services.TryAddSingleton<ISensitiveDataService>(serviceProvider =>
             serviceProvider.GetRequiredService<SecretRedactor>());
-        services.TryAddSingleton<IProviderOsSecretStore>(
-            static _ => ProviderOsSecretStore.Create());
+        services.TryAddSingleton<IOsSecretStore>(
+            static _ => OsSecretStore.Create());
+        services.TryAddSingleton(serviceProvider =>
+            new ChannelCredentialService(
+                serviceProvider.GetRequiredService<IOsSecretStore>(),
+                serviceProvider.GetRequiredService<SecretRedactor>(),
+                serviceProvider.GetRequiredService<OpenCoWorkPaths>()));
         services.TryAddSingleton(serviceProvider =>
             new ProviderAuthService(
                 serviceProvider.GetRequiredService<ProviderDeclarationCatalog>(),
-                serviceProvider.GetRequiredService<IProviderOsSecretStore>(),
+                serviceProvider.GetRequiredService<IOsSecretStore>(),
                 serviceProvider.GetRequiredService<SecretRedactor>(),
                 paths: serviceProvider.GetRequiredService<OpenCoWorkPaths>()));
         services.TryAddSingleton(serviceProvider =>
@@ -1174,7 +1179,7 @@ internal sealed class AgentRuntimeExecutor : ISessionExecutor
         WorkspaceInstructionDocument? instructions;
         AgentInvocationDraft draft;
         IDisposable? pluginSnapshotLease = null;
-        ProviderSecretLease providerSecret;
+        SecretLease providerSecret;
         Dictionary<string, KnownToolCall> knownToolCalls;
         PendingToolFrame? pendingToolFrame;
         try
@@ -1205,7 +1210,7 @@ internal sealed class AgentRuntimeExecutor : ISessionExecutor
                 pendingToolFrame,
                 resumeCheckpoint);
             providerSecret = _auth?.Acquire(draft.Provider.AuthProfileId) ??
-                             new ProviderSecretLease(draft.Provider.LegacyApiKey);
+                             new SecretLease(draft.Provider.LegacyApiKey);
         }
         catch (AgentPreparationException exception)
         {
@@ -2379,7 +2384,7 @@ internal sealed class AgentRuntimeExecutor : ISessionExecutor
         int nextAttempt,
         int maximumAttempt,
         int targetPercent,
-        ProviderSecretLease providerSecret,
+        SecretLease providerSecret,
         CancellationToken invocationToken,
         CancellationToken cancellationToken)
     {
@@ -2547,7 +2552,7 @@ internal sealed class AgentRuntimeExecutor : ISessionExecutor
 
     private DeepSeekResponseStream Stream(
         ProviderModelRegistration provider,
-        ProviderSecretLease secret) =>
+        SecretLease secret) =>
         _clients(provider, secret.Secret!);
 
     private static CompactionSelection? SelectCompaction(

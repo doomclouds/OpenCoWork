@@ -10,7 +10,7 @@ using OpenCoWork.Core.Workspaces;
 
 namespace OpenCoWork.Core.Capabilities;
 
-internal interface IProviderOsSecretStore
+internal interface IOsSecretStore
 {
     bool IsAvailable { get; }
 
@@ -21,7 +21,7 @@ internal interface IProviderOsSecretStore
     void Clear(string account);
 }
 
-internal sealed class InMemoryOsSecretStore : IProviderOsSecretStore
+internal sealed class InMemoryOsSecretStore : IOsSecretStore
 {
     private readonly Dictionary<string, string> _values = new(StringComparer.Ordinal);
 
@@ -34,7 +34,7 @@ internal sealed class InMemoryOsSecretStore : IProviderOsSecretStore
     public void Clear(string account) => _values.Remove(account);
 }
 
-internal sealed class UnavailableOsSecretStore : IProviderOsSecretStore
+internal sealed class UnavailableOsSecretStore : IOsSecretStore
 {
     public bool IsAvailable => false;
 
@@ -48,23 +48,23 @@ internal sealed class UnavailableOsSecretStore : IProviderOsSecretStore
         new("The operating-system secret store is unavailable.");
 }
 
-internal static class ProviderOsSecretStore
+internal static class OsSecretStore
 {
-    public static IProviderOsSecretStore Create() =>
+    public static IOsSecretStore Create() =>
         OperatingSystem.IsMacOS()
-            ? new MacOsProviderSecretStore()
+            ? new MacOsSecretStore()
             : OperatingSystem.IsWindows()
-                ? new WindowsProviderSecretStore()
+                ? new WindowsSecretStore()
                 : new UnavailableOsSecretStore();
 }
 
-internal sealed class ProviderSecretLease : IDisposable
+internal sealed class SecretLease : IDisposable
 {
     private bool _disposed;
     private IDisposable? _redaction;
     private string? _secret;
 
-    internal ProviderSecretLease(string? secret, IDisposable? redaction = null)
+    internal SecretLease(string? secret, IDisposable? redaction = null)
     {
         _secret = secret;
         _redaction = redaction;
@@ -73,7 +73,7 @@ internal sealed class ProviderSecretLease : IDisposable
     public string? Secret =>
         !_disposed
             ? _secret
-            : throw new ObjectDisposedException(nameof(ProviderSecretLease));
+            : throw new ObjectDisposedException(nameof(SecretLease));
 
     public void Dispose()
     {
@@ -83,17 +83,126 @@ internal sealed class ProviderSecretLease : IDisposable
     }
 }
 
+internal sealed class ChannelCredentialService
+{
+    private readonly IOsSecretStore _store;
+    private readonly SecretRedactor _redactor;
+    private readonly Func<string, string?> _readEnvironmentVariable;
+    private readonly string _workspaceHash;
+
+    public ChannelCredentialService(
+        IOsSecretStore store,
+        SecretRedactor redactor,
+        OpenCoWorkPaths paths,
+        Func<string, string?>? readEnvironmentVariable = null)
+    {
+        _store = store ?? throw new ArgumentNullException(nameof(store));
+        _redactor = redactor ?? throw new ArgumentNullException(nameof(redactor));
+        ArgumentNullException.ThrowIfNull(paths);
+        _readEnvironmentVariable =
+            readEnvironmentVariable ?? Environment.GetEnvironmentVariable;
+        _workspaceHash = Convert.ToHexString(
+                SHA256.HashData(
+                    Encoding.UTF8.GetBytes(
+                        Path.TrimEndingDirectorySeparator(
+                            Path.GetFullPath(paths.WorkspaceRoot)))))
+            .ToLowerInvariant();
+    }
+
+    public SecretLease Acquire(GatewayChannelConfig channel)
+    {
+        ArgumentNullException.ThrowIfNull(channel);
+        string? secret;
+        try
+        {
+            secret = channel.Credential.Source switch
+            {
+                GatewayCredentialSource.Environment =>
+                    _readEnvironmentVariable(
+                        channel.Credential.EnvironmentVariable!),
+                GatewayCredentialSource.OsSecretStore when _store.IsAvailable =>
+                    _store.Read(Account(channel.Id)),
+                _ => null,
+            };
+        }
+        catch (Exception exception) when (
+            exception is Win32Exception or ExternalException or
+                PlatformNotSupportedException)
+        {
+            throw Unavailable(exception);
+        }
+
+        if (string.IsNullOrWhiteSpace(secret))
+        {
+            throw Unavailable();
+        }
+
+        return new SecretLease(secret, _redactor.RegisterSecret(secret));
+    }
+
+    public void Set(string channelId, string secret)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(channelId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(secret);
+        if (!_store.IsAvailable)
+        {
+            throw Unavailable();
+        }
+
+        try
+        {
+            _store.Set(Account(channelId), secret);
+        }
+        catch (Exception exception) when (
+            exception is Win32Exception or ExternalException or
+                PlatformNotSupportedException)
+        {
+            throw Unavailable(exception);
+        }
+    }
+
+    public void Clear(string channelId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(channelId);
+        if (!_store.IsAvailable)
+        {
+            throw Unavailable();
+        }
+
+        try
+        {
+            _store.Clear(Account(channelId));
+        }
+        catch (Exception exception) when (
+            exception is Win32Exception or ExternalException or
+                PlatformNotSupportedException)
+        {
+            throw Unavailable(exception);
+        }
+    }
+
+    private string Account(string channelId) =>
+        $"{_workspaceHash}:channel/{channelId}";
+
+    private static ChannelServiceException Unavailable(
+        Exception? innerException = null) =>
+        new(
+            ChannelErrorCodes.CredentialUnavailable,
+            "Channel credential is unavailable.",
+            innerException: innerException);
+}
+
 internal sealed class ProviderAuthService
 {
     private readonly ProviderDeclarationCatalog _declarations;
-    private readonly IProviderOsSecretStore _store;
+    private readonly IOsSecretStore _store;
     private readonly SecretRedactor _redactor;
     private readonly Func<string, string?> _readEnvironmentVariable;
     private readonly string _workspaceHash;
 
     public ProviderAuthService(
         ProviderDeclarationCatalog declarations,
-        IProviderOsSecretStore store,
+        IOsSecretStore store,
         SecretRedactor redactor,
         Func<string, string?>? readEnvironmentVariable = null,
         OpenCoWorkPaths? paths = null)
@@ -109,11 +218,11 @@ internal sealed class ProviderAuthService
                 Path.GetFullPath(paths?.WorkspaceRoot ?? Environment.CurrentDirectory)));
     }
 
-    public ProviderSecretLease Acquire(string? profileId)
+    public SecretLease Acquire(string? profileId)
     {
         if (profileId is null)
         {
-            return new ProviderSecretLease(secret: null);
+            return new SecretLease(secret: null);
         }
 
         if (string.Equals(
@@ -127,7 +236,7 @@ internal sealed class ProviderAuthService
         var profile = GetProfile(profileId);
         if (profile.Kind == ProviderAuthKind.None)
         {
-            return new ProviderSecretLease(secret: null);
+            return new SecretLease(secret: null);
         }
 
         if (profile.Kind != ProviderAuthKind.ApiKey)
@@ -159,7 +268,7 @@ internal sealed class ProviderAuthService
             throw AuthenticationFailed();
         }
 
-        return new ProviderSecretLease(secret, _redactor.RegisterSecret(secret));
+        return new SecretLease(secret, _redactor.RegisterSecret(secret));
     }
 
     public void Set(string profileId, string secret)
@@ -187,7 +296,7 @@ internal sealed class ProviderAuthService
         _store.Clear(Account(profile.Id));
     }
 
-    internal ProviderSecretLease AcquireStored(string profileId)
+    internal SecretLease AcquireStored(string profileId)
     {
         var profile = GetProfile(profileId);
         if (profile.SourceKind != ProviderAuthSourceKind.OsSecretStore ||
@@ -199,7 +308,7 @@ internal sealed class ProviderAuthService
         try
         {
             var secret = _store.Read(Account(profile.Id));
-            return new ProviderSecretLease(
+            return new SecretLease(
                 secret,
                 string.IsNullOrWhiteSpace(secret)
                     ? null
@@ -236,7 +345,7 @@ internal sealed class ProviderAuthService
 
     private string Account(string profileId) => $"{_workspaceHash}:{profileId}";
 
-    private ProviderSecretLease AcquireDeepSeek()
+    private SecretLease AcquireDeepSeek()
     {
         string? secret;
         try
@@ -259,7 +368,7 @@ internal sealed class ProviderAuthService
             throw AuthenticationFailed();
         }
 
-        return new ProviderSecretLease(secret, _redactor.RegisterSecret(secret));
+        return new SecretLease(secret, _redactor.RegisterSecret(secret));
     }
 
     private static AgentPreparationException AuthenticationFailed() =>
@@ -272,7 +381,7 @@ internal sealed class ProviderAuthService
             .ToLowerInvariant();
 }
 
-internal sealed class MacOsProviderSecretStore : IProviderOsSecretStore
+internal sealed class MacOsSecretStore : IOsSecretStore
 {
     private const int Success = 0;
     private const int ItemNotFound = -25300;
@@ -469,7 +578,7 @@ internal sealed class MacOsProviderSecretStore : IProviderOsSecretStore
     private static extern void CFRelease(IntPtr value);
 }
 
-internal sealed class WindowsProviderSecretStore : IProviderOsSecretStore
+internal sealed class WindowsSecretStore : IOsSecretStore
 {
     private const int CredentialTypeGeneric = 1;
     private const int CredentialPersistLocalMachine = 2;

@@ -35,8 +35,15 @@ public sealed class AutomationContractTests
             ["Approve", "Reject", "ProvideInput", "Fail", "Cancel"],
             Enum.GetNames<AutomationAttentionResolutionKind>());
         Assert.Equal(
-            CapabilityTrustScope.UnattendedAutomation,
-            Enum.GetValues<CapabilityTrustScope>()[^1]);
+            [
+                CapabilityTrustScope.PromptContribution,
+                CapabilityTrustScope.OutOfProcess,
+                CapabilityTrustScope.InProcessCode,
+                CapabilityTrustScope.TrustedHook,
+                CapabilityTrustScope.UnattendedAutomation,
+                CapabilityTrustScope.ExternalChannel,
+            ],
+            Enum.GetValues<CapabilityTrustScope>());
         Assert.Equal(
             "opencowork.automations",
             AutomationTrustBoundary.Source.Id);

@@ -1610,7 +1610,7 @@ internal sealed class McpOAuthTokenCache(
     string profileId)
     : ITokenCache, IDisposable
 {
-    private ProviderSecretLease? _lease;
+    private SecretLease? _lease;
 
     public ValueTask StoreTokensAsync(
         TokenContainer tokens,

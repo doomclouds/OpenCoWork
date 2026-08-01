@@ -11,6 +11,70 @@ namespace OpenCoWork.Core.Tests;
 public sealed class ProviderAuthTests
 {
     [Fact]
+    public void Channel_credentials_reuse_the_os_store_and_redaction_lease()
+    {
+        var (workspace, _) = CreateDirectories();
+        try
+        {
+            const string storedSecret = "channel-stored-secret";
+            const string environmentSecret = "channel-environment-secret";
+            var environment = new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["BUILD_BOT_SECRET"] = environmentSecret,
+            };
+            var paths = new OpenCoWorkPaths(workspace);
+            var store = new InMemoryOsSecretStore();
+            var redactor = new SecretRedactor([]);
+            var credentials = new ChannelCredentialService(
+                store,
+                redactor,
+                paths,
+                name => environment.GetValueOrDefault(name));
+            var stored = new GatewayChannelConfig
+            {
+                Id = "build-bot",
+                CallbackUrl = "https://example.test/result",
+                Credential = new GatewayCredentialConfig(),
+            };
+            credentials.Set(stored.Id, storedSecret);
+
+            using (var lease = credentials.Acquire(stored))
+            {
+                Assert.Equal(storedSecret, lease.Secret);
+                Assert.DoesNotContain(
+                    storedSecret,
+                    redactor.RedactText(storedSecret),
+                    StringComparison.Ordinal);
+            }
+
+            var fromEnvironment = stored with
+            {
+                Credential = new GatewayCredentialConfig
+                {
+                    Source = GatewayCredentialSource.Environment,
+                    EnvironmentVariable = "BUILD_BOT_SECRET",
+                },
+            };
+            using (var lease = credentials.Acquire(fromEnvironment))
+            {
+                Assert.Equal(environmentSecret, lease.Secret);
+            }
+
+            credentials.Clear(stored.Id);
+            var error = Assert.Throws<ChannelServiceException>(() =>
+                credentials.Acquire(stored));
+            Assert.Equal(ChannelErrorCodes.CredentialUnavailable, error.Code);
+            Assert.Contains(
+                CapabilityTrustScope.ExternalChannel,
+                Enum.GetValues<CapabilityTrustScope>());
+        }
+        finally
+        {
+            Directory.Delete(Path.GetDirectoryName(workspace)!, recursive: true);
+        }
+    }
+
+    [Fact]
     public void DeepSeek_auth_prefers_environment_then_uses_workspace_scoped_secret_store()
     {
         var (workspace, _) = CreateDirectories();

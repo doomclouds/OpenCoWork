@@ -37,6 +37,7 @@ public sealed class RuntimeCompositionIntegrationTests
                     module => Assert.IsType<AppServerModule>(module),
                     module => Assert.IsType<AutomationsModule>(module),
                     module => Assert.IsType<CliModule>(module),
+                    module => Assert.IsType<GatewayModule>(module),
                     module => Assert.IsType<TeamsModule>(module));
                 Assert.IsType<ModuleLifecycleCoordinator>(
                     Assert.Single(host.Services.GetServices<IHostedService>()));
@@ -53,7 +54,7 @@ public sealed class RuntimeCompositionIntegrationTests
                     host.Services.GetRequiredService<SecretRedactor>(),
                     host.Services.GetRequiredService<ISensitiveDataService>());
                 Assert.Equal(
-                    ["session", "acp", "app-server", "automations", "cli", "teams"],
+                    ["session", "acp", "app-server", "automations", "cli", "gateway", "teams"],
                     host.Services.GetRequiredService<ModuleRegistry>()
                         .StartupOrder.Select(module => module.Id));
                 var capabilities = host.Services
@@ -146,6 +147,39 @@ public sealed class RuntimeCompositionIntegrationTests
             }
 
             Directory.Delete(root);
+        }
+    }
+
+    [Fact]
+    public async Task Gateway_is_an_explicit_primary_host_without_a_second_lifecycle()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var root = Path.Combine(
+            Path.GetTempPath(),
+            $"opencowork-gateway-host-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            using var host = OpenCoWorkCompositionRoot.Build(
+                [],
+                root,
+                primaryModuleId: "gateway");
+            Assert.IsType<ModuleLifecycleCoordinator>(
+                Assert.Single(host.Services.GetServices<IHostedService>()));
+
+            await host.StartAsync(cancellationToken);
+
+            var runtime = host.Services.GetRequiredService<WorkspaceRuntime>();
+            Assert.Equal("gateway", runtime.StartedState.PrimaryHost.Id);
+            Assert.Equal(WorkspaceRuntimeStatus.Running, runtime.Status);
+
+            await host.StopAsync(cancellationToken);
+            Assert.Equal(WorkspaceRuntimeStatus.Stopped, runtime.Status);
+        }
+        finally
+        {
+            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            Directory.Delete(root, recursive: true);
         }
     }
 

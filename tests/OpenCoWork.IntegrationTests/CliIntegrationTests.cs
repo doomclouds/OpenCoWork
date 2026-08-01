@@ -171,6 +171,27 @@ public sealed class CliIntegrationTests
     }
 
     [Fact]
+    public async Task Gateway_help_exposes_only_local_host_options_without_starting_runtime()
+    {
+        var root = CreateTemporaryDirectory();
+
+        try
+        {
+            var result = await InvokeAsync(["gateway", "--help"], root);
+
+            Assert.Equal(0, result.ExitCode);
+            Assert.Contains("--workspace", result.StandardOutput, StringComparison.Ordinal);
+            Assert.Contains("--port", result.StandardOutput, StringComparison.Ordinal);
+            Assert.Equal(string.Empty, result.StandardError);
+            Assert.Empty(Directory.EnumerateFileSystemEntries(root));
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task Doctor_without_initialized_workspace_skips_dependent_checks_without_writes()
     {
         var root = CreateTemporaryDirectory();

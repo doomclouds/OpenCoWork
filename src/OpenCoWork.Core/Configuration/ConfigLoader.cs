@@ -112,6 +112,7 @@ public static class ConfigLoader
         Converters =
         {
             new JsonStringEnumConverter<ToolAuthorityDecision>(JsonNamingPolicy.CamelCase),
+            new JsonStringEnumConverter<GatewayCredentialSource>(JsonNamingPolicy.CamelCase),
             new DurationJsonConverter(),
         },
     };

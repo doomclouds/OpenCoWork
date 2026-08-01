@@ -9,8 +9,8 @@ Milestone standard: [README.md](README.md)
 - Status: In Progress
 - Progress: 7/12
 - Done: 7
-- In progress: 3
-- Not started: 2
+- In progress: 4
+- Not started: 1
 - Deferred: 0
 - Split: 0
 
@@ -77,11 +77,11 @@ Milestone standard: [README.md](README.md)
   - Related archive: None yet.
   - Completion signal: 通用 OpenAI-compatible Chat Completions 与千问 Token Plan 路径已由 DeepSeek-only 实现取代；`M9-ACC-011..017` 已通过离线验收，`osx-arm64` 发布目录 Protocol TestClient 与真实 DeepSeek 六场景已在 `058b505` 通过；`M9-ACC-018..019` 及完整 M9 仍等待 `win-x64` 真机关闭；`deepseek-v4-pro` 等官方支持后再激活。
 - [ ] 11. M10 - Gateway and Operations
-  - Status: Not Started
+  - Status: In Progress
   - Related spec: docs/superpowers/specs/2026-08-01-open-cowork-m10-gateway-operations-design.md (Design Freeze; 2026-08-01 用户确认)
-  - Related plan: docs/superpowers/plans/2026-08-01-open-cowork-m10-gateway-operations-implementation-plan.md (Ready; implementation not started)
+  - Related plan: docs/superpowers/plans/2026-08-01-open-cowork-m10-gateway-operations-implementation-plan.md (In Progress; Gate 0 and Outcome 1 complete)
   - Related archive: None yet.
-  - Completion signal: 入站去重、Outbox、Channel 隔离、Hub 和后台生命周期验收通过。
+  - Completion signal: Outcome 1 已完成配置、Channel 契约、Secret/Trust 复用与 gateway 主宿主骨架；State v9、可靠投递、Hub、Operations、Wire 1.4 和双平台验收待后续 Outcome。
 - [ ] 12. M11 - OpenCoWork 1.0 Closure
   - Status: Not Started
   - Related spec: docs/superpowers/specs/2026-07-25-open-cowork-runtime-1-0-roadmap.md
