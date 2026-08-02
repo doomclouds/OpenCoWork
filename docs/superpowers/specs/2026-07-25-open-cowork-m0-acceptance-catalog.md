@@ -13,6 +13,9 @@
 - 修订：2026-08-01，按用户决策新增 M9 DeepSeek Responses Provider，原
   Gateway/Operations 与 1.0 Closure 顺延为 M10/M11；既有 Acceptance ID
   保持稳定，新 M9 从未占用的 `M9-ACC-011` 继续编号
+- 修订：2026-08-02，M10 Gateway/Operations 十项验收已全部 Passed，汇总校正为
+  `101 Passed / 12 Planned`；按用户确认冻结 M11 未签名自包含发布、Journal v1
+  真实历史 Corpus、两平台两小时 Soak 与最小兼容矩阵，不新增或重排 Acceptance ID
 - 所属里程碑：OpenCoWork Runtime 1.0
 - 契约规格：
   [OpenCoWork M0 Contract Freeze](2026-07-25-open-cowork-m0-contract-freeze-design.md)
@@ -73,6 +76,12 @@ Token Plan、其他 Provider 与通用 OpenAI-compatible Chat Completions 路径
 验证后再激活。原 M9 Gateway/Operations 与原 M10 Closure 顺延为 M10/M11。
 Acceptance ID 是历史稳定标识，因此原 `M9-ACC-001..010` 继续标识 Gateway
 验收，原 `M10-ACC-001..012` 继续标识 Closure 验收，不因 Slice 顺延而重排。
+
+2026-08-02 用户确认 M11 的 1.0 发布包为未签名自包含 ZIP/tar.gz；Windows 代码签名、
+Apple Developer ID 和 Notarization 不属于本次关闭门禁，但产物和文档必须明确
+Unsigned 并保留 SBOM、SHA-256、安全提示、安装、升级、卸载与双平台真实冒烟。
+ThreadJournal 继续冻结真实 Schema v1，以至少两个历史提交 Corpus 验证兼容回放，
+不得为凑验收制造不存在的旧 Schema。
 
 2026-07-28 用户确认关闭 M4 功能需求，并将 `M4-ACC-006`、`M4-ACC-009` 缺少的
 `win-x64` 真机维度标记为 `Deferred`，统一进入
@@ -258,14 +267,14 @@ M11 仍须在最终发布候选上重跑完整双平台验收。
 | M10-ACC-001 | CAP-001 至 CAP-078 均有通过证据或明确 Deferred/Removed 结论，无开放缺口。 | CAP-001-CAP-078 | ContractSnapshot | All | 能力台账关闭报告与证据反向链接。 | Planned | — |
 | M10-ACC-002 | 公共 Wire 方法、DTO、错误码、配置 Schema 和默认值完成冻结审查。 | CAP-005, CAP-008, CAP-043, CAP-045 | ContractSnapshot | All | 1.0 Golden Snapshot 与 Breaking Change 审查。 | Planned | — |
 | M10-ACC-003 | SQLite 至少两个旧 Schema 可迁移，失败会恢复备份且状态可诊断。 | CAP-017, CAP-021 | MigrationTest | DualPlatform | 旧数据库 Corpus、Backup/Restore 与两平台日志。 | Planned | — |
-| M10-ACC-004 | ThreadJournal 至少两个旧 Schema 可 Upcast/回放，投影重建与升级原子切换正确。 | CAP-017, CAP-020, CAP-021, CAP-039 | MigrationTest | DualPlatform | 旧 Journal Corpus、Checksum 与重建快照。 | Planned | — |
+| M10-ACC-004 | ThreadJournal Schema v1 的至少两个真实历史 Corpus 可兼容回放，投影重建正确；未知 Schema 稳定拒绝。 | CAP-017, CAP-020, CAP-021, CAP-039 | MigrationTest | DualPlatform | 历史 Journal Corpus、来源摘要、Checksum 与重建快照。 | Planned | — |
 | M10-ACC-005 | Archive/Delete/Fork/Rollback 在崩溃、升级和恢复组合下保持契约。 | CAP-024 | FaultInjection | DualPlatform | 组合故障矩阵与 Reconciler 结果。 | Planned | — |
 | M10-ACC-006 | Secret、路径、插件、Hook、MCP、工具、媒体和 Worktree 通过完整安全审计。 | CAP-010, CAP-018, CAP-027, CAP-034, CAP-041, CAP-059, CAP-071, CAP-074 | SecurityTest | DualPlatform | Threat Matrix、Canary、越界 Corpus 和修复证据。 | Planned | — |
 | M10-ACC-007 | CLI、AppServer、ACP、Gateway 从初始化到恢复完成端到端真实模型验收。 | CAP-019, CAP-025, CAP-043, CAP-047, CAP-067 | RealPlatformValidation | DualPlatform | Windows PC 与 M4 Mac mini 的 E2E 记录。 | Planned | — |
-| M10-ACC-008 | Provider、Plugin、MCP 和 LSP 兼容矩阵覆盖支持版本、失败隔离和升级。 | CAP-026, CAP-050, CAP-052 | RealPlatformValidation | DualPlatform | 兼容矩阵报告与供应链摘要。 | Planned | — |
-| M10-ACC-009 | 性能、并发、长时间运行和资源清理满足发布预算且无 P0/P1。 | CAP-022, CAP-055, CAP-065, CAP-070, CAP-077 | PerformanceTest | DualPlatform | Soak、并发、内存/句柄/进程报告。 | Planned | — |
-| M10-ACC-010 | `win-x64` 在干净 Windows 机器完成安装、升级、卸载和真实模型冒烟。 | CAP-011 | RealPlatformValidation | win-x64 | 签名产物、安装日志、卸载残留与冒烟报告。 | Planned | — |
-| M10-ACC-011 | `osx-arm64` 在 M4 Mac mini 完成安装、升级、卸载和真实模型冒烟。 | CAP-011 | RealPlatformValidation | osx-arm64 | 签名/Notarization 产物、安装日志和冒烟报告。 | Planned | — |
+| M10-ACC-008 | DeepSeek-only Provider、OpenCoWork 1.0 Plugin 与仓库 MCP/LSP Fixture 兼容矩阵覆盖支持版本、失败隔离和升级。 | CAP-026, CAP-050, CAP-052 | RealPlatformValidation | DualPlatform | 最小兼容矩阵报告与供应链摘要。 | Planned | — |
+| M10-ACC-009 | 现有固定负载、每平台两小时 Soak、并发和资源清理满足冻结基线 `2×` 上限且无 P0/P1。 | CAP-022, CAP-055, CAP-065, CAP-070, CAP-077 | PerformanceTest | DualPlatform | 固定负载、Soak、内存/句柄/进程与基线对比报告。 | Planned | — |
+| M10-ACC-010 | `win-x64` 在干净 Windows 机器完成未签名自包含 ZIP 的安装、升级、卸载和真实模型冒烟。 | CAP-011 | RealPlatformValidation | win-x64 | Unsigned 包摘要、安装日志、SmartScreen 说明、卸载残留与冒烟报告。 | Planned | — |
+| M10-ACC-011 | `osx-arm64` 在 M4 Mac mini 完成未签名自包含 tar.gz 的安装、升级、卸载和真实模型冒烟。 | CAP-011 | RealPlatformValidation | osx-arm64 | Unsigned 包摘要、安装日志、Gatekeeper 说明、卸载残留与冒烟报告。 | Planned | — |
 | M10-ACC-012 | 用户、协议、插件文档、Release Notes、SBOM、校验和与诊断说明齐全。 | CAP-051, CAP-072, CAP-078 | ManualValidation | All | 发布包清单、文档链接、SBOM 与校验和验证。 | Planned | — |
 
 ## 14. 数量与关闭规则
@@ -282,9 +291,9 @@ M11 仍须在最终发布候选上重跑完整双平台验收。
 | M7 | 10 | Passed |
 | M8 | 9 | Passed |
 | M9 | 9 | Passed |
-| M10 | 10 | Planned |
+| M10 | 10 | Passed |
 | M11 | 12 | Planned |
-| **Total** | **113** | **91 Passed / 22 Planned** |
+| **Total** | **113** | **101 Passed / 12 Planned** |
 
 每个 Slice 标记 Done 前必须：
 

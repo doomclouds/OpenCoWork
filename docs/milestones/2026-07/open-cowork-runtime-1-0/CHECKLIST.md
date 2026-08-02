@@ -9,8 +9,8 @@ Milestone standard: [README.md](README.md)
 - Status: In Progress
 - Progress: 11/12
 - Done: 11
-- In progress: 0
-- Not started: 1
+- In progress: 1
+- Not started: 0
 - Deferred: 0
 - Split: 0
 
@@ -83,11 +83,11 @@ Milestone standard: [README.md](README.md)
   - Related archive: docs/superpowers/archives/2026-08/2026-08-01-open-cowork-m10-gateway-operations-archives.md
   - Completion signal: Gateway、Inbound/Outbox、Hub、Operations、Wire 1.4 与 State v9 已通过 win-x64、osx-arm64 发布目录 Protocol 8 场景、Runner 13 项、OS Secret、Secret Canary 和残留检查；M9-ACC-001 至 M9-ACC-010 全部 Passed，M11 仍须重跑最终发布候选。
 - [ ] 12. M11 - OpenCoWork 1.0 Closure
-  - Status: Not Started
-  - Related spec: docs/superpowers/specs/2026-07-25-open-cowork-runtime-1-0-roadmap.md
-  - Related plan: None yet.
+  - Status: In Progress
+  - Related spec: docs/superpowers/specs/2026-08-02-open-cowork-m11-runtime-1-0-closure-design.md
+  - Related plan: docs/superpowers/plans/2026-08-02-open-cowork-m11-runtime-1-0-closure-implementation-plan.md
   - Related archive: None yet.
-  - Completion signal: 能力台账清零且 win-x64、osx-arm64 发布候选通过完整验收。
+  - Completion signal: M11 设计与独立实施计划已冻结未签名自包含双平台发布、真实历史 Journal v1 Corpus、最小兼容矩阵和每平台两小时 Soak；RC 真机验证与交付归档仍待完成。
 
 ## Update Rules
 

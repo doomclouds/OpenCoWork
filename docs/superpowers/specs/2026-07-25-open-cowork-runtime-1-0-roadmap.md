@@ -640,15 +640,20 @@ DeepSeek 专用 Responses API 实现，并形成 1.0 唯一真实 Provider 路�
 
 目标：不再增加大型子系统，关闭契约缺口并形成可发布产品。
 
+独立设计：
+[M11 Runtime 1.0 Closure 设计规格](2026-08-02-open-cowork-m11-runtime-1-0-closure-design.md)。
+施工顺序与 Commit 边界见
+[M11 Runtime 1.0 Closure 实施计划](../plans/2026-08-02-open-cowork-m11-runtime-1-0-closure-implementation-plan.md)。
+
 包含：
 
 - M0 能力台账逐项关闭；
 - Protocol 方法、DTO、配置 Schema 和默认值审查；
-- SQLite Migration 和 ThreadJournal 多版本回放；
-- Provider、Plugin、MCP 兼容矩阵；
+- SQLite Migration 和 ThreadJournal Schema v1 真实历史 Corpus 回放；
+- DeepSeek-only Provider、Plugin、MCP/LSP 最小兼容矩阵；
 - CLI、AppServer、ACP、Gateway 端到端测试；
-- 安全、故障注入、性能和长时间稳定性；
-- 安装、升级、卸载与双平台发布；
+- 安全、故障注入、现有固定负载和每平台两小时 Soak；
+- 未签名自包含包的安装、升级、卸载与双平台发布；
 - 用户、协议和插件开发文档；
 - Release Notes、SBOM 与校验和。
 
@@ -656,12 +661,14 @@ DeepSeek 专用 Responses API 实现，并形成 1.0 唯一真实 Provider 路�
 
 - 临门新增大型功能；
 - Linux 或 Intel macOS 正式支持。
+- Windows/macOS 代码签名与 macOS Notarization。
 
 完成信号：
 
 - 没有未解释的契约缺口和 P0/P1 缺陷；
 - 所有迁移、恢复和故障场景有自动化证据；
-- `win-x64` 与 `osx-arm64` 在干净机器通过安装和真实模型冒烟；
+- `win-x64` 与 `osx-arm64` 在干净机器通过未签名自包含包安装和
+  `deepseek-v4-flash` 真实模型冒烟；
 - 公开协议和插件契约开始遵守 SemVer。
 
 ## 10. 发布阶段
