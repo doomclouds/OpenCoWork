@@ -180,6 +180,113 @@ public sealed class PluginRuntimeTests
     }
 
     [Fact]
+    public async Task Upgrade_disable_enable_and_remove_refresh_catalog_and_runtime()
+    {
+        var (root, workspace, user) = PluginPackageTests.CreateDirectories();
+        try
+        {
+            var paths = new CapabilityPersistencePaths(
+                new OpenCoWorkPaths(workspace),
+                user);
+            var files = new CapabilityFileStore(paths);
+            using var store = new PluginPackageStore(paths);
+            var tools = new ToolRuntime(paths.WorkspacePaths);
+            var plugins = new PluginRuntime(paths, files, store, tools);
+            var runtime = CreateCapabilityRuntime(paths, files, plugins);
+            await runtime.StartAsync(TestContext.Current.CancellationToken);
+            var manager = new PluginManager(store, files, runtime);
+            var assembly = Path.Combine(
+                AppContext.BaseDirectory,
+                "OpenCoWork.PluginFixture.dll");
+            var versionOne = PluginPackageTests.CreateToolPackage(
+                root,
+                "1.0.0",
+                assembly);
+
+            var installed = await manager.InstallLocalAsync(
+                versionOne,
+                TestContext.Current.CancellationToken);
+            Assert.Equal(CapabilityStatus.PendingTrust, installed.Status);
+
+            var versionTwo = PluginPackageTests.CreateToolPackage(
+                root,
+                "1.1.0",
+                assembly);
+            var storedUpgrade = await store.StoreLocalAsync(
+                versionTwo,
+                TestContext.Current.CancellationToken);
+            await files.SaveTrustDecisionsAsync(
+                new TrustDecisionsDocument(
+                    1,
+                    [new CapabilityTrustDecision(
+                        workspace,
+                        CapabilitySourceKind.Plugin,
+                        storedUpgrade.Manifest.Id,
+                        storedUpgrade.Manifest.Version,
+                        storedUpgrade.ContentSha256,
+                        [CapabilityTrustScope.InProcessCode],
+                        [])]),
+                TestContext.Current.CancellationToken);
+
+            var upgraded = await manager.InstallLocalAsync(
+                versionTwo,
+                TestContext.Current.CancellationToken);
+            Assert.Equal("1.1.0", upgraded.Version);
+            Assert.Equal(CapabilityStatus.Ready, upgraded.Status);
+            Assert.Equal(
+                "1.1.0",
+                Assert.Single(
+                    (await files.LoadPluginLockAsync(
+                        TestContext.Current.CancellationToken)).Plugins).Version);
+            Assert.Contains(
+                tools.Registrations,
+                item => item.Definition.Id.SourceKind == ToolSourceKind.PluginNative);
+
+            await manager.SetEnabledAsync(
+                upgraded.Id,
+                enabled: false,
+                TestContext.Current.CancellationToken);
+            Assert.Equal(
+                CapabilityStatus.Disabled,
+                Assert.Single(runtime.CurrentCatalog.Items, item =>
+                    item.Kind == CapabilityKind.Plugin && item.Id == upgraded.Id).Status);
+            Assert.DoesNotContain(
+                tools.Registrations,
+                item => item.Definition.Id.SourceKind == ToolSourceKind.PluginNative);
+
+            await manager.SetEnabledAsync(
+                upgraded.Id,
+                enabled: true,
+                TestContext.Current.CancellationToken);
+            Assert.Equal(
+                CapabilityStatus.Ready,
+                Assert.Single(runtime.CurrentCatalog.Items, item =>
+                    item.Kind == CapabilityKind.Plugin && item.Id == upgraded.Id).Status);
+            Assert.Contains(
+                tools.Registrations,
+                item => item.Definition.Id.SourceKind == ToolSourceKind.PluginNative);
+
+            await manager.RemoveAsync(
+                upgraded.Id,
+                TestContext.Current.CancellationToken);
+            Assert.Empty(
+                (await files.LoadPluginLockAsync(
+                    TestContext.Current.CancellationToken)).Plugins);
+            Assert.DoesNotContain(
+                runtime.CurrentCatalog.Items,
+                item => item.Kind == CapabilityKind.Plugin && item.Id == upgraded.Id);
+            Assert.DoesNotContain(
+                tools.Registrations,
+                item => item.Definition.Id.SourceKind == ToolSourceKind.PluginNative);
+            await runtime.StopAsync(TestContext.Current.CancellationToken);
+        }
+        finally
+        {
+            DeleteTestDirectory(root);
+        }
+    }
+
+    [Fact]
     public async Task Failed_install_restores_lock_and_catalog()
     {
         var (root, workspace, user) = PluginPackageTests.CreateDirectories();
