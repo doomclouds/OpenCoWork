@@ -8,6 +8,7 @@
     <FileVersion>1.0.0.0</FileVersion>
     <InformationalVersion Condition="'$(SourceRevisionId)' == ''">$(Version)</InformationalVersion>
     <InformationalVersion Condition="'$(SourceRevisionId)' != ''">$(Version)+$(SourceRevisionId)</InformationalVersion>
+    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
