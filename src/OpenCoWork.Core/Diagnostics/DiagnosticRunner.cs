@@ -36,12 +36,18 @@ public sealed record ProductMetadata(
         ArgumentNullException.ThrowIfNull(assembly);
         var version = assembly.GetName().Version
             ?? throw new InvalidOperationException("Product assembly has no version.");
-        var productVersion = $"{version.Major}.{version.Minor}.{version.Build}";
         var informationalVersion =
             assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()
-                ?.InformationalVersion
-            ?? productVersion;
+                ?.InformationalVersion;
+        var assemblyVersion = $"{version.Major}.{version.Minor}.{version.Build}";
+        if (string.IsNullOrWhiteSpace(informationalVersion))
+        {
+            informationalVersion = assemblyVersion;
+        }
         var separator = informationalVersion.IndexOf('+');
+        var productVersion = separator < 0
+            ? informationalVersion
+            : informationalVersion[..separator];
         var commit = separator >= 0 && separator < informationalVersion.Length - 1
             ? informationalVersion[(separator + 1)..]
             : null;

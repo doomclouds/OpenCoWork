@@ -1,11 +1,13 @@
 <Project>
   <PropertyGroup>
     <TargetFramework Condition="'$(TargetFramework)' == ''">net10.0</TargetFramework>
-    <VersionPrefix>0.1.0</VersionPrefix>
-    <AssemblyVersion>0.1.0.0</AssemblyVersion>
-    <FileVersion>0.1.0.0</FileVersion>
-    <InformationalVersion Condition="'$(SourceRevisionId)' == ''">$(VersionPrefix)</InformationalVersion>
-    <InformationalVersion Condition="'$(SourceRevisionId)' != ''">$(VersionPrefix)+$(SourceRevisionId)</InformationalVersion>
+    <Version>1.0.0-rc.1</Version>
+    <VersionPrefix>1.0.0</VersionPrefix>
+    <VersionSuffix>rc.1</VersionSuffix>
+    <AssemblyVersion>1.0.0.0</AssemblyVersion>
+    <FileVersion>1.0.0.0</FileVersion>
+    <InformationalVersion Condition="'$(SourceRevisionId)' == ''">$(Version)</InformationalVersion>
+    <InformationalVersion Condition="'$(SourceRevisionId)' != ''">$(Version)+$(SourceRevisionId)</InformationalVersion>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>

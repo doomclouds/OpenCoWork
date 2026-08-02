@@ -28,7 +28,7 @@ public sealed class CliIntegrationTests
             var result = await InvokeAsync(["--version"], root);
 
             Assert.Equal(0, result.ExitCode);
-            Assert.Equal($"opencowork 0.1.0{Environment.NewLine}", result.StandardOutput);
+            Assert.Equal($"opencowork 1.0.0-rc.1{Environment.NewLine}", result.StandardOutput);
             Assert.Equal(string.Empty, result.StandardError);
             Assert.Equal(before, SnapshotFiles(root));
         }
@@ -92,7 +92,7 @@ public sealed class CliIntegrationTests
             using var document = JsonDocument.Parse(result.StandardOutput);
             Assert.Equal(1, document.RootElement.GetProperty("schemaVersion").GetInt32());
             Assert.Equal(
-                "0.1.0",
+                "1.0.0-rc.1",
                 document.RootElement.GetProperty("product").GetProperty("productVersion").GetString());
             Assert.Equal(
                 [
