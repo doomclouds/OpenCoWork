@@ -250,6 +250,39 @@ dotnet build OpenCoWork.slnx -c Release --no-restore
 - Acceptance contribution: `M10-ACC-003..012` 的 `osx-arm64` 证据。
 - Commit: `docs(m11): record macOS rc validation`
 
+#### Outcome 6 执行记录（2026-08-02，部分完成，平台仍为 Pending）
+
+- 最终有效 RC 源提交为 `ac7496eea33e0a1f786a2530b58889e115656530`；工作树干净，
+  版本为 `1.0.0-rc.1`。macOS 未签名包 SHA-256 为
+  `aff89cd4ddcc68874193c3b7bef90f5097c53445bede4415751dd398ef3b35a8`，
+  外部/包内 SPDX SHA-256 为
+  `8ef367c4ee62b85f0a53db2f68705afb2619529fa5afb874b320a3a1b2c220e7`；
+  `SHA256SUMS` SHA-256 为
+  `2f45174ad49cea07a82655dea29adff457e0ba952c938aae82d5e3fd7e32f1dd`。
+- Apple Silicon macOS `26.5.2`、SDK `10.0.302`、Runtime `10.0.10` 上，format
+  门禁和 Release build `0 warning / 0 error` 通过；Core `433`、Integration
+  `147`、Protocol `44`、Generators `15`、Architecture `8`，合计
+  `647 passed / 0 failed`。真实 Provider 用例 `1` 项因未提供授权 Secret 保持
+  Explicit Not Run。
+- 从最终包完成用户级安装、重复安装升级、`--version`、隔离 Profile 的 `init` 与
+  `doctor --json`（`8/8 Passed`）、默认卸载和残留检查；默认卸载保留用户数据，
+  最终无 OpenCoWork、MCP 或 LSP 子进程残留。
+- 最终自包含 Runner 的 Automation 固定负载完成 `11,001` 项，Gateway/Operations
+  固定负载完成 `135,600` 项；两者均 `passed: true`，Commit/RID 与 RC 一致。
+- 连续两小时 Soak 实际运行 `7,206,831 ms`，完成 `1,027` 轮；三阶段均
+  `1,027 completed / 0 failed`，SQLite Busy `0`、错误码为空。同机一分钟基线可比较，
+  `2x` 上限无超限阶段；峰值 Working Set `159,219,712` bytes、描述符 `198`、线程
+  `23`，最终子进程 `0`、WAL `0`，未命中单调增长门禁。
+- 首轮旧候选 `b31fc0611eceb5a63e3ebe4737451ae59aa2dc31` 的两小时 Soak 虽完成，
+  但发现 Protocol TestClient 与协议进程测试污染真实用户 Workspace Registry；该证据
+  已作废。测试新增项已按测试前 SHA-256 字节级恢复，隔离修复进入 `69874b9` 与
+  `ac7496e`。最终全量回归、固定负载、基线和两小时 Soak 前后，真实用户 Registry
+  SHA-256 均保持不变。
+- 本轮没有可用的授权 DeepSeek Secret，且用户已拒绝 Keychain 授权弹窗；按停止条件
+  未读取、写入或绕过 Keychain，也未执行真实 `deepseek-v4-flash` 与 OS Secret 场景。
+  因此 `M10-ACC-007`、`M10-ACC-008`、`M10-ACC-011` 的 macOS 最终 RC 门禁仍未
+  关闭，`osx-arm64` 保持 `Pending`。版本不得晋升为 `1.0.0`。
+
 ### Outcome 7：执行 `win-x64` rc.1 真机验收
 
 - Work:

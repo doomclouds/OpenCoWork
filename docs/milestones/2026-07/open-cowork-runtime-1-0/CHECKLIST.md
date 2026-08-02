@@ -87,7 +87,7 @@ Milestone standard: [README.md](README.md)
   - Related spec: docs/superpowers/specs/2026-08-02-open-cowork-m11-runtime-1-0-closure-design.md
   - Related plan: docs/superpowers/plans/2026-08-02-open-cowork-m11-runtime-1-0-closure-implementation-plan.md
   - Related archive: None yet.
-  - Completion signal: M11 设计与独立实施计划已冻结未签名自包含双平台发布、真实历史 Journal v1 Corpus、最小兼容矩阵和每平台两小时 Soak；RC 真机验证与交付归档仍待完成。
+  - Completion signal: M11 设计与实施 Outcomes 1-5 已完成；`osx-arm64` rc.1 的离线回归、安装、固定负载和两小时 Soak 已通过，但真实 DeepSeek/OS Secret 因未获授权仍 Pending；`win-x64` 只有交叉包，真机 RC、`1.0.0` 晋升和交付归档仍待完成。
 
 ## Update Rules
 
