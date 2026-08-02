@@ -202,8 +202,8 @@ M11 仍须在最终发布候选上重跑完整双平台验收。
 | M7-ACC-003 | MissionTask DAG 拒绝环，依赖满足后才进入 Ready，并持久化 Blocked 原因。 | CAP-057 | AutomatedTest | All | `MissionDagPropertyTests`、`MissionReconcilerTests`。 | Passed | — |
 | M7-ACC-004 | Mailbox 支持交接、阻塞、审查、返工和 Artifact 引用，投递/确认幂等。 | CAP-058 | FaultInjection | All | `CoWorkMailboxTests`、`CoWorkDispatchFaultTests`。 | Passed | — |
 | M7-ACC-005 | 同一 Member 互斥、全局并发和 Mission 预算在竞态下不超限。 | CAP-055 | PerformanceTest | All | `CoWorkBudgetRaceTests` 的 16 Run 竞态与预算不变量。 | Passed | — |
-| M7-ACC-006 | Artifact/Scratchpad 的路径、摘要、权限和孤儿清理不会越出运行时根。 | CAP-059 | SecurityTest | DualPlatform | macOS Symlink、篡改、Secret 与孤儿恢复已通过；Windows Reparse/Junction 真机待验。 | Planned | — |
-| M7-ACC-007 | Project/Worktree 隔离正确，Dirty Worktree 不被自动删除或复用。 | CAP-060 | RealPlatformValidation | DualPlatform | macOS Git Worktree/Dirty Retention 已通过；Windows 真机待验。 | Planned | — |
+| M7-ACC-006 | Artifact/Scratchpad 的路径、摘要、权限和孤儿清理不会越出运行时根。 | CAP-059 | SecurityTest | DualPlatform | macOS Symlink 与 Windows Reparse/Junction、篡改、Secret、孤儿恢复和发布目录残留检查均通过。 | Passed | — |
+| M7-ACC-007 | Project/Worktree 隔离正确，Dirty Worktree 不被自动删除或复用。 | CAP-060 | RealPlatformValidation | DualPlatform | 双平台 Git Worktree/Dirty Retention 与发布目录 TestClient 通过。 | Passed | — |
 | M7-ACC-008 | Leader 仅在必需任务完成后综合，Review/返工不会提前结束 Mission。 | CAP-057, CAP-060 | AutomatedTest | All | `MissionReviewTests`、`MissionSynthesisTests`。 | Passed | — |
 | M7-ACC-009 | Mission 运行中崩溃后可由 Lease/Reconciler 恢复且无重复任务。 | CAP-056, CAP-057, CAP-058 | FaultInjection | All | 256 Task 恢复与完整 `CoWorkDispatchFaultTests` 矩阵。 | Passed | — |
 | M7-ACC-010 | 完成通知丢失或重复时，Origin 只接收一次最终结果。 | CAP-060 | FaultInjection | All | `OriginDeliveryTests` 与完成前后故障注入。 | Passed | — |
@@ -214,12 +214,12 @@ M11 仍须在最终发布候选上重跑完整双平台验收。
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | M8-ACC-001 | YAML Automation 定义通过 Schema 验证并生成稳定定义版本。 | CAP-061 | ContractSnapshot | All | `AutomationDefinitionTests`、`AutomationSourceTests` 与 1,000 Definition Corpus。 | Passed | — |
 | M8-ACC-002 | Fluid 模板在受限上下文执行，失败不创建半成品 Run 或泄漏 Secret。 | CAP-062 | SecurityTest | All | `AutomationTemplateTests`、`AutomationServiceTests` 与 Secret Canary。 | Passed | — |
-| M8-ACC-003 | Manual/Cron、时区、DST 和 next-run 计算确定，重启不重复派发。 | CAP-063 | AutomatedTest | DualPlatform | macOS Cron/DST、去重与发布目录已通过；Windows 真机待验。 | Planned | — |
+| M8-ACC-003 | Manual/Cron、时区、DST 和 next-run 计算确定，重启不重复派发。 | CAP-063 | AutomatedTest | DualPlatform | 双平台 Cron/DST、去重、恢复与发布目录 Schedule/Run 场景通过。 | Passed | — |
 | M8-ACC-004 | Run 冻结定义、权限、Plugin、Skill 和 Tool Snapshot，热更新只影响后续 Run。 | CAP-064 | AutomatedTest | All | `AutomationRuntimeSnapshotTests`、`AutomationServiceTests` 与发布目录热更新。 | Passed | — |
 | M8-ACC-005 | 最大并发、单任务互斥、Lease 和 Worktree 分配在竞态下正确。 | CAP-065 | PerformanceTest | All | 64 Start/16 上限、10,000 Run 分页、Lease/Worktree 竞态，SQLite Busy 为 0。 | Passed | — |
 | M8-ACC-006 | 结果不明的非幂等工具使 Run 进入 NeedsAttention，不自动重试。 | CAP-035, CAP-066 | FaultInjection | All | `AutomationDispatchTests`、`AutomationInteractionTests` 全副作用窗口。 | Passed | — |
 | M8-ACC-007 | 无人值守权限不扩大，Approval 不能通过 Console 自动放行。 | CAP-066 | SecurityTest | All | 权限交集、Approval/UserInput 与无人终端安全测试。 | Passed | — |
-| M8-ACC-008 | Running/Pending/Lease 各状态崩溃后恢复且不重复创建 Turn 或 Worktree。 | CAP-065 | FaultInjection | DualPlatform | macOS Dispatch/Reconciler/路径恢复已通过；Windows 强杀与 Reparse/Junction 真机待验。 | Planned | — |
+| M8-ACC-008 | Running/Pending/Lease 各状态崩溃后恢复且不重复创建 Turn 或 Worktree。 | CAP-065 | FaultInjection | DualPlatform | 双平台 Dispatch/Reconciler、强杀、路径、Reparse/Junction 与 Worktree 恢复通过。 | Passed | — |
 | M8-ACC-009 | NeedsAttention 可由协议恢复，也能按策略取消或超时并重排下一周期。 | CAP-066 | AutomatedTest | All | `AutomationInteractionTests`、`AutomationReconcilerTests` 与 Wire 1.3。 | Passed | — |
 
 ## 11. M9 - DeepSeek Responses Provider（9）
@@ -233,8 +233,8 @@ M11 仍须在最终发布候选上重跑完整双平台验收。
 | M9-ACC-015 | 官方 400/401/402/422 稳定失败，429/500/503 与超时按策略瞬态处理；只有已识别的上下文过长 400 触发压缩，所有重试遵守 Attempt 已提交边界。 | CAP-029, CAP-040 | FaultInjection | All | 全部官方 HTTP 错误码、响应头/空闲超时、首增量/Web Search/本地工具尝试前后断流和响应式压缩测试。 | Passed | — |
 | M9-ACC-016 | ThreadJournal 仍是唯一恢复事实源；进程重启不依赖官方明确不支持的 `previous_response_id`、`conversation` 或 `store`。 | CAP-020, CAP-039 | FaultInjection | All | 响应中断、进程重启、State v8 迁移/重建、Provider Action/Checkpoint 回放与工具副作用唯一性测试。 | Passed | — |
 | M9-ACC-017 | 旧 OpenAI-compatible/Qwen 配置和不受支持模型以稳定迁移诊断失败，不静默回退或别名映射。 | CAP-008, CAP-026 | MigrationTest | All | 旧配置 Corpus、Schema/Doctor/CLI 错误快照与无网络调用断言。 | Passed | — |
-| M9-ACC-018 | `deepseek-v4-flash` 在 `win-x64` 与 `osx-arm64` 发布目录通过 Responses API 真实冒烟、Function、`web_search`、`custom/apply_patch`、Usage 对账和 Secret Canary。 | CAP-026, CAP-027, CAP-028, CAP-036 | RealPlatformValidation | DualPlatform | `osx-arm64` 已在 `058b505` 通过六场景、Usage、终态、Secret 与残留扫描；`win-x64` 真机待验。 | Planned | — |
-| M9-ACC-019 | DeepSeek 服务端 `web_search` 只有在有效 `NetworkRead` Authority 已授权时才进入请求并映射官方状态事件；本地 `web.fetch/CoreWebTool` 与模型侧 `file.write` 退出 Catalog。 | CAP-032, CAP-034, CAP-036 | SecurityTest | DualPlatform | Provider 请求 Snapshot、Authority 矩阵与旧工具退出已通过；`osx-arm64` 真实搜索在 `058b505` 通过，`win-x64` 待验。 | Planned | — |
+| M9-ACC-018 | `deepseek-v4-flash` 在 `win-x64` 与 `osx-arm64` 发布目录通过 Responses API 真实冒烟、Function、`web_search`、`custom/apply_patch`、Usage 对账和 Secret Canary。 | CAP-026, CAP-027, CAP-028, CAP-036 | RealPlatformValidation | DualPlatform | `osx-arm64` 在 `058b505`、`win-x64` 在 `2d96640` 加 Source/Test Patch 上通过六场景、Usage、终态、Secret 与残留扫描。 | Passed | — |
+| M9-ACC-019 | DeepSeek 服务端 `web_search` 只有在有效 `NetworkRead` Authority 已授权时才进入请求并映射官方状态事件；本地 `web.fetch/CoreWebTool` 与模型侧 `file.write` 退出 Catalog。 | CAP-032, CAP-034, CAP-036 | SecurityTest | DualPlatform | Provider 请求 Snapshot、Authority 矩阵、旧工具退出与双平台真实服务端搜索全部通过。 | Passed | — |
 
 ## 12. M10 - Gateway and Operations（10，沿用稳定 `M9-ACC-*`）
 
@@ -279,12 +279,12 @@ M11 仍须在最终发布候选上重跑完整双平台验收。
 | M4 | 10 | Passed |
 | M5 | 9 | Passed |
 | M6 | 10 | Passed |
-| M7 | 10 | 8 Passed / 2 Planned |
-| M8 | 9 | 7 Passed / 2 Planned |
-| M9 | 9 | 7 Passed / 2 Planned |
+| M7 | 10 | Passed |
+| M8 | 9 | Passed |
+| M9 | 9 | Passed |
 | M10 | 10 | Planned |
 | M11 | 12 | Planned |
-| **Total** | **113** | **85 Passed / 28 Planned** |
+| **Total** | **113** | **91 Passed / 22 Planned** |
 
 每个 Slice 标记 Done 前必须：
 

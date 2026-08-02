@@ -1,8 +1,7 @@
 # OpenCoWork M9 DeepSeek Responses Provider 实施计划
 
-**Status:** In Progress；Gate 0 与 Outcome 1-9 已完成；`osx-arm64` 发布目录真实
-Provider 六场景已在 `058b505174602653385c51cb35fb654dd0b31262` 通过。Outcome 10
-的 `win-x64` 真机验证待执行，M9 未关闭。
+**Status:** Done；Gate 0、Outcome 1-10 与双平台发布目录真实 Provider 六场景全部
+通过，M9 已归档。
 
 **Goal:** 用 DeepSeek 官方 Responses API 的专用最小实现替换现有通用
 OpenAI-compatible Chat Completions 与千问 Token Plan 路径；首发只支持
@@ -41,6 +40,9 @@ Provider 证据：
 
 ## 当前实现基线
 
+- 2026-08-02，Windows 11 Home `10.0.26200` x64 发布目录以用户级真实 API Key
+  完成 Text、Function、`web_search`、`custom/apply_patch`、Usage 与 Secret Canary
+  六场景，均为 `completed`；
 - `dev` 的 M9 Design/Plan 实施基线为 `17afb9b`；
 - 当前产品仍由 `OpenAiCompatibleChatClient` 发送 `chat/completions`，以
   `ChatCompletionMessage`、独立 Usage Event 和 `[DONE]` 表达 Provider 传输；

@@ -1,7 +1,13 @@
 # Superpowers Archives
 
+## 2026-08
+
+- [2026-08-01-open-cowork-m9-deepseek-responses-provider-archives.md](./2026-08/2026-08-01-open-cowork-m9-deepseek-responses-provider-archives.md): 交付 DeepSeek Responses API 专用实现及 `deepseek-v4-flash` 双平台真实六场景验收。
+
 ## 2026-07
 
+- [2026-07-30-open-cowork-m7-multi-agent-cowork-archives.md](./2026-07/2026-07-30-open-cowork-m7-multi-agent-cowork-archives.md): 交付可恢复 Direct SubAgent、Mission DAG、Mailbox、Artifact、Worktree 与 Wire 1.2 双平台能力。
+- [2026-07-30-open-cowork-m8-automations-scheduler-archives.md](./2026-07/2026-07-30-open-cowork-m8-automations-scheduler-archives.md): 交付严格 YAML/Fluid/Cron、持久 Run/Lease/NeedsAttention 恢复与 Wire 1.3 双平台能力。
 - [2026-07-29-open-cowork-m6-capability-ecosystem-archives.md](./2026-07/2026-07-29-open-cowork-m6-capability-ecosystem-archives.md): 交付可授信、可冻结、可撤销的 Skills/Plugins/MCP/LSP/动态工具生态与 Wire 1.1 双平台运行能力。
 - [2026-07-28-open-cowork-m4-tool-runtime-alpha-archives.md](./2026-07/2026-07-28-open-cowork-m4-tool-runtime-alpha-archives.md): 交付固定安全管线、审批恢复、Journal 审计及最小 File/Shell/Web 工具运行时。
 - [2026-07-28-open-cowork-m5-wire-alpha-archives.md](./2026-07/2026-07-28-open-cowork-m5-wire-alpha-archives.md): 交付 Desktop-first stdio/loopback WebSocket Wire、稳定 ACP v1 Bridge 和双平台发布目录黑盒验证。

@@ -12,6 +12,8 @@
   双平台验收仍等待 `win-x64`
 - 修订：2026-08-01，新增 M9 DeepSeek Responses Provider，Provider 支持面
   收敛为 DeepSeek-only；Gateway 与 Closure 顺延为 M10/M11
+- 修订：2026-08-02，M7-M9 双平台验收关闭；M10 `win-x64` 通过、
+  `osx-arm64` Protocol TestClient/Keychain 仍待验；能力契约不变
 - 所属里程碑：OpenCoWork Runtime 1.0 / M0
 - 契约规格：
   [OpenCoWork M0 Contract Freeze](2026-07-25-open-cowork-m0-contract-freeze-design.md)

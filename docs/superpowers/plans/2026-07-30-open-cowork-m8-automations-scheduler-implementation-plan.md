@@ -1,7 +1,6 @@
 # OpenCoWork M8 Automations and Scheduler 实施计划
 
-**Status:** Outcome 1-9 已完成；Outcome 10 的自动化与 `osx-arm64` 已通过，
-`win-x64` 真机验收待执行，M8 未关闭。
+**Status:** Done；Outcome 1-10 与 `win-x64`、`osx-arm64` 真机验收全部通过，M8 已归档。
 
 **Goal:** 在现有 Workspace、Session、Agent、Tool、Capability、Managed Worktree、
 SQLite State 和 Wire 边界上交付安全、可版本控制、可恢复的无人值守 Automation
@@ -30,7 +29,7 @@ Thread/Turn、跨根写入、无人值守提权或非幂等副作用自动重放
 - `dev` 当前代码基线 `a710866` 已完成 Outcome 1-9 与固定性能负载；
 - Workspace State Schema 已原子升级到 v7，OpenCoWork Wire 已支持
   1.0/1.1/1.2/1.3；
-- M7 的 `win-x64` 真机验收仍待执行，M8 不得关闭或替代该证据；
+- M7、M8 的 `win-x64` 真机验收均已于 2026-08-02 通过；
 - `OpenCoWork.Automations` 已交付定义、模板、Schedule、Run、Intent、Lease、
   Reconciler、Attention、Retention 与 Wire 1.3，并保持
   Automations → Abstractions/Protocol、Automations ↛ Core/Teams 的项目边界；
@@ -43,7 +42,8 @@ Thread/Turn、跨根写入、无人值守提权或非幂等副作用自动重放
 - 模块生命周期继续复用 `OpenCoWorkModule`、`WorkspaceRuntime`、
   `ReportDegraded` / `ClearDegraded`，不注册独立 `IHostedService`；
 - 2026-07-30 的 `osx-arm64` Release、专项/全量回归与发布目录 TestClient 已通过；
-  `win-x64` App/TestClient 仅完成交叉发布，不能替代 Windows 真机证据；
+  2026-08-02 的 `win-x64` Release、全量非显式 Integration 串行回归和发布目录
+  TestClient 已通过；
 - M0 已冻结测试项目集合；M8 测试进入现有 Architecture、Core、Integration、
   Protocol Tests 和 Protocol TestClient，不创建新测试程序集；
 - M8 不增加真实 Provider 声明，调度、恢复和发布验收使用确定性 Fake Agent/Tool。

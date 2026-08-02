@@ -2,13 +2,14 @@
 
 ## 文档状态
 
-- 状态：设计已冻结，实现已完成；Outcome 10 等待 `win-x64` 真机验收
+- 状态：已完成并归档；双平台真机验收通过
 - 日期：2026-07-30
 - 所属里程碑：OpenCoWork Runtime 1.0 / M7
 - 已确认决策：27 项
 - 对应计划：
   [M7 Multi-Agent CoWork 实施计划](../plans/2026-07-30-open-cowork-m7-multi-agent-cowork-implementation-plan.md)
-- 对应归档：待双平台真机验收后创建
+- 对应归档：
+  [M7 Multi-Agent CoWork 交付归档](../archives/2026-07/2026-07-30-open-cowork-m7-multi-agent-cowork-archives.md)
 - 继续工作前必须先阅读：
   - [OpenCoWork Runtime 1.0 路线规格](2026-07-25-open-cowork-runtime-1-0-roadmap.md)
   - [M0 Contract Freeze](2026-07-25-open-cowork-m0-contract-freeze-design.md)

@@ -2,14 +2,15 @@
 
 ## 文档状态
 
-- 状态：设计已冻结，实现已完成；Outcome 10 等待 `win-x64` 真机验收
+- 状态：已完成并归档；双平台真机验收通过
 - 日期：2026-07-30
 - 所属里程碑：OpenCoWork Runtime 1.0 / M8
 - 已确认决策：29 项
 - 待确认决策：无
 - 对应计划：
   [M8 Automations and Scheduler 实施计划](../plans/2026-07-30-open-cowork-m8-automations-scheduler-implementation-plan.md)
-- 对应归档：待双平台真机验收后创建
+- 对应归档：
+  [M8 Automations and Scheduler 交付归档](../archives/2026-07/2026-07-30-open-cowork-m8-automations-scheduler-archives.md)
 - 继续工作前必须先阅读：
   - [OpenCoWork Runtime 1.0 路线规格](2026-07-25-open-cowork-runtime-1-0-roadmap.md)
   - [M0 Contract Freeze](2026-07-25-open-cowork-m0-contract-freeze-design.md)
@@ -33,8 +34,7 @@ Session 持久边界暂存惰性的 Prepared Turn，Automation State 只保存�
 同时明确 Workspace Trust 与 Unattended Policy 复用 M6 Trust 和现有 Tool Policy，
 不增加第二套信任文件或第五项 Automations Config。
 
-M7 当前仍等待 `win-x64` 真机验收。M8 设计工作不得把 M7 标记为完成，也不得
-把 M8 里程碑状态提前改为 In Progress。
+M7、M8 已在 2026-08-02 补齐 `win-x64` 真机证据并完成归档。
 
 ## 1. 目标、范围与不变量
 

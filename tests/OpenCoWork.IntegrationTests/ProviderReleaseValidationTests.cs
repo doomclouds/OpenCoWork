@@ -331,7 +331,14 @@ public sealed class ProviderReleaseValidationTests(ITestOutputHelper output)
                      "*",
                      SearchOption.AllDirectories))
         {
-            if (File.ReadAllBytes(file).AsSpan().IndexOf(value) >= 0)
+            using var stream = new FileStream(
+                file,
+                FileMode.Open,
+                FileAccess.Read,
+                FileShare.ReadWrite | FileShare.Delete);
+            var bytes = new byte[checked((int)stream.Length)];
+            stream.ReadExactly(bytes);
+            if (bytes.AsSpan().IndexOf(value) >= 0)
             {
                 return true;
             }

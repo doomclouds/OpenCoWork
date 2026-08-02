@@ -2,7 +2,7 @@
 
 ## 状态与边界
 
-- 状态：M9 In Progress；`osx-arm64` 真实 Provider 验证已通过，`win-x64` 待执行。
+- 状态：M9 已完成；`osx-arm64`、`win-x64` 真实 Provider 验证均已通过。
 - 2026-08-01 用户确认 1.0 Provider 实现收敛为 DeepSeek-only Responses API。
 - M9 首发只支持 DeepSeek 官方 `deepseek-v4-flash`。
 - `deepseek-v4-pro` 只有在 DeepSeek 官方支持 Responses API 且完成独立真实验证后
@@ -10,8 +10,8 @@
 - 千问 Token Plan、其他 Provider 和通用 `openaiCompatible` Chat Completions
   协议路径退出 1.0 目标支持面。
 - `058b505174602653385c51cb35fb654dd0b31262` 已移除生产
-  OpenAI-compatible/Qwen 路径并完成 DeepSeek Responses 离线实现；在本表两条
-  Flash 真实验证均通过前仍不得对外宣称 M9 支持完成。
+  OpenAI-compatible/Qwen 路径并完成 DeepSeek Responses 离线实现；2026-08-02
+  双平台 Flash 真实验证齐全，M9 支持声明已关闭。
 
 ## 官方协议基线
 
@@ -45,7 +45,7 @@ Responses API 实现或当前 1.0 目标已经完成：
 | Provider | 平台 | 模型 | 协议 | 状态 | 进展/关闭条件 |
 | --- | --- | --- | --- | --- | --- |
 | DeepSeek 官方 | `osx-arm64` | `deepseek-v4-flash` | Responses API | Passed | `058b505174602653385c51cb35fb654dd0b31262`；macOS 26.5.2 / .NET Runtime 10.0.10；从 `osx-arm64` 发布目录执行 Text、Function、`web_search`、`custom/apply_patch`、Usage、Secret Canary 六场景，均为 `response.completed` 且 Usage/容差/Secret/临时残留门禁通过；证据时间 `2026-08-01T09:33:19.229679Z`。 |
-| DeepSeek 官方 | `win-x64` | `deepseek-v4-flash` | Responses API | Pending | `be8c900` 从 macOS 完成 App/TestClient `win-x64` 交叉发布；仍须 Windows 真机从发布目录执行同等六场景，交叉发布不算真实证据。 |
+| DeepSeek 官方 | `win-x64` | `deepseek-v4-flash` | Responses API | Passed | `2d966400e61e8d17c8a513299e8a9b420591d865` 加 Source/Test Patch SHA-256 `516c263191620d8b9f41eb5bbce0436aac41ee04aef6be73af5c5514783e90cd`；Windows 11 Home `10.0.26200` x64 / .NET Runtime `10.0.10`；从发布目录以用户级真实 API Key 执行同等六场景，均为 `completed` 且 Usage/Secret/临时残留门禁通过；证据时间 `2026-08-02T01:59:52.7843277+00:00`。 |
 | DeepSeek 官方 | `osx-arm64`、`win-x64` | `deepseek-v4-pro` | Responses API | Deferred | DeepSeek 官方明确支持该模型的 Responses API，且用户激活双平台真实验证。 |
 
 ## Removed 路径
@@ -56,7 +56,7 @@ Responses API 实现或当前 1.0 目标已经完成：
 | 其他 OpenAI-compatible Provider | Removed | M9 删除通用协议承诺和动态 Provider 接入；不保留占位兼容矩阵。 |
 | DeepSeek Chat Completions | Removed | 历史证据保留，生产实现由 DeepSeek Responses API 取代。 |
 
-## M9 当前实现证据（2026-08-01）
+## M9 当前实现证据（2026-08-01 至 2026-08-02）
 
 - 基线：`058b505174602653385c51cb35fb654dd0b31262`；默认离线回归为
   `577` passed / `0` failed，真实 Provider 显式用例未启用；Release build 为
@@ -72,6 +72,13 @@ Responses API 实现或当前 1.0 目标已经完成：
   Function `4144/81/4225`、Web Search `6207/224/6431`、Apply Patch
   `6613/103/6716`、Usage `1953/16/1969`、Secret Canary `1957/34/1991`
   （Input/Output/Total），全部终态为 Completed，且未发现 Secret 或临时残留。
+- `win-x64` App/TestClient/Runner 已独立发布。Runner 使用 Windows User Scope 中的
+  当前真实 Key，只注入验证子进程，不打印或落盘 Secret；Text、Function、Web Search、
+  Apply Patch、Usage、Secret Canary 六场景 Usage（Input/Cached/Output/Reasoning/Total）
+  分别为 `1956/0/18/16/1974`、`4146/1920/82/33/4228`、
+  `5606/2304/141/77/5747`、`6609/3200/97/29/6706`、
+  `1949/0/14/11/1963`、`1957/0/24/18/1981`；全部终态为 Completed，
+  全输出面 Secret Canary 和临时残留门禁通过。
 
 ## 激活规则
 

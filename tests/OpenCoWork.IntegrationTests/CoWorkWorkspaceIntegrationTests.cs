@@ -64,6 +64,14 @@ public sealed class CoWorkWorkspaceIntegrationTests
             SqliteConnection.ClearAllPools();
             if (Directory.Exists(root))
             {
+                foreach (var file in Directory.EnumerateFiles(
+                             root,
+                             "*",
+                             SearchOption.AllDirectories))
+                {
+                    File.SetAttributes(file, FileAttributes.Normal);
+                }
+
                 Directory.Delete(root, recursive: true);
             }
         }

@@ -2,7 +2,7 @@
 
 ## 文档状态
 
-- 状态：Design Freeze；2026-08-01 经用户逐项确认
+- 状态：已完成并归档；双平台真实 Provider 验收通过
 - 日期：2026-08-01
 - 所属里程碑：OpenCoWork Runtime 1.0 / M9
 - 已确认决策：12 组
@@ -10,6 +10,8 @@
 - 对应计划：
   [M9 DeepSeek Responses Provider 实施计划](../plans/2026-08-01-open-cowork-m9-deepseek-responses-provider-implementation-plan.md)；
   本文与计划均不授权实现或真实外部请求
+- 对应归档：
+  [M9 DeepSeek Responses Provider 交付归档](../archives/2026-08/2026-08-01-open-cowork-m9-deepseek-responses-provider-archives.md)
 - 继续工作前必须先阅读：
   - [OpenCoWork Runtime 1.0 路线规格](2026-07-25-open-cowork-runtime-1-0-roadmap.md)
   - [M0-M11 验收目录](2026-07-25-open-cowork-m0-acceptance-catalog.md)

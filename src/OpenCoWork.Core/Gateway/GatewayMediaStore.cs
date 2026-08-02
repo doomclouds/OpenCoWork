@@ -459,7 +459,7 @@ public sealed class GatewayMediaStore(
                     path,
                     FileMode.Open,
                     FileAccess.Read,
-                    FileShare.Read,
+                    FileShare.ReadWrite,
                     64 * 1024,
                     FileOptions.Asynchronous | FileOptions.SequentialScan);
                 using var reader = new StreamReader(

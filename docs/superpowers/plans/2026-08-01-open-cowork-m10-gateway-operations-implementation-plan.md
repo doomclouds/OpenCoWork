@@ -1,8 +1,8 @@
 # OpenCoWork M10 Gateway and Operations 实施计划
 
 **Status:** In Progress；Gate 0 和 Outcome 1–9 已完成；Outcome 10 已完成双 RID 三套
-产物发布与 `osx-arm64` Release Runner 部分真机验证，Protocol TestClient、OS Secret
-与 `win-x64` 真机仍待执行。2026-08-01 用户已授权按本计划实施并提交；公网访问、真实
+产物发布、`win-x64` 完整真机验证与 `osx-arm64` Release Runner 部分验证，macOS
+Protocol TestClient/Keychain 仍待执行。2026-08-01 用户已授权按本计划实施并提交；公网访问、真实
 Secret/第三方 Webhook、推送和非本机平台操作仍未授权。
 
 **Goal:** 在现有七程序集、单 Workspace SQLite、唯一 Session Core 和
@@ -33,6 +33,9 @@ Wire 1.0–1.3 完整回归、Wire 1.4 黑盒通过；`win-x64` 与 `osx-arm64` 
 
 ## 当前实现基线
 
+- 2026-08-02，Windows 11 Home `10.0.26200` x64 的发布目录 TestClient 8 场景、
+  Gateway/Outbox/Operations/Runtime Composition Runner 13 项、Credential Manager、
+  Secret Canary 与残留检查通过；M10 仍等待 macOS Protocol TestClient/Keychain；
 - 计划基线为 `dev` 的 `97aa1690a62a`；执行前必须重新确认分支、HEAD、工作区和台账，
   不覆盖用户未提交改动；
 - 生产程序集仍冻结为七个，M10 只原位扩展现有项目和测试程序集，不新增工程；

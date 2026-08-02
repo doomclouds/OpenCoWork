@@ -243,7 +243,11 @@ public sealed class WorkspaceMemoryTests
                 new WorkspaceMemoryRuntime(paths, state));
         }
 
-        public void Dispose() => Workspace.Dispose();
+        public void Dispose()
+        {
+            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            Workspace.Dispose();
+        }
     }
 
     private static void CreateDirectoryLink(string path, string target)

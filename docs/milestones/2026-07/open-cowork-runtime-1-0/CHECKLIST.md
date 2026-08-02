@@ -7,9 +7,9 @@ Milestone standard: [README.md](README.md)
 ## Progress Summary
 
 - Status: In Progress
-- Progress: 7/12
-- Done: 7
-- In progress: 4
+- Progress: 10/12
+- Done: 10
+- In progress: 1
 - Not started: 1
 - Deferred: 0
 - Split: 0
@@ -58,30 +58,30 @@ Milestone standard: [README.md](README.md)
   - Related plan: docs/superpowers/plans/2026-07-29-open-cowork-m6-capability-ecosystem-implementation-plan.md
   - Related archive: docs/superpowers/archives/2026-07/2026-07-29-open-cowork-m6-capability-ecosystem-archives.md
   - Completion signal: Capability Catalog、插件与 Skill、Provider/Auth、MCP/LSP、动态与延迟工具、Hook、Git/Terminal/Memory 和 Wire 1.1 已通过 win-x64、osx-arm64 发布目录真机验收；M6-ACC-001 至 M6-ACC-010 全部 Passed；通用 Provider 声明路径将在 M9 被 DeepSeek-only 契约取代，M11 仍须重跑最终发布候选。
-- [ ] 8. M7 - Multi-Agent CoWork
-  - Status: In Progress
+- [x] 8. M7 - Multi-Agent CoWork
+  - Status: Done
   - Related spec: docs/superpowers/specs/2026-07-30-open-cowork-m7-multi-agent-cowork-design.md
   - Related plan: docs/superpowers/plans/2026-07-30-open-cowork-m7-multi-agent-cowork-implementation-plan.md
-  - Related archive: None yet.
-  - Completion signal: Outcome 1-9 已完成，Outcome 10 的自动化、双 RID 交叉发布和 `osx-arm64` 真机验收已通过；`M7-ACC-001..005`、`008..010` 为 Passed，`006..007` 与完整 M7 等待 `win-x64` 真机。
-- [ ] 9. M8 - Automations and Scheduler
-  - Status: In Progress
+  - Related archive: docs/superpowers/archives/2026-07/2026-07-30-open-cowork-m7-multi-agent-cowork-archives.md
+  - Completion signal: Direct SubAgent、Mission DAG、Mailbox、Artifact、Managed Worktree 与 Wire 1.2 已通过 win-x64、osx-arm64 发布目录真机验收；M7-ACC-001 至 M7-ACC-010 全部 Passed，M11 仍须重跑最终发布候选。
+- [x] 9. M8 - Automations and Scheduler
+  - Status: Done
   - Related spec: docs/superpowers/specs/2026-07-30-open-cowork-m8-automations-scheduler-design.md
   - Related plan: docs/superpowers/plans/2026-07-30-open-cowork-m8-automations-scheduler-implementation-plan.md
-  - Related archive: None yet.
-  - Completion signal: Outcome 1-9 与 Outcome 10 自动化、双 RID 交叉发布、osx-arm64 真机验收已通过；M8-ACC-001..002、004..007、009 为 Passed，003、008 与完整 M8 等待 win-x64 真机。
-- [ ] 10. M9 - DeepSeek Responses Provider
-  - Status: In Progress
-  - Related spec: docs/superpowers/specs/2026-08-01-open-cowork-m9-deepseek-responses-provider-design.md (Design Freeze; 2026-08-01 用户确认)
-  - Related plan: docs/superpowers/plans/2026-08-01-open-cowork-m9-deepseek-responses-provider-implementation-plan.md (In Progress; Gate 0 and Outcomes 1-9 complete; Outcome 10 pending)
-  - Related archive: None yet.
-  - Completion signal: 通用 OpenAI-compatible Chat Completions 与千问 Token Plan 路径已由 DeepSeek-only 实现取代；`M9-ACC-011..017` 已通过离线验收，`osx-arm64` 发布目录 Protocol TestClient 与真实 DeepSeek 六场景已在 `058b505` 通过；`M9-ACC-018..019` 及完整 M9 仍等待 `win-x64` 真机关闭；`deepseek-v4-pro` 等官方支持后再激活。
+  - Related archive: docs/superpowers/archives/2026-07/2026-07-30-open-cowork-m8-automations-scheduler-archives.md
+  - Completion signal: 严格 YAML/Fluid/Cron、持久 Run/Lease/NeedsAttention 恢复、Managed Worktree 与 Wire 1.3 已通过 win-x64、osx-arm64 发布目录真机验收；M8-ACC-001 至 M8-ACC-009 全部 Passed，M11 仍须重跑最终发布候选。
+- [x] 10. M9 - DeepSeek Responses Provider
+  - Status: Done
+  - Related spec: docs/superpowers/specs/2026-08-01-open-cowork-m9-deepseek-responses-provider-design.md
+  - Related plan: docs/superpowers/plans/2026-08-01-open-cowork-m9-deepseek-responses-provider-implementation-plan.md
+  - Related archive: docs/superpowers/archives/2026-08/2026-08-01-open-cowork-m9-deepseek-responses-provider-archives.md
+  - Completion signal: DeepSeek-only Responses 实现已在 win-x64、osx-arm64 发布目录以真实 deepseek-v4-flash 完成 Text、Function、web_search、custom/apply_patch、Usage 与 Secret Canary 六场景；M9-ACC-011 至 M9-ACC-019 全部 Passed，M11 仍须重跑最终发布候选。
 - [ ] 11. M10 - Gateway and Operations
   - Status: In Progress
-  - Related spec: docs/superpowers/specs/2026-08-01-open-cowork-m10-gateway-operations-design.md (Design Freeze; 2026-08-01 用户确认)
-  - Related plan: docs/superpowers/plans/2026-08-01-open-cowork-m10-gateway-operations-implementation-plan.md (In Progress; Gate 0 and Outcomes 1-9 complete; Outcome 10 cross-publish and macOS Runner partial evidence complete)
+  - Related spec: docs/superpowers/specs/2026-08-01-open-cowork-m10-gateway-operations-design.md
+  - Related plan: docs/superpowers/plans/2026-08-01-open-cowork-m10-gateway-operations-implementation-plan.md
   - Related archive: None yet.
-  - Completion signal: Outcomes 1-9 已完成 Gateway 契约/主宿主、State v9、Loopback Webhook HMAC、严格 Envelope、内容寻址媒体、Inbound/Outbox、持久 Correlation、Operations/Hub/Insight、Wire 1.4、CLI/TestClient，以及 25,600 Inbound、10,000 Outbox、100,000 Span、10,000 Usage、1,000 Proposal 的固定负载分页与全部离线回归；双 RID App/TestClient/Runner 已生成，osx-arm64 发布目录 Runner 13 项通过；Protocol TestClient/OS Secret 与 win-x64 真机仍待 Outcome 10。
+  - Completion signal: Outcomes 1-9 已完成；win-x64 发布目录 TestClient 8 场景、Gateway/Outbox/Operations/Runtime Composition Runner 13 项、Credential Manager、Wire 1.4、Secret Canary 与残留检查通过；osx-arm64 Runner 13 项通过，但 Protocol TestClient/Keychain 与完整发布矩阵仍待 Outcome 10，因此 M10 保持 In Progress。
 - [ ] 12. M11 - OpenCoWork 1.0 Closure
   - Status: Not Started
   - Related spec: docs/superpowers/specs/2026-07-25-open-cowork-runtime-1-0-roadmap.md

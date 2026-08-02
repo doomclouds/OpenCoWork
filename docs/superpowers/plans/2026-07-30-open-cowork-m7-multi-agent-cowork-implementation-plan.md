@@ -1,7 +1,6 @@
 # OpenCoWork M7 Multi-Agent CoWork 实施计划
 
-**Status:** Outcome 1-9 已完成；Outcome 10 的自动化与 `osx-arm64` 已通过，
-`win-x64` 真机验收待执行，M7 未关闭。
+**Status:** Done；Outcome 1-10 与 `win-x64`、`osx-arm64` 真机验收全部通过，M7 已归档。
 
 **Goal:** 在现有 Workspace、Session、Agent、Tool、Capability 和 Wire 边界上交付
 可持久、可恢复、受预算和权限约束的 Direct SubAgent 与 Mission 协作闭环。
@@ -35,7 +34,8 @@ Tool 执行根、Git Worktree、并发与 Token 预算、Secret 边界、模块�
   `OpenCoWork.Core.Tests` 或 `OpenCoWork.IntegrationTests`；
 - 当前没有 M7 Provider 兼容性声明，编排测试使用可控 Fake Provider；
 - 2026-07-30 的 `osx-arm64` Release、专项/全量回归与发布目录 TestClient 已通过；
-  `win-x64` App/TestClient 仅完成交叉发布，不能替代 Windows 真机证据。
+  2026-08-02 的 `win-x64` Release、全量非显式 Integration 串行回归和发布目录
+  TestClient 已通过，双平台证据齐全。
 
 实施前必须先把 M7 Design + Plan 作为独立、已验证的文档基线提交；没有用户授权不得
 从本计划自动进入 Outcome 1。

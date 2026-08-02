@@ -1,6 +1,7 @@
 # Windows 验证暴露隐藏的平台测试假设
 
 - Date: `2026-07-29`
+- Updated: `2026-08-02`
 - Topic slug: `windows-cross-platform-test-assumptions`
 - Status: `Captured`
 - Scope: `Test`
@@ -12,6 +13,8 @@ Windows 全量验证同时出现三类表象：ACP approval 用例无界等待�
 创建 Symlink 权限失败、原子写并发读取偶发返回 `tool.outcomeUnknown`。这些失败会
 掩盖真正的平台产品回归，并让测试进程残留。M6 补验又暴露 collectible ALC、
 SQLite Pool、Git 只读文件清理失败，以及进程树测试弹出可见 `cmd.exe`。
+M7-M10 关闭验证继续暴露媒体暂存文件共享方向、Workspace 发现越过用户目录边界，
+以及真实 Provider Secret Canary 扫描活动 SQLite 时的 Windows 共享冲突。
 
 ## Trigger / Context
 
@@ -19,6 +22,8 @@ SQLite Pool、Git 只读文件清理失败，以及进程树测试弹出可见 `
 - 测试把 Unix 绝对路径、无特权 Symlink 和 Unix 文件替换共享语义当成跨平台前提。
 - M6 在 Windows 真机执行 Plugin 卸载、SQLite 会话清理、临时 Git 仓库删除和
   `Start-Process` 子进程树测试。
+- M7-M10 在 Windows 发布目录执行 Gateway 媒体校验、CoWork Git Worktree 清理、
+  Workspace Memory 与真实 DeepSeek Provider Runner。
 
 ## Root Cause
 
@@ -30,6 +35,10 @@ ACP 测试硬编码 `/workspace`，Windows 上
 共享冲突误判为写入结果不明。M6 测试还把“方法返回”等同于 ALC 已无栈根、把
 `SqliteConnection.Dispose` 等同于全局 Pool 已释放、把 Git Object 当成普通可写文件；
 进程树夹具用 `Start-Process` 派生 `cmd.exe` 时也没有显式隐藏窗口。
+M10 媒体暂存写流允许其他读取者，却未允许读取者共享现有写入者；Workspace 发现忽略
+用户级 `.opencowork` 后仍继续向用户目录之上搜索；测试清理再次漏掉 SQLite Pool 和
+Git 只读属性。Provider Runner 的 Secret Canary 又用独占式 `File.ReadAllBytes` 扫描
+仍由 SQLite 持有的 `state.db`，使六个真实远端场景均成功后被本地扫描误报失败。
 
 ## Fix
 
@@ -44,12 +53,16 @@ ACP 测试硬编码 `/workspace`，Windows 上
 - 需要独立子进程的 Windows 测试为 `Start-Process` 显式传入
   `-WindowStyle Hidden`，避免 Windows Terminal 弹出代理窗口和
   `0x800700e8` 断连提示。
+- Gateway 媒体类型校验的读取流使用 `FileShare.ReadWrite`，与既有暂存写流形成双向
+  共享；Workspace 发现到达用户目录即停止，不再检查更高层祖先。
+- CoWork Git 清理前清除文件只读属性；Workspace Memory 夹具删除目录前清空 SQLite
+  Pool；Provider Secret Canary 使用 `FileShare.ReadWrite | FileShare.Delete` 逐块读取。
 
 ## Why This Fix
 
-生产路径的路径校验、链接逃逸拒绝和原子替换语义都是正确安全边界；放宽生产实现会
-制造真实漏洞。修正测试夹具并增加有界失败诊断，既保留产品契约，也让 Windows 与
-macOS 验证使用各自真实的平台原语。
+路径逃逸拒绝和原子替换语义继续保持严格。对测试专属 Pool、只读属性和扫描共享只修
+夹具；对媒体暂存共享方向和 Workspace 用户目录边界则修生产根因。这样不会放宽路径、
+Secret 或写入权限，也不会给每个调用者复制重试逻辑。
 
 ## Recognition Clues
 
@@ -63,6 +76,11 @@ macOS 验证使用各自真实的平台原语。
   栈根、SQLite Pool 和只读属性；不要给所有目录删除统一加无限重试。
 - 弹窗命令含 `cmd.exe /d /c ping` 时，先搜索测试里的 `Start-Process`，确认
   派生进程是否显式使用 `-WindowStyle Hidden`。
+- 媒体校验在 `FileStream` 构造处报共享冲突时，同时核对已有写流和新读流双方的
+  `FileShare`，Windows 共享许可必须双向兼容。
+- 真实 Provider 所有远端场景成功、最后统一变成 `ExecutionFailed` 时，先单独检查
+  Secret Canary 是否正在独占读取活动 `state.db`，不要误判 API Key 或 Provider。
+- Workspace 发现返回真实用户目录时，检查祖先搜索是否在显式 User Profile 边界停止。
 
 ## Applicability / Non-Applicability
 
@@ -70,6 +88,7 @@ macOS 验证使用各自真实的平台原语。
 
 - 跨平台测试涉及绝对路径、链接、文件替换共享或等待外部协议事件。
 - Windows 测试涉及 collectible ALC、SQLite Pool、Git 临时仓库或派生控制台进程。
+- Windows 验证涉及活动 SQLite 的 Secret 扫描、写入中的媒体暂存或用户目录祖先搜索。
 - Windows 真机失败而相同生产安全语义已被独立测试证明正确。
 
 ### Does Not Apply When
@@ -86,6 +105,9 @@ macOS 验证使用各自真实的平台原语。
 - Archive: [M4 Tool Runtime Alpha 交付归档](../../archives/2026-07/2026-07-28-open-cowork-m4-tool-runtime-alpha-archives.md)
 - Archive: [M5 Wire Alpha 交付归档](../../archives/2026-07/2026-07-28-open-cowork-m5-wire-alpha-archives.md)
 - Archive: [M6 Capability Ecosystem 交付归档](../../archives/2026-07/2026-07-29-open-cowork-m6-capability-ecosystem-archives.md)
+- Archive: [M7 Multi-Agent CoWork 交付归档](../../archives/2026-07/2026-07-30-open-cowork-m7-multi-agent-cowork-archives.md)
+- Archive: [M8 Automations and Scheduler 交付归档](../../archives/2026-07/2026-07-30-open-cowork-m8-automations-scheduler-archives.md)
+- Archive: [M9 DeepSeek Responses Provider 交付归档](../../archives/2026-08/2026-08-01-open-cowork-m9-deepseek-responses-provider-archives.md)
 - Related Problems:
   - None.
 - Code or Test:
@@ -94,3 +116,8 @@ macOS 验证使用各自真实的平台原语。
   - [CoreToolTests.ShellWeb.cs](../../../../tests/OpenCoWork.Core.Tests/CoreToolTests.ShellWeb.cs)
   - [PluginRuntimeTests.cs](../../../../tests/OpenCoWork.Core.Tests/PluginRuntimeTests.cs)
   - [BackgroundTerminalTests.cs](../../../../tests/OpenCoWork.Core.Tests/BackgroundTerminalTests.cs)
+  - [GatewayMediaStore.cs](../../../../src/OpenCoWork.Core/Gateway/GatewayMediaStore.cs)
+  - [WorkspacePaths.cs](../../../../src/OpenCoWork.Core/Workspaces/WorkspacePaths.cs)
+  - [WorkspaceMemoryTests.cs](../../../../tests/OpenCoWork.Core.Tests/WorkspaceMemoryTests.cs)
+  - [CoWorkWorkspaceIntegrationTests.cs](../../../../tests/OpenCoWork.IntegrationTests/CoWorkWorkspaceIntegrationTests.cs)
+  - [ProviderReleaseValidationTests.cs](../../../../tests/OpenCoWork.IntegrationTests/ProviderReleaseValidationTests.cs)

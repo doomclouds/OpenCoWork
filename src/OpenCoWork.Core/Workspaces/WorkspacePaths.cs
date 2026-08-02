@@ -154,13 +154,13 @@ public static class WorkspaceDiscovery
         }
 
         var current = new DirectoryInfo(startupRoot);
-        while (current is not null)
+        while (current is not null &&
+               !string.Equals(
+                   Path.TrimEndingDirectorySeparator(current.FullName),
+                   userProfileRoot,
+                   comparison))
         {
-            if (!string.Equals(
-                    Path.TrimEndingDirectorySeparator(current.FullName),
-                    userProfileRoot,
-                    comparison) &&
-                Directory.Exists(Path.Combine(current.FullName, ".opencowork")))
+            if (Directory.Exists(Path.Combine(current.FullName, ".opencowork")))
             {
                 return new OpenCoWorkPaths(current.FullName);
             }
