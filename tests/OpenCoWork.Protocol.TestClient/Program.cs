@@ -89,6 +89,13 @@ public static class ProtocolTestClient
                 workspace,
                 secret,
                 transcript);
+            Require(
+                File.Exists(Path.Combine(
+                    workspace,
+                    ".test-user",
+                    ".opencowork",
+                    "workspaces.json")),
+                "Workspace registry was not isolated from the real user profile.");
             stage = "secret scan";
             EnsureSecretAbsent(secret, transcript, workspace);
             stage = "workspace cleanup";
@@ -1519,6 +1526,10 @@ internal sealed class ChildProcess : IAsyncDisposable
         {
             start.ArgumentList.Add(argument);
         }
+
+        var userProfile = Path.Combine(workingDirectory, ".test-user");
+        Directory.CreateDirectory(userProfile);
+        start.Environment["OPENCOWORK_VALIDATION_USER_PROFILE"] = userProfile;
 
         if (environment is not null)
         {

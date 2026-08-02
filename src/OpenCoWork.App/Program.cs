@@ -39,12 +39,21 @@ namespace OpenCoWork.App
                 Console.Out,
                 Console.Error,
                 Environment.CurrentDirectory,
-                Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+                ResolveUserProfileDirectory(),
                 !Console.IsInputRedirected,
                 configureServices: null,
                 Console.OpenStandardInput(),
                 Console.OpenStandardOutput(),
                 cancellationToken);
+
+        private static string ResolveUserProfileDirectory()
+        {
+            var validationProfile = Environment.GetEnvironmentVariable(
+                "OPENCOWORK_VALIDATION_USER_PROFILE");
+            return string.IsNullOrWhiteSpace(validationProfile)
+                ? Environment.GetFolderPath(Environment.SpecialFolder.UserProfile)
+                : Path.GetFullPath(validationProfile);
+        }
 
         public static Task<int> RunAsync(
             string[] args,
