@@ -284,9 +284,18 @@ public sealed class GatewayOutboxTests
         await files.AddTerminalAsync(
             "beta", "b-1", "beta-1", 1, "completed", "three",
             cancellationToken);
-        files.Sender.Handler = async (_, token) =>
+        var startedChannels = new ConcurrentDictionary<string, byte>(
+            StringComparer.Ordinal);
+        var twoChannelsStarted = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        files.Sender.Handler = async (request, token) =>
         {
-            await Task.Delay(40, token);
+            if (startedChannels.TryAdd(request.ChannelId, 0) &&
+                startedChannels.Count == 2)
+            {
+                twoChannelsStarted.TrySetResult();
+            }
+            await twoChannelsStarted.Task.WaitAsync(TimeSpan.FromSeconds(2), token);
             return new ChannelSendResult(true, false);
         };
 
