@@ -6,6 +6,8 @@ using OpenCoWork.Core.Workspaces;
 using OpenCoWork.Teams;
 using Xunit;
 
+[assembly: CollectionBehavior(DisableTestParallelization = true)]
+
 namespace OpenCoWork.IntegrationTests;
 
 internal sealed class AutomationSourceTestWorkspace : IAsyncDisposable

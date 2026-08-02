@@ -786,7 +786,11 @@ public sealed class AutomationDispatchTests
                 TestContext.Current.CancellationToken);
         }
 
-        public async ValueTask DisposeAsync() => await Workspace.DisposeAsync();
+        public async ValueTask DisposeAsync()
+        {
+            await Sessions.StopRuntimeAsync(CancellationToken.None);
+            await Workspace.DisposeAsync();
+        }
 
         private Task<long> ScalarAsync(string sql, Guid id) =>
             Workspace.Store.ReadAsync(
