@@ -1,0 +1,69 @@
+{
+  "schemaVersion": 1,
+  "state": [
+    {
+      "id": "state-v7",
+      "file": "state-v7.db",
+      "sha256": "806c61c0b735367719828730d94a30ec0caf6a325580b3defcd42e4d4ffe1056",
+      "sourceCommit": "c1b27346696caabb452e044bbafc9818df85fd4b",
+      "sourceTest": "StateMigrationV7Tests.Version_seven_enforces_json_uuid_and_active_run_constraints",
+      "schemaVersion": 7,
+      "expectations": [
+        {
+          "sql": "SELECT count(*) FROM automation_definitions;",
+          "value": "1"
+        },
+        {
+          "sql": "SELECT automation_id || ':' || display_name FROM automation_definitions;",
+          "value": "historical-daily:Historical daily"
+        }
+      ]
+    },
+    {
+      "id": "state-v8",
+      "file": "state-v8.db",
+      "sha256": "6173ba77f2523c39c4431ffed024bb3fad1cb0d15541ffd949346999fbe3cfc0",
+      "sourceCommit": "97aa1690a62a82ba24dccce74439b53f552af948",
+      "sourceTest": "StateMigrationV8Tests.Version_seven_rebuilds_only_items_and_preserves_rows",
+      "schemaVersion": 8,
+      "expectations": [
+        {
+          "sql": "SELECT display_name || ':' || history_mode FROM threads;",
+          "value": "existing:server"
+        },
+        {
+          "sql": "SELECT status FROM turns;",
+          "value": "completed"
+        },
+        {
+          "sql": "SELECT item_type || ':' || payload_json FROM items;",
+          "value": "systemNotice:{\"message\":\"kept\"}"
+        }
+      ]
+    }
+  ],
+  "journals": [
+    {
+      "id": "journal-m2-v1",
+      "file": "journal-m2-v1.jsonl",
+      "sha256": "17078d52408e4dc25c3fc3750288e842c53cdad0db573b7fac234012368b2138",
+      "sourceCommit": "7ae53f2de59f4959b2097f1837e28a95d6db81ae",
+      "sourceTest": "SessionProjectionTests.Projection_applies_all_session_rows_in_sequence_and_skips_exact_replay",
+      "schemaVersion": 1,
+      "threadId": "019fc0cd-521b-7697-8be6-f37d9a51aa00",
+      "entryCount": 11,
+      "modelVisibleText": "done"
+    },
+    {
+      "id": "journal-m4-v1",
+      "file": "journal-m4-v1.jsonl",
+      "sha256": "202a86a6a1ba7f2c9c52f74b92f35b20aa0762d0e32cd92d003bcaaf51d12847",
+      "sourceCommit": "439b0aa499e9e56e6b30833697debe714f0ee13c",
+      "sourceTest": "SessionProjectionTests.Projection_applies_all_session_rows_in_sequence_and_skips_exact_replay",
+      "schemaVersion": 1,
+      "threadId": "019fc0cd-52af-7631-81f1-ead67f7fbf7a",
+      "entryCount": 11,
+      "modelVisibleText": "done"
+    }
+  ]
+}

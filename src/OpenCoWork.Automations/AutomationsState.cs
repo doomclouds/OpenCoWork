@@ -12,16 +12,151 @@ public static class AutomationsStateMigrationContributors
         ];
 }
 
+internal static class AutomationsV7CompatibilityMigration
+{
+    private const string CurrentRunsSql =
+        AutomationsStateMigrationContributor.RunsSql;
+
+    public static async ValueTask ApplyAsync(
+        DbConnection connection,
+        DbTransaction transaction,
+        CancellationToken cancellationToken)
+    {
+        if (!await HasColumnAsync(
+                connection,
+                transaction,
+                "threads",
+                "automation_provenance_json",
+                cancellationToken))
+        {
+            await ExecuteAsync(
+                connection,
+                transaction,
+                """
+                ALTER TABLE threads
+                    ADD COLUMN automation_provenance_json TEXT NULL CHECK (
+                        automation_provenance_json IS NULL OR
+                        json_valid(automation_provenance_json));
+                """,
+                cancellationToken);
+        }
+
+        if (!await HasColumnAsync(
+                connection,
+                transaction,
+                "automation_runs",
+                "inputs_json",
+                cancellationToken))
+        {
+            return;
+        }
+
+        if (await ScalarAsync(
+                connection,
+                transaction,
+                "SELECT count(*) FROM automation_runs;",
+                cancellationToken) != 0)
+        {
+            throw new InvalidOperationException(
+                "Legacy State v7 contains Automation Runs that cannot be upgraded safely.");
+        }
+
+        await ExecuteAsync(
+            connection,
+            transaction,
+            "DROP TABLE automation_runs;" + CurrentRunsSql,
+            cancellationToken);
+    }
+
+    public static async ValueTask ValidateAsync(
+        DbConnection connection,
+        CancellationToken cancellationToken)
+    {
+        foreach (var column in new[]
+                 {
+                     "inputs_sha256",
+                     "rendered_prompt_sha256",
+                     "prepared_turn_id",
+                 })
+        {
+            if (!await HasColumnAsync(
+                    connection,
+                    transaction: null,
+                    "automation_runs",
+                    column,
+                    cancellationToken))
+            {
+                throw new InvalidOperationException(
+                    $"Automation Run column '{column}' is missing.");
+            }
+        }
+
+        if (!await HasColumnAsync(
+                connection,
+                transaction: null,
+                "threads",
+                "automation_provenance_json",
+                cancellationToken))
+        {
+            throw new InvalidOperationException(
+                "Automation Thread provenance column is missing.");
+        }
+    }
+
+    private static async ValueTask<bool> HasColumnAsync(
+        DbConnection connection,
+        DbTransaction? transaction,
+        string table,
+        string column,
+        CancellationToken cancellationToken) =>
+        await ScalarAsync(
+            connection,
+            transaction,
+            $"SELECT count(*) FROM pragma_table_info('{table}') WHERE name = '{column}';",
+            cancellationToken) == 1;
+
+    private static async ValueTask<long> ScalarAsync(
+        DbConnection connection,
+        DbTransaction? transaction,
+        string sql,
+        CancellationToken cancellationToken)
+    {
+        await using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = sql;
+        return Convert.ToInt64(
+            await command.ExecuteScalarAsync(cancellationToken),
+            System.Globalization.CultureInfo.InvariantCulture);
+    }
+
+    private static async ValueTask ExecuteAsync(
+        DbConnection connection,
+        DbTransaction transaction,
+        string sql,
+        CancellationToken cancellationToken)
+    {
+        await using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = sql;
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+}
+
 internal sealed class AutomationsCorrelationMigrationContributor
     : IWorkspaceStateMigrationContributor
 {
     public int TargetVersion => 9;
 
-    public ValueTask ApplyAsync(
+    public async ValueTask ApplyAsync(
         DbConnection connection,
         DbTransaction transaction,
-        CancellationToken cancellationToken) =>
-        ExecuteAsync(
+        CancellationToken cancellationToken)
+    {
+        await AutomationsV7CompatibilityMigration.ApplyAsync(
+            connection,
+            transaction,
+            cancellationToken);
+        await ExecuteAsync(
             connection,
             transaction,
             """
@@ -37,11 +172,15 @@ internal sealed class AutomationsCorrelationMigrationContributor
                             NOT GLOB '*[^0-9a-f]*'));
             """,
             cancellationToken);
+    }
 
     public async ValueTask ValidateAsync(
         DbConnection connection,
         CancellationToken cancellationToken)
     {
+        await AutomationsV7CompatibilityMigration.ValidateAsync(
+            connection,
+            cancellationToken);
         await using var command = connection.CreateCommand();
         command.CommandText =
             "SELECT count(*) FROM pragma_table_info('automation_runs') " +
@@ -91,7 +230,7 @@ internal sealed class AutomationsStateMigrationContributor
         "ix_automation_schedules_due",
     ];
 
-    private const string Sql =
+    private const string SqlPrefix =
         """
         ALTER TABLE threads
             ADD COLUMN automation_provenance_json TEXT NULL CHECK (
@@ -149,7 +288,10 @@ internal sealed class AutomationsStateMigrationContributor
         );
         CREATE INDEX ix_automation_schedules_due
             ON automation_schedules (next_occurrence_utc, automation_id);
+        """;
 
+    internal const string RunsSql =
+        """
         CREATE TABLE automation_runs (
             automation_run_id TEXT NOT NULL PRIMARY KEY CHECK (
                 length(automation_run_id) = 36 AND
@@ -234,7 +376,10 @@ internal sealed class AutomationsStateMigrationContributor
             WHERE status IN ('pending', 'running', 'needsAttention');
         CREATE INDEX ix_automation_runs_status
             ON automation_runs (status, updated_utc, automation_run_id);
+        """;
 
+    private const string SqlSuffix =
+        """
         CREATE TABLE automation_dispatch_intents (
             intent_id TEXT NOT NULL PRIMARY KEY CHECK (
                 length(intent_id) = 36 AND intent_id = lower(intent_id) AND
@@ -288,6 +433,8 @@ internal sealed class AutomationsStateMigrationContributor
         CREATE INDEX ix_automation_command_receipts_created
             ON automation_command_receipts (created_utc, command_id);
         """;
+
+    private const string Sql = SqlPrefix + RunsSql + SqlSuffix;
 
     public int TargetVersion => 7;
 
