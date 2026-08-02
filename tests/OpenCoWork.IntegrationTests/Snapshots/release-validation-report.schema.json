@@ -1,0 +1,167 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "kind",
+    "passed",
+    "environment",
+    "sqliteBusyCount",
+    "errorCodes"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "kind": {
+      "enum": ["automationLoad", "gatewayOperationsLoad", "soak"]
+    },
+    "passed": { "type": "boolean" },
+    "environment": { "$ref": "#/$defs/environment" },
+    "startedAtUtc": { "type": "string" },
+    "elapsedMilliseconds": { "type": "integer", "minimum": 0 },
+    "targetDurationMilliseconds": { "type": "integer", "minimum": 0 },
+    "completedCount": { "type": "integer", "minimum": 0 },
+    "completedIterations": { "type": "integer", "minimum": 0 },
+    "sqliteBusyCount": { "type": "integer", "minimum": 0 },
+    "errorCodes": {
+      "type": "array",
+      "items": { "type": "string", "maxLength": 64 }
+    },
+    "counts": { "type": "object" },
+    "phases": {
+      "oneOf": [
+        { "type": "object" },
+        {
+          "type": "array",
+          "items": { "$ref": "#/$defs/phase" }
+        }
+      ]
+    },
+    "resources": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/resource" }
+    },
+    "resourceSamples": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/resource" }
+    },
+    "finalResources": { "$ref": "#/$defs/resource" },
+    "baseline": { "$ref": "#/$defs/baseline" }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "kind": { "const": "soak" } },
+        "required": ["kind"]
+      },
+      "then": {
+        "required": [
+          "startedAtUtc",
+          "elapsedMilliseconds",
+          "targetDurationMilliseconds",
+          "completedIterations",
+          "phases",
+          "resourceSamples",
+          "finalResources",
+          "baseline"
+        ]
+      },
+      "else": {
+        "required": ["completedCount", "counts", "phases", "resources"]
+      }
+    }
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "environment": {
+      "type": "object",
+      "required": [
+        "productVersion",
+        "releaseSourceCommit",
+        "runtimeIdentifier",
+        "osDescription",
+        "architecture",
+        "frameworkDescription",
+        "processorCount",
+        "machineIdSha256"
+      ],
+      "properties": {
+        "productVersion": { "type": "string", "maxLength": 64 },
+        "releaseSourceCommit": {
+          "type": ["string", "null"],
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "runtimeIdentifier": { "type": "string", "maxLength": 64 },
+        "osDescription": { "type": "string", "maxLength": 128 },
+        "architecture": { "type": "string", "maxLength": 32 },
+        "frameworkDescription": { "type": "string", "maxLength": 64 },
+        "processorCount": { "type": "integer", "minimum": 1 },
+        "machineIdSha256": {
+          "type": ["string", "null"],
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      },
+      "additionalProperties": false
+    },
+    "phase": {
+      "type": "object",
+      "required": [
+        "name",
+        "attempted",
+        "completed",
+        "failed",
+        "averageElapsedMilliseconds",
+        "maximumElapsedMilliseconds"
+      ],
+      "properties": {
+        "name": { "type": "string", "maxLength": 128 },
+        "attempted": { "type": "integer", "minimum": 0 },
+        "completed": { "type": "integer", "minimum": 0 },
+        "failed": { "type": "integer", "minimum": 0 },
+        "averageElapsedMilliseconds": { "type": "integer", "minimum": 0 },
+        "maximumElapsedMilliseconds": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": false
+    },
+    "resource": {
+      "type": "object",
+      "required": [
+        "elapsedMilliseconds",
+        "managedMemoryBytes",
+        "workingSetBytes",
+        "handleOrDescriptorCount",
+        "threadCount",
+        "childProcessCount",
+        "walBytes"
+      ],
+      "properties": {
+        "elapsedMilliseconds": { "type": "integer", "minimum": 0 },
+        "managedMemoryBytes": { "type": "integer", "minimum": 0 },
+        "workingSetBytes": { "type": "integer", "minimum": 0 },
+        "handleOrDescriptorCount": { "type": "integer", "minimum": 0 },
+        "threadCount": { "type": "integer", "minimum": 0 },
+        "childProcessCount": { "type": "integer", "minimum": 0 },
+        "walBytes": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": false
+    },
+    "baseline": {
+      "type": "object",
+      "required": [
+        "applied",
+        "comparable",
+        "limitMultiplier",
+        "exceededPhases"
+      ],
+      "properties": {
+        "applied": { "type": "boolean" },
+        "comparable": { "type": "boolean" },
+        "limitMultiplier": { "const": 2 },
+        "exceededPhases": {
+          "type": "array",
+          "items": { "type": "string", "maxLength": 128 }
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

@@ -18,6 +18,7 @@ public sealed class AutomationLoadTests(ITestOutputHelper output)
         const int faultedCount = definitionCount / 10;
         const int runCount = 10_000;
         const int pageSize = 100;
+        var resourceBefore = await ReleaseResourceSample.CaptureAsync(0);
         await using var fixture = await AutomationServiceTests.Fixture.CreateAsync(
             maxConcurrentRuns: 16);
 
@@ -77,20 +78,48 @@ public sealed class AutomationLoadTests(ITestOutputHelper output)
 
         Assert.Equal(runCount, runs.Count);
         Assert.Equal(runCount, runs.Distinct().Count());
-        output.WriteLine(
-            "definitions={0}; faulted={1}; scanMs={2}; scheduleLagMs={3}; " +
-            "reconcileCount=1; reconcileMs={4}; runs={5}; pageSize={6}; " +
-            "pages={7}; seedMs={8}; pageMs={9}; sqliteBusy=0",
-            definitionCount,
-            faultedCount,
-            scan.ElapsedMilliseconds,
-            (long)(DateTimeOffset.UtcNow - due).TotalMilliseconds,
-            reconcile.ElapsedMilliseconds,
-            runCount,
-            pageSize,
-            runCount / pageSize,
-            seed.ElapsedMilliseconds,
-            page.ElapsedMilliseconds);
+        var resourceAfter = await ReleaseResourceSample.CaptureAsync(
+            scan.ElapsedMilliseconds + reconcile.ElapsedMilliseconds +
+            seed.ElapsedMilliseconds + page.ElapsedMilliseconds);
+        var walPath = new OpenCoWork.Core.Workspaces.OpenCoWorkPaths(
+            fixture.Workspace.Root).StateDatabasePath + "-wal";
+        resourceAfter = resourceAfter with
+        {
+            WalBytes = File.Exists(walPath) ? new FileInfo(walPath).Length : 0,
+        };
+        await ReleaseValidationOutput.WriteAsync(
+            "automation-load.json",
+            new
+            {
+                schemaVersion = 1,
+                kind = "automationLoad",
+                passed = true,
+                environment = ReleaseValidationEnvironment.Create(),
+                completedCount = definitionCount + runCount + 1,
+                sqliteBusyCount = 0,
+                errorCodes = Array.Empty<string>(),
+                counts = new
+                {
+                    definitions = definitionCount,
+                    faultedDefinitions = faultedCount,
+                    runs = runCount,
+                    reconcileCount = 1,
+                    pageSize,
+                    pages = runCount / pageSize,
+                },
+                phases = new
+                {
+                    scanMilliseconds = scan.ElapsedMilliseconds,
+                    scheduleLagMilliseconds =
+                        (long)(DateTimeOffset.UtcNow - due).TotalMilliseconds,
+                    reconcileMilliseconds = reconcile.ElapsedMilliseconds,
+                    seedMilliseconds = seed.ElapsedMilliseconds,
+                    pageMilliseconds = page.ElapsedMilliseconds,
+                },
+                resources = new[] { resourceBefore, resourceAfter },
+            },
+            output,
+            TestContext.Current.CancellationToken);
     }
 
     private static async Task<List<AutomationDefinitionSummary>> ReadDefinitionsAsync(

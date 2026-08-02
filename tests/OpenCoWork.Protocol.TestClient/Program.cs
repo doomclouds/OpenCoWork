@@ -13,20 +13,22 @@ using OpenCoWork.Protocol;
 
 return await ProtocolTestClient.RunAsync(args);
 
-internal static class ProtocolTestClient
+public static class ProtocolTestClient
 {
     private const string SecretEnvironment = "DEEPSEEK_API_KEY";
     private static readonly TimeSpan Timeout = TimeSpan.FromSeconds(15);
 
     public static async Task<int> RunAsync(string[] args)
     {
-        var server = ParseServer(args);
-        if (server is null)
+        var options = ParseOptions(args);
+        if (options is null)
         {
             await Console.Error.WriteLineAsync(
-                "Usage: OpenCoWork.Protocol.TestClient --server <opencowork>");
+                "Usage: OpenCoWork.Protocol.TestClient --server <opencowork> " +
+                "[--include-os-secret]");
             return 2;
         }
+        var (server, includeOsSecret) = options;
 
         var workspace = Path.Combine(
             Path.GetTempPath(),
@@ -55,6 +57,7 @@ internal static class ProtocolTestClient
                 server,
                 workspace,
                 secret,
+                includeOsSecret,
                 transcript);
             stage = "Wire 1.2 CoWork";
             var cowork = await RunCoWorkWireAsync(
@@ -88,6 +91,8 @@ internal static class ProtocolTestClient
                 transcript);
             stage = "secret scan";
             EnsureSecretAbsent(secret, transcript, workspace);
+            stage = "workspace cleanup";
+            Require(TryDelete(workspace), "Temporary workspace cleanup failed.");
 
             Console.WriteLine(JsonSerializer.Serialize(new
             {
@@ -95,6 +100,7 @@ internal static class ProtocolTestClient
                 platform = Environment.OSVersion.Platform.ToString(),
                 architecture = System.Runtime.InteropServices
                     .RuntimeInformation.ProcessArchitecture.ToString(),
+                osSecret = includeOsSecret ? "passed" : "notRun",
                 scenarios = new[]
                 {
                     wire,
@@ -325,6 +331,7 @@ internal static class ProtocolTestClient
         string server,
         string workspace,
         string secret,
+        bool includeOsSecret,
         ConcurrentQueue<string> transcript)
     {
         var childPidPath = Path.Combine(workspace, "m6-terminal-child.pid");
@@ -427,40 +434,43 @@ internal static class ProtocolTestClient
                 "capability.revisionConflict",
                 "Stale Capability cursor was accepted.");
 
-            var secretStored = false;
-            try
+            if (includeOsSecret)
             {
-                var stored = await client.RequestSensitiveAsync(
-                    62,
-                    "auth/secret/set",
-                    new
-                    {
-                        arguments = new
-                        {
-                            profileId = "auth/m6-os",
-                            secret,
-                        },
-                    },
-                    secret);
-                secretStored = stored.GetProperty("result").GetProperty("result")
-                    .GetProperty("stored").GetBoolean();
-                Require(secretStored, "OS Secret Store write failed.");
-            }
-            finally
-            {
-                if (secretStored)
+                var secretStored = false;
+                try
                 {
-                    var cleared = await client.RequestAsync(
-                        63,
-                        "auth/secret/clear",
+                    var stored = await client.RequestSensitiveAsync(
+                        62,
+                        "auth/secret/set",
                         new
                         {
-                            arguments = new { profileId = "auth/m6-os" },
-                        });
-                    Require(
-                        !cleared.GetProperty("result").GetProperty("result")
-                            .GetProperty("stored").GetBoolean(),
-                        "OS Secret Store cleanup failed.");
+                            arguments = new
+                            {
+                                profileId = "auth/m6-os",
+                                secret,
+                            },
+                        },
+                        secret);
+                    secretStored = stored.GetProperty("result").GetProperty("result")
+                        .GetProperty("stored").GetBoolean();
+                    Require(secretStored, "OS Secret Store write failed.");
+                }
+                finally
+                {
+                    if (secretStored)
+                    {
+                        var cleared = await client.RequestAsync(
+                            63,
+                            "auth/secret/clear",
+                            new
+                            {
+                                arguments = new { profileId = "auth/m6-os" },
+                            });
+                        Require(
+                            !cleared.GetProperty("result").GetProperty("result")
+                                .GetProperty("stored").GetBoolean(),
+                            "OS Secret Store cleanup failed.");
+                    }
                 }
             }
 
@@ -1230,17 +1240,30 @@ internal static class ProtocolTestClient
             @params = parameters,
         });
 
-    private static string? ParseServer(string[] args)
+    private static TestClientOptions? ParseOptions(string[] args)
     {
-        if (args.Length != 2 ||
+        if (args.Length is < 2 or > 3 ||
             !string.Equals(args[0], "--server", StringComparison.Ordinal))
+        {
+            return null;
+        }
+        var includeOsSecret = args.Length == 3 &&
+                              string.Equals(
+                                  args[2],
+                                  "--include-os-secret",
+                                  StringComparison.Ordinal);
+        if (args.Length == 3 && !includeOsSecret)
         {
             return null;
         }
 
         var path = Path.GetFullPath(args[1]);
-        return File.Exists(path) ? path : null;
+        return File.Exists(path)
+            ? new TestClientOptions(path, includeOsSecret)
+            : null;
     }
+
+    private sealed record TestClientOptions(string Server, bool IncludeOsSecret);
 
     private static void EnsureSecretAbsent(
         string secret,
@@ -1279,14 +1302,19 @@ internal static class ProtocolTestClient
         }
     }
 
-    private static void TryDelete(string path)
+    private static bool TryDelete(string path)
     {
         try
         {
-            Directory.Delete(path, recursive: true);
+            if (Directory.Exists(path))
+            {
+                Directory.Delete(path, recursive: true);
+            }
+            return true;
         }
         catch
         {
+            return false;
         }
     }
 }

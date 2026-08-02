@@ -19,6 +19,13 @@
     <ProjectReference Include="..\..\src\OpenCoWork.App\OpenCoWork.App.csproj" />
     <ProjectReference Include="..\OpenCoWork.LspFixture\OpenCoWork.LspFixture.csproj" />
     <ProjectReference Include="..\OpenCoWork.McpFixture\OpenCoWork.McpFixture.csproj" />
+    <ProjectReference Include="..\OpenCoWork.Protocol.TestClient\OpenCoWork.Protocol.TestClient.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Update="Snapshots\release-validation-report.schema.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
   </ItemGroup>
 
 </Project>

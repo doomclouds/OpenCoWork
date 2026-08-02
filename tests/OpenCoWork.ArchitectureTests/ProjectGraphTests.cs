@@ -61,7 +61,12 @@ public sealed class ProjectGraphTests
             "OpenCoWork.IntegrationTests",
             "net10.0",
             "Exe",
-            ["OpenCoWork.App", "OpenCoWork.LspFixture", "OpenCoWork.McpFixture"],
+            [
+                "OpenCoWork.App",
+                "OpenCoWork.LspFixture",
+                "OpenCoWork.McpFixture",
+                "OpenCoWork.Protocol.TestClient",
+            ],
             []),
         new("OpenCoWork.Protocol.TestClient", "net10.0", "Exe", ["OpenCoWork.Protocol"], []),
     ];

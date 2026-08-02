@@ -24,9 +24,7 @@ public sealed class GatewayOperationsLoadTests(ITestOutputHelper output)
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         await using var fixture = await LoadFixture.CreateAsync(cancellationToken);
-        var process = Process.GetCurrentProcess();
-        var handlesBefore = process.HandleCount;
-        var memoryBefore = GC.GetTotalMemory(forceFullCollection: true);
+        var resourceBefore = await ReleaseResourceSample.CaptureAsync(0);
 
         var seed = Stopwatch.StartNew();
         await fixture.SeedAsync(cancellationToken);
@@ -68,20 +66,46 @@ public sealed class GatewayOperationsLoadTests(ITestOutputHelper output)
         Assert.Equal(10_000, aggregate.CompletionTokens);
         Assert.Equal(20_000, aggregate.TotalTokens);
 
-        var handlesAfter = process.HandleCount;
-        var memoryAfter = GC.GetTotalMemory(forceFullCollection: true);
-        output.WriteLine(
-            "channels=8; conversationsPerChannel=32; messagesPerConversation=100; " +
-            "inbound=25600; outbox=10000; retryable=1000; deadLetter=100; " +
-            "traceSpans=100000; usage=10000; proposals=1000; pageSize=100; " +
-            "seedMs={0}; pageMs={1}; sqliteBusy=0; handlesBefore={2}; " +
-            "handlesAfter={3}; memoryBefore={4}; memoryAfter={5}",
-            seed.ElapsedMilliseconds,
-            page.ElapsedMilliseconds,
-            handlesBefore,
-            handlesAfter,
-            memoryBefore,
-            memoryAfter);
+        var resourceAfter = await ReleaseResourceSample.CaptureAsync(
+            seed.ElapsedMilliseconds + page.ElapsedMilliseconds);
+        resourceAfter = resourceAfter with
+        {
+            WalBytes = fixture.WalBytes,
+        };
+        await ReleaseValidationOutput.WriteAsync(
+            "gateway-operations-load.json",
+            new
+            {
+                schemaVersion = 1,
+                kind = "gatewayOperationsLoad",
+                passed = true,
+                environment = ReleaseValidationEnvironment.Create(),
+                completedCount = inbound.Count + outbox.Count + 100_000,
+                sqliteBusyCount = 0,
+                errorCodes = Array.Empty<string>(),
+                counts = new
+                {
+                    channels = 8,
+                    conversationsPerChannel = 32,
+                    messagesPerConversation = 100,
+                    inbound = 25_600,
+                    outbox = 10_000,
+                    retryable = 1_000,
+                    deadLetter = 100,
+                    traceSpans = 100_000,
+                    usage = 10_000,
+                    proposals = 1_000,
+                    pageSize = PageSize,
+                },
+                phases = new
+                {
+                    seedMilliseconds = seed.ElapsedMilliseconds,
+                    pageMilliseconds = page.ElapsedMilliseconds,
+                },
+                resources = new[] { resourceBefore, resourceAfter },
+            },
+            output,
+            cancellationToken);
     }
 
     private static async Task<List<Guid>> ReadInboundAsync(
@@ -157,11 +181,13 @@ public sealed class GatewayOperationsLoadTests(ITestOutputHelper output)
     private sealed class LoadFixture : IAsyncDisposable
     {
         private readonly string _root;
+        private readonly OpenCoWorkPaths _paths;
         private readonly StateRuntime _state;
 
         private LoadFixture(string root, StateRuntime state, OpenCoWorkPaths paths)
         {
             _root = root;
+            _paths = paths;
             _state = state;
             Now = new DateTimeOffset(2026, 8, 1, 12, 0, 0, TimeSpan.Zero);
             var credentials = new ChannelCredentialService(
@@ -188,6 +214,15 @@ public sealed class GatewayOperationsLoadTests(ITestOutputHelper output)
         public IChannelService Channels { get; }
         public IOperationsQueryService Operations { get; }
         public IWorkspaceInsightService Insights { get; }
+
+        public long WalBytes
+        {
+            get
+            {
+                var path = _paths.StateDatabasePath + "-wal";
+                return File.Exists(path) ? new FileInfo(path).Length : 0;
+            }
+        }
 
         public static async Task<LoadFixture> CreateAsync(
             CancellationToken cancellationToken)
