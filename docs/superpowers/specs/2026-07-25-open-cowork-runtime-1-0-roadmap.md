@@ -7,6 +7,8 @@
 - 修订：2026-07-28，按 M5 头脑风暴确认 Desktop-first Wire 与稳定 ACP v1 边界
 - 修订：2026-08-01，新增 M9 DeepSeek Responses Provider，原 Gateway 与
   1.0 Closure 顺延为 M10/M11
+- 修订：2026-08-02，按用户决策取消 M11 最终 RC 对真实 DeepSeek 与 OS Secret 的
+  重复验收；相关交互移至未来客户端阶段，M9/M10 已有真实证据继续保留
 - 目标版本：OpenCoWork 1.0
 - 目标框架：.NET 10
 - 正式平台：`win-x64`、`osx-arm64`
@@ -650,7 +652,7 @@ DeepSeek 专用 Responses API 实现，并形成 1.0 唯一真实 Provider 路�
 - M0 能力台账逐项关闭；
 - Protocol 方法、DTO、配置 Schema 和默认值审查；
 - SQLite Migration 和 ThreadJournal Schema v1 真实历史 Corpus 回放；
-- DeepSeek-only Provider、Plugin、MCP/LSP 最小兼容矩阵；
+- DeepSeek-only Provider 契约与离线 Fixture、Plugin、MCP/LSP 最小兼容矩阵；
 - CLI、AppServer、ACP、Gateway 端到端测试；
 - 安全、故障注入、现有固定负载和每平台两小时 Soak；
 - 未签名自包含包的安装、升级、卸载与双平台发布；
@@ -662,13 +664,15 @@ DeepSeek 专用 Responses API 实现，并形成 1.0 唯一真实 Provider 路�
 - 临门新增大型功能；
 - Linux 或 Intel macOS 正式支持。
 - Windows/macOS 代码签名与 macOS Notarization。
+- 最终 RC 上的真实 DeepSeek 与 OS Secret/Keychain/Credential Manager 重验；待客户端
+  具备对应交互后另行激活。
 
 完成信号：
 
 - 没有未解释的契约缺口和 P0/P1 缺陷；
 - 所有迁移、恢复和故障场景有自动化证据；
-- `win-x64` 与 `osx-arm64` 在干净机器通过未签名自包含包安装和
-  `deepseek-v4-flash` 真实模型冒烟；
+- `win-x64` 与 `osx-arm64` 在干净机器通过未签名自包含包安装、离线 E2E、固定负载、
+  两小时 Soak、卸载和残留检查；
 - 公开协议和插件契约开始遵守 SemVer。
 
 ## 10. 发布阶段

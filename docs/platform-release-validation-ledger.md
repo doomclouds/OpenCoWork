@@ -34,7 +34,8 @@ Provider 的真实兼容性不在此重复维护，统一见
 
 `dotnet publish -r <RID>` 在另一操作系统成功时，只能登记为 `Cross-publish
 Passed`，不得把目标平台状态改为 `Passed`。M11 必须在最终发布候选上重新执行两端
-完整验收，早期里程碑结果不能直接沿用为 1.0 发布结论。
+冻结的安装、离线 E2E、负载、Soak 与清理门禁；2026-08-02 用户明确把真实 DeepSeek
+与 OS Secret 重验移至未来客户端阶段，早期里程碑结果只保留为历史证据。
 
 ## 当前台账
 
@@ -60,8 +61,8 @@ Passed`，不得把目标平台状态改为 `Passed`。M11 必须在最终发布
 | M9 DeepSeek Responses Provider | `osx-arm64` | Passed | `058b505174602653385c51cb35fb654dd0b31262` | Apple Silicon macOS 26.5.2 (`25F84`)；.NET SDK `10.0.302`；Runtime `10.0.10` | 577 项离线回归、Release build 0/0、App/TestClient/Runner Mach-O arm64 发布目录真实运行；Protocol TestClient 7 场景和 DeepSeek Flash Responses 六场景、Usage 容差、Secret Canary、残留扫描全部通过 | [Provider 台账](provider-validation-backlog.md) |
 | M10 Gateway and Operations | `win-x64` | Passed | `2d966400e61e8d17c8a513299e8a9b420591d865` + Source/Test Patch SHA-256 `516c263191620d8b9f41eb5bbce0436aac41ee04aef6be73af5c5514783e90cd` | Windows 11 Home `10.0.26200` x64；.NET SDK `10.0.302`；Runtime `10.0.10` | App/TestClient/Runner `win-x64` 发布目录通过 8 个 Protocol 场景、13 项 Gateway/Outbox/Operations/Runtime Composition、Junction/Reparse Point、Credential Manager、Wire 1.4、Secret Canary 与残留检查 | [M10 实施计划 Outcome 10](superpowers/plans/2026-08-01-open-cowork-m10-gateway-operations-implementation-plan.md) |
 | M10 Gateway and Operations | `osx-arm64` | Passed | `050b85c1c42ca2e3bd2abd5eb0943232895081d7` | Apple Silicon macOS 26.5.2 (`25F84`)；.NET SDK `10.0.302`；Runtime `10.0.10` | 638 项离线回归、Release build 0/0、App/TestClient/Runner Mach-O arm64 发布目录通过 Protocol 8 场景、Gateway/Outbox/Operations/Runtime Composition 13 项、Symlink、Keychain、Wire 1.4、Secret Canary 与残留检查 | [M10 交付归档](superpowers/archives/2026-08/2026-08-01-open-cowork-m10-gateway-operations-archives.md) |
-| M11 OpenCoWork 1.0 Closure | `win-x64` | Pending | RC 源 `ac7496eea33e0a1f786a2530b58889e115656530`；交叉包 SHA-256 `4fa06c30fc072cb167bb0a06a777f17bb122a43e117dca8cb238212214791082` | 未在 Windows 真机运行 | 未签名自包含 ZIP 已交叉生成并通过结构、SBOM 与校验和检查；该结果不是 Windows 安装、PATH、Credential Manager、真实 Provider、固定负载或两小时 Soak 证据 | [M11 设计](superpowers/specs/2026-08-02-open-cowork-m11-runtime-1-0-closure-design.md) / [计划 Outcome 7](superpowers/plans/2026-08-02-open-cowork-m11-runtime-1-0-closure-implementation-plan.md#outcome-7执行-win-x64-rc1-真机验收) |
-| M11 OpenCoWork 1.0 Closure | `osx-arm64` | Pending | RC 源 `ac7496eea33e0a1f786a2530b58889e115656530`；tar.gz SHA-256 `aff89cd4ddcc68874193c3b7bef90f5097c53445bede4415751dd398ef3b35a8` | Apple Silicon macOS `26.5.2`；SDK `10.0.302`；Runtime `10.0.10` | 647 项离线回归、未签名包安装/升级/doctor/默认卸载、固定负载与两小时 1,027 轮 Soak 通过；真实 DeepSeek 与 OS Secret 因无授权 Secret/Keychain 拒绝未运行，故保持 Pending | [M11 计划 Outcome 6 执行记录](superpowers/plans/2026-08-02-open-cowork-m11-runtime-1-0-closure-implementation-plan.md#outcome-6-执行记录2026-08-02部分完成平台仍为-pending) |
+| M11 OpenCoWork 1.0 Closure | `win-x64` | Pending | RC 源 `ac7496eea33e0a1f786a2530b58889e115656530`；交叉包 SHA-256 `4fa06c30fc072cb167bb0a06a777f17bb122a43e117dca8cb238212214791082` | 未在 Windows 真机运行 | 未签名自包含 ZIP 已交叉生成并通过结构、SBOM 与校验和检查；该结果不是 Windows 安装、PATH、离线 E2E、固定负载或两小时 Soak 证据 | [M11 设计](superpowers/specs/2026-08-02-open-cowork-m11-runtime-1-0-closure-design.md) / [计划 Outcome 7](superpowers/plans/2026-08-02-open-cowork-m11-runtime-1-0-closure-implementation-plan.md#outcome-7执行-win-x64-rc1-真机验收) |
+| M11 OpenCoWork 1.0 Closure | `osx-arm64` | Passed | RC 源 `ac7496eea33e0a1f786a2530b58889e115656530`；tar.gz SHA-256 `aff89cd4ddcc68874193c3b7bef90f5097c53445bede4415751dd398ef3b35a8` | Apple Silicon macOS `26.5.2`；SDK `10.0.302`；Runtime `10.0.10` | 647 项离线回归、未签名包安装/升级/doctor/默认卸载、固定负载与两小时 1,027 轮 Soak 通过；真实 DeepSeek 与 OS Secret 按用户决策移至未来客户端阶段，不计入 M11 门禁 | [M11 计划 Outcome 6](superpowers/plans/2026-08-02-open-cowork-m11-runtime-1-0-closure-implementation-plan.md#outcome-6执行-osx-arm64-rc1-真机验收) |
 
 ## M4 Windows 验证结果（2026-07-29）
 
@@ -347,7 +348,7 @@ Passed`，不得把目标平台状态改为 `Passed`。M11 必须在最终发布
 - `win-x64`、`osx-arm64` 均为 Passed，`M9-ACC-001..010` 已关闭，M10 标记 Done 并
   创建唯一交付归档；M11 仍须在最终发布候选上重跑完整双平台验收。
 
-## M11 rc.1 部分验证结果（macOS 2026-08-02）
+## M11 rc.1 macOS 验证结果（2026-08-02）
 
 - 最终有效 RC 源为干净提交
   `ac7496eea33e0a1f786a2530b58889e115656530`，版本 `1.0.0-rc.1`。macOS
@@ -373,8 +374,10 @@ Passed`，不得把目标平台状态改为 `Passed`。M11 必须在最终发布
   Registry，故该轮证据作废；新增项按测试前 SHA-256 字节级恢复。隔离修复已进入
   `69874b9`、`ac7496e`，最终 RC 重打包并完整复验。
 - 本轮没有授权 DeepSeek Secret，且用户拒绝 Keychain 弹窗；未绕过授权，也未执行
-  真实 `deepseek-v4-flash` 或 OS Secret。Windows 真机同样尚未执行。因此两个 M11
-  平台状态均保持 `Pending`，Acceptance 不改为 Passed，版本不晋升为 `1.0.0`。
+  真实 `deepseek-v4-flash` 或 OS Secret。2026-08-02 用户随后将两项重验移至未来
+  客户端阶段；这不把 Not Run 改写为通过，也不新增 Provider/Keychain 证据。其余
+  冻结门禁全部通过，因此 M11 `osx-arm64` 更新为 `Passed`；Windows 真机仍为
+  `Pending`，Acceptance 不改为 Passed，版本不晋升为 `1.0.0`。
 
 ## 更新规则
 

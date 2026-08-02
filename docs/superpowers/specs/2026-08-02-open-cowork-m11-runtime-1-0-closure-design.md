@@ -4,6 +4,7 @@
 
 - 状态：已确认，独立实施计划已落盘
 - 日期：2026-08-02
+- 修订：2026-08-02，按用户决策将真实 DeepSeek 与 OS Secret 重验移至未来客户端阶段
 - 所属里程碑：OpenCoWork Runtime 1.0 / M11
 - 当前基线：`dev` 的 `b2eef7fb595eb0fa9d2b50ea8d37cc1f2ff5ef39`
 - 目标版本：`1.0.0-rc.1` 至 `1.0.0`
@@ -37,6 +38,9 @@ M11 不增加大型子系统。它把 M1-M10 已交付的开发基线收敛为�
 - `win-x64`、`osx-arm64` 在同一最终提交的各自 RID 发布包上独立通过；
 - 没有开放的 P0/P1 缺陷、Secret 命中或无法解释的资源残留。
 
+M11 不再把最终 RC 上的真实 `deepseek-v4-flash` 或用户 OS Secret 交互作为关闭门禁；
+M9/M10 的既有真实证据继续有效，客户端具备对应交互后再建立新的真实验收记录。
+
 ## 2. 已确认边界
 
 ### 2.1 包含
@@ -47,8 +51,8 @@ M11 不增加大型子系统。它把 M1-M10 已交付的开发基线收敛为�
 - ThreadJournal 真实历史 Corpus 回放、Checksum 和投影重建；
 - Archive/Delete/Fork/Rollback 组合故障恢复；
 - Secret、路径、Plugin、Hook、MCP/LSP、工具、媒体和 Worktree 安全矩阵；
-- CLI、OpenCoWork Wire、ACP v1、Webhook Gateway、Hub/Operations 与
-  `deepseek-v4-flash` Responses 的发布目录 E2E；
+- CLI、OpenCoWork Wire、ACP v1、Webhook Gateway、Hub/Operations 与 Fake Provider
+  的发布目录 E2E，以及 DeepSeek Responses 的离线契约矩阵；
 - 固定负载、双平台性能基线和每平台两小时 Soak；
 - 未签名自包含发布包、用户级安装/升级/卸载、Release Notes、SBOM、SHA-256、
   用户文档、协议文档和插件开发文档。
@@ -61,6 +65,8 @@ M11 不增加大型子系统。它把 M1-M10 已交付的开发基线收敛为�
 - Linux、Intel macOS、桌面 UI、Web UI、Marketplace UI；
 - Windows 代码签名、Apple Developer ID 签名或 macOS Notarization；
 - GitHub Release、商店分发、官网托管或自动发布；
+- 最终 RC 上的真实 DeepSeek、Keychain 或 Credential Manager 重验；这些交互待客户端
+  具备可操作入口后另行激活；
 - 为满足验收数量而制造不存在的 Journal Schema；
 - 新 Benchmark 框架或独立性能子系统。
 
@@ -140,7 +146,7 @@ Flush 前后、SQLite Commit 前后、文件移动前后、进程强杀与重启
 
 在既有安全原语上组合复验，不创建第二套扫描器：
 
-- Secret：环境变量、Keychain/Credential Manager、日志、Journal、SQLite、事件、
+- Secret：环境变量、Fake/隔离 Secret Fixture、日志、Journal、SQLite、事件、
   stdout/stderr、包目录和报告的 Canary；
 - 路径：Traversal、Symlink、Junction/Reparse Point、大小写与媒体路径包含；
 - 工具：Authority、模式、Policy、Hook、Approval、Timeout、Cancellation 与审计顺序；
@@ -148,9 +154,13 @@ Flush 前后、SQLite Commit 前后、文件移动前后、进程强杀与重启
 - 协作：Artifact、Scratchpad、Managed Worktree、Dirty Retention；
 - 安装：只写入精确用户级目标，不接触其他安装或用户数据。
 
+M11 不读取或写入真实用户 Keychain/Credential Manager；OS Secret 的真实交互沿用
+M10 已有证据，未来客户端验收不得倒推为本次 RC 的新证据。
+
 ### 6.2 支持矩阵
 
-- Provider 只声明并真实验证 DeepSeek `deepseek-v4-flash` Responses；
+- Provider 只声明 DeepSeek `deepseek-v4-flash` Responses，并以离线官方协议 Fixture
+  冻结契约；M11 不重复 M9 的真实 Provider 验收；
 - Plugin 只承诺 OpenCoWork 1.0 Manifest、Lock、安装、升级、启停、卸载与故障隔离；
 - MCP/LSP 使用仓库内真实子进程 Fixture 验证握手、调用、取消、断连、升级和进程树
   清理，不宣称兼容所有第三方 Server；
@@ -164,14 +174,14 @@ Flush 前后、SQLite Commit 前后、文件移动前后、进程强杀与重启
 每个平台从安装后的自包含包运行同一 Workspace 流程：
 
 1. 安装、`--version`、`init`、`doctor --json`；
-2. CLI 真实 `deepseek-v4-flash` 回合与重启恢复；
+2. CLI Fake Provider 回合与重启恢复；
 3. Wire stdio、loopback WebSocket、ACP v1；
 4. Plugin、MCP、LSP、Automation、CoWork、Webhook Gateway、Hub/Operations；
 5. 应用升级后复用同一 Workspace，状态、Secret 引用和 Journal 可恢复；
 6. 卸载后程序、PATH 项、进程和临时文件清理，用户数据默认保留。
 
-真实模型只覆盖已冻结的 Text、Function、`web_search`、`custom/apply_patch`、Usage 与
-Secret Canary，不访问真实第三方 Webhook。
+真实 DeepSeek 与 OS Secret 交互不属于 M11 最终包门禁；待客户端可用后，按届时支持面
+独立验证 Text、Function、`web_search`、`custom/apply_patch`、Usage 与 Secret Canary。
 
 ### 7.2 发布预算
 
@@ -186,7 +196,7 @@ Secret Canary，不访问真实第三方 Webhook。
 `win-x64` 与 `osx-arm64` 各连续运行两小时：
 
 - 循环 Session、Wire、Automation、CoWork、Gateway 和 MCP/LSP 启停；
-- 主循环使用 Fake Provider，开始和结束各执行一次真实 DeepSeek 发布冒烟；
+- 主循环全程使用 Fake Provider，不读取真实 Provider 或用户 OS Secret；
 - 记录阶段性内存、句柄/描述符、线程、子进程、SQLite WAL、错误和完成计数；
 - 停止后资源必须回落，不得出现持续单调增长、僵尸进程、活动句柄、临时 Workspace
   或测试 Keychain/Credential 残留；
@@ -234,7 +244,7 @@ M11 的实施计划必须按依赖排序，但不在本文写施工步骤：
 1. Gate 0：校正台账、冻结 RC 身份和证据目录；
 2. 契约 Golden Snapshot；
 3. SQLite/Journal Corpus 与组合恢复；
-4. 安全和 Provider/Plugin/MCP/LSP 兼容矩阵；
+4. 安全和离线 Provider 契约、Plugin/MCP/LSP 兼容矩阵；
 5. E2E、固定负载和 Soak Runner；
 6. 自包含包、安装/升级/卸载、SBOM、校验和与文档；
 7. `rc.1` 双平台真机，按失败形成最小修复循环；
@@ -253,18 +263,18 @@ M11 的实施计划必须按依赖排序，但不在本文写施工步骤：
 | `M10-ACC-004` | 两个真实历史 Journal v1 Corpus、Checksum、回放和投影重建。 |
 | `M10-ACC-005` | Archive/Delete/Fork/Rollback 组合故障矩阵。 |
 | `M10-ACC-006` | 双平台 Threat Matrix、Canary、越界 Corpus 和资源清理。 |
-| `M10-ACC-007` | 安装后 CLI/Wire/ACP/Gateway/DeepSeek E2E 与重启恢复。 |
-| `M10-ACC-008` | DeepSeek-only、Plugin 1.0、仓库 MCP/LSP Fixture 兼容矩阵。 |
+| `M10-ACC-007` | 安装后 CLI/Wire/ACP/Gateway/Fake Provider E2E 与重启恢复。 |
+| `M10-ACC-008` | DeepSeek-only 离线契约、Plugin 1.0、仓库 MCP/LSP Fixture 兼容矩阵。 |
 | `M10-ACC-009` | 现有固定负载、基线 `2×` 上限和两平台各两小时 Soak。 |
-| `M10-ACC-010` | Windows 未签名自包含 ZIP 的安装、升级、卸载和真实冒烟。 |
-| `M10-ACC-011` | macOS 未签名自包含 tar.gz 的安装、升级、卸载和真实冒烟。 |
+| `M10-ACC-010` | Windows 未签名自包含 ZIP 的安装、升级、离线 E2E、卸载和清理。 |
+| `M10-ACC-011` | macOS 未签名自包含 tar.gz 的安装、升级、离线 E2E、卸载和清理。 |
 | `M10-ACC-012` | 用户/协议/插件文档、Release Notes、SPDX SBOM 和 SHA-256。 |
 
 ## 11. 交付与证据规则
 
 - 按已确认的独立、可恢复 M11 实施计划逐 Outcome 执行；
-- 默认测试不得隐式访问真实 Provider、真实第三方服务或用户 Secret；
-- 真机测试必须显式激活，Secret 只进入验证子进程且不得输出或落盘；
+- M11 测试不得访问真实 Provider、真实第三方服务或用户 OS Secret；
+- 未来客户端真实验收必须单独显式激活，Secret 只进入验证进程且不得输出或落盘；
 - 用户级 Registry、Keychain/Credential 与 Workspace 的前后状态必须可精确核对；
 - 最终报告保留 Commit、环境、命令、摘要、计数、失败与清理结果，不保存 Prompt、
   回答、原始 Provider 响应或 Secret；

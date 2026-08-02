@@ -1,6 +1,7 @@
 # OpenCoWork M11 Runtime 1.0 Closure 实施计划
 
-**Status:** Approved；Gate 0 由本计划基线提交完成，Outcome 1–9 待执行。
+**Status:** In Progress；Outcomes 1–5 已完成，Outcome 6 的 macOS rc.1 已按 2026-08-02
+修订口径通过，Outcomes 7–9 待执行。
 
 **Goal:** 不增加大型子系统，把 M1–M10 已交付能力收敛为可安装、可升级、可恢复、
 可诊断的 OpenCoWork 1.0，并以同一发布源提交上的 `win-x64`、`osx-arm64` 未签名
@@ -13,10 +14,14 @@
 
 **Acceptance:** `M10-ACC-001..012` 全部具有可复现证据；公共 Wire、配置和 Plugin
 契约完成 Golden Snapshot；State v7/v8 与两个真实历史 ThreadJournal v1 Corpus 可安全
-迁移/回放/恢复；安全、Provider/Plugin/MCP/LSP、固定负载与每平台两小时 Soak 通过；
+迁移/回放/恢复；安全、DeepSeek 离线契约、Plugin/MCP/LSP、固定负载与每平台两小时
+Soak 通过；
 `opencowork-1.0.0-win-x64.zip` 与 `opencowork-1.0.0-osx-arm64.tar.gz` 在对应真机完成
 安装、升级、E2E 和卸载；SBOM、SHA-256、文档、台账与归档闭合。任一真机缺失时
 M11 保持 `In Progress`。
+
+2026-08-02 用户确认：最终 RC 不再重跑真实 DeepSeek 或 OS Secret；两项交互移至未来
+客户端阶段，不阻止 M11 平台通过或 `1.0.0` 晋升。
 
 对应设计：
 [M11 Runtime 1.0 Closure 设计](../specs/2026-08-02-open-cowork-m11-runtime-1-0-closure-design.md)
@@ -43,7 +48,8 @@ M11 保持 `In Progress`。
 - 已有 `AutomationLoadTests` 的 1,000 Definition / 10,000 Run 负载，以及
   `GatewayOperationsLoadTests` 的 25,600 Inbound / 10,000 Outbox / 100,000 Trace Span
   负载；M11 只冻结输入、输出和预算，不增加 Benchmark 框架；
-- M1–M10 平台证据是开发基线，不能替代 M11 的最终 RC 与 `1.0.0` 发布包重跑。
+- M1–M10 平台证据不能替代 M11 的最终 RC 安装、离线 E2E、负载、Soak 与清理；
+  真实 DeepSeek 和 OS Secret 不在本次重跑范围内。
 
 ## 最小变更图
 
@@ -69,8 +75,9 @@ M11 保持 `In Progress`。
 - 测试默认使用临时 Workspace、临时安装根、Fake Provider、仓库内 MCP/LSP Fixture
   和 loopback；不得隐式读取真实 Secret、修改真实 PATH、访问公网或删除用户数据；
 - `--purge` 只测试隔离目录与拒绝/确认语义，不对真实 `~/.opencowork` 执行；
-- 真实 DeepSeek、Keychain/Credential Manager、真实用户级安装和 PATH 变更在平台 RC
-  Gate 前做精确只读预检；出现系统授权弹窗、未知目标或无法恢复的状态变化时立即停下；
+- M11 平台 Gate 不读取真实 DeepSeek Secret，也不读写 Keychain/Credential Manager；
+  真实用户级安装和 PATH 变更仍须精确只读预检，出现未知目标或无法恢复的状态变化时
+  立即停下；
 - Windows 必须由 `win-x64` 真机执行。没有 Windows Runner 时只完成 Mac 可执行
   Outcome，并把 Outcome 7 及后续保持 Pending；
 - 交叉发布、旧 Commit、开发目录、脏工作树或另一平台的结果均不能改变目标平台状态；
@@ -168,7 +175,8 @@ dotnet build OpenCoWork.slnx -c Release --no-restore
   - 覆盖 Plugin 1.0 Manifest/Lock 的安装、升级、启停、卸载和故障隔离；
   - 使用仓库内真实 MCP/LSP 子进程 Fixture 覆盖握手、调用、取消、断连、升级与进程树
     清理；复验 Wire Host、ACP v1、loopback WebSocket/Bearer；
-  - Provider 只激活 Fake 和显式 DeepSeek `deepseek-v4-flash` 路径，不增加其他模型。
+  - Provider 只激活 Fake 与 DeepSeek `deepseek-v4-flash` 离线协议 Fixture，不增加其他
+    模型或真实网络调用。
 - Work:
   - 将分散的现有测试组合为确定性矩阵与机器可读摘要；只补缺失的边界用例；
   - 所有扫描复用 Redactor、路径包含与已有 Corpus，不创建第二套安全扫描器；
@@ -194,7 +202,7 @@ dotnet build OpenCoWork.slnx -c Release --no-restore
 - Work:
   - 原位扩展 Integration Runner 和现有 LoadTests；使用 `TimeProvider`、
     `System.Diagnostics.Process`、`Stopwatch` 与平台原生进程指标，不加 Benchmark SDK；
-  - 主循环使用 Fake Provider；真实 DeepSeek 只由平台 Gate 在开头和结尾显式调用；
+  - 主循环与平台 Gate 均使用 Fake Provider，不读取真实 Provider 或用户 OS Secret；
   - 报告只保留统计与摘要，不保存 Prompt、回答、响应正文或绝对用户路径。
 - Risks:
   - 短时 CI 测试只验证 Runner，不替代平台两小时 Soak；
@@ -238,10 +246,9 @@ dotnet build OpenCoWork.slnx -c Release --no-restore
   - 在隔离用户级目标验证安装、`--version`、`init`、`doctor --json`、升级、重启恢复、
     默认卸载保留数据和残留清理；
   - 从安装目录执行完整 E2E、State/Journal Corpus、安全/兼容矩阵、固定负载；
-  - 显式激活真实 `deepseek-v4-flash` 开始/结束冒烟并运行连续两小时 Soak；
+  - 使用 Fake Provider 运行连续两小时 Soak；
   - 记录环境、Commit、包 SHA-256、SBOM 摘要、命令、计数、预算、资源曲线和清理结果。
 - Risks:
-  - 真实 Secret 只进入验证进程；Keychain 弹窗或授权拒绝不得绕过；
   - 任何崩溃、挂起、SQLite Busy、数据不一致、Secret 命中、P0/P1 或无法解释的资源
     增长使 macOS 保持 Pending。
 - Verify:
@@ -250,7 +257,7 @@ dotnet build OpenCoWork.slnx -c Release --no-restore
 - Acceptance contribution: `M10-ACC-003..012` 的 `osx-arm64` 证据。
 - Commit: `docs(m11): record macOS rc validation`
 
-#### Outcome 6 执行记录（2026-08-02，部分完成，平台仍为 Pending）
+#### Outcome 6 执行记录（2026-08-02，macOS 按修订口径通过）
 
 - 最终有效 RC 源提交为 `ac7496eea33e0a1f786a2530b58889e115656530`；工作树干净，
   版本为 `1.0.0-rc.1`。macOS 未签名包 SHA-256 为
@@ -278,10 +285,11 @@ dotnet build OpenCoWork.slnx -c Release --no-restore
   已作废。测试新增项已按测试前 SHA-256 字节级恢复，隔离修复进入 `69874b9` 与
   `ac7496e`。最终全量回归、固定负载、基线和两小时 Soak 前后，真实用户 Registry
   SHA-256 均保持不变。
-- 本轮没有可用的授权 DeepSeek Secret，且用户已拒绝 Keychain 授权弹窗；按停止条件
+- 本轮没有可用的授权 DeepSeek Secret，且用户已拒绝 Keychain 授权弹窗；按安全边界
   未读取、写入或绕过 Keychain，也未执行真实 `deepseek-v4-flash` 与 OS Secret 场景。
-  因此 `M10-ACC-007`、`M10-ACC-008`、`M10-ACC-011` 的 macOS 最终 RC 门禁仍未
-  关闭，`osx-arm64` 保持 `Pending`。版本不得晋升为 `1.0.0`。
+  2026-08-02 用户随后将这两项移出 M11，等待未来客户端具备对应交互后再验；该决定
+  不把 Not Run 改写为通过，也不新增 Provider/Keychain 证据。其余冻结门禁均已通过，
+  因此 `osx-arm64` 更新为 `Passed`；`1.0.0` 仍由 Windows 真机与后续关闭 Outcomes 阻塞。
 
 ### Outcome 7：执行 `win-x64` rc.1 真机验收
 
@@ -289,12 +297,11 @@ dotnet build OpenCoWork.slnx -c Release --no-restore
   - 在 Windows x64 真机从与 Outcome 6 相同的干净源码 Commit 构建并验证
     `opencowork-1.0.0-rc.1-win-x64.zip`；
   - 验证用户级安装、精确 PATH、升级、E2E、State/Journal Corpus、安全/兼容矩阵、
-    固定负载、真实 DeepSeek 开始/结束冒烟、两小时 Soak、卸载和残留清理；
+    固定负载、Fake Provider 两小时 Soak、卸载和残留清理；
   - 记录 OS/SDK/Runtime、Commit、包摘要、SBOM、命令、计数、预算与清理结果。
 - Risks:
   - macOS、Cross Publish、PE32+ 检查或旧 Windows 证据均不能替代本 Outcome；
-  - Credential Manager、Registry/PATH 和进程树必须在测试前后精确核对；拒绝授权时保留
-    Pending，不改系统策略。
+  - Registry/PATH 和进程树必须在测试前后精确核对；M11 不读写 Credential Manager。
 - Verify:
   - Windows 报告、包、Commit、SHA-256 和 SBOM 相互可追溯；
   - 平台台账只在所有 Windows 门禁通过后更新为 `Passed`。
@@ -308,7 +315,7 @@ dotnet build OpenCoWork.slnx -c Release --no-restore
     `1.0.0`，更新 Release Notes 和确定性发布元数据；
   - 先完成本机全量回归和包结构检查，再形成不可改写的发布源 Commit；
   - `win-x64`、`osx-arm64` 均从该准确 Commit 重新构建 1.0.0 包并重跑安装、升级、
-    发布目录 E2E、真实 DeepSeek、固定负载、两小时 Soak、卸载和残留检查；
+    发布目录离线 E2E、固定负载、Fake Provider 两小时 Soak、卸载和残留检查；
   - 任何失败进入新 RC/最小修复循环，禁止在失败提交上关闭 1.0。
 - Risks:
   - 为确保两个平台能引用同一 SHA，本 Outcome 的发布源 Commit 在真机重跑前形成；
@@ -326,6 +333,7 @@ dotnet build OpenCoWork.slnx -c Release --no-restore
 - Work:
   - 将 `M10-ACC-001..012` 更新为 `Passed` 并附最终发布源 Commit 与证据反链；
   - 同步平台台账、Provider 台账、Milestone Checklist/README、Milestone Index 与路线；
+  - 在 Provider/平台台账保留真实 DeepSeek 与 OS Secret 的未来客户端 Deferred 入口；
   - 创建唯一 M11 交付归档，记录版本、Commit、包摘要、SBOM、命令、计数、预算、
     已知限制、未签名边界和清理结果；
   - 确认 CAP-001..078 均有 Passed 或冻结 Removed/Deferred 结论，无开放 P0/P1。
@@ -345,7 +353,7 @@ dotnet build OpenCoWork.slnx -c Release --no-restore
 - 当前分支不是 `dev`、工作区出现归属不明改动或 DotCraft 本机规范进入暂存区；
 - 需要扩大 Provider/Channel/平台范围，新增生产程序集或改变已冻结公共语义；
 - 需要签名、公证、推送、GitHub Release、管理员权限、全局安全策略或删除真实用户数据；
-- 真实 Provider、OS Secret、安装/PATH 操作出现未预期授权弹窗或无法证明可恢复；
+- 安装/PATH 操作出现未预期授权弹窗或无法证明可恢复；
 - 缺少 Windows 真机、RC 两平台失败、最终发布源 Commit 不一致或存在开放 P0/P1。
 
 触发停止条件时保留已验证 Commit 和真实 Pending 状态，报告最小阻塞项，不制造替代

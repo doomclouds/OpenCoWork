@@ -16,6 +16,8 @@
 - 修订：2026-08-02，M10 Gateway/Operations 十项验收已全部 Passed，汇总校正为
   `101 Passed / 12 Planned`；按用户确认冻结 M11 未签名自包含发布、Journal v1
   真实历史 Corpus、两平台两小时 Soak 与最小兼容矩阵，不新增或重排 Acceptance ID
+- 修订：2026-08-02，按用户决策取消 M11 最终 RC 的真实 DeepSeek 与 OS Secret 重验；
+  对应客户端交互延期，不新增或重排 Acceptance ID
 - 所属里程碑：OpenCoWork Runtime 1.0
 - 契约规格：
   [OpenCoWork M0 Contract Freeze](2026-07-25-open-cowork-m0-contract-freeze-design.md)
@@ -82,6 +84,11 @@ Apple Developer ID 和 Notarization 不属于本次关闭门禁，但产物和�
 Unsigned 并保留 SBOM、SHA-256、安全提示、安装、升级、卸载与双平台真实冒烟。
 ThreadJournal 继续冻结真实 Schema v1，以至少两个历史提交 Corpus 验证兼容回放，
 不得为凑验收制造不存在的旧 Schema。
+
+2026-08-02 用户进一步确认：M11 最终 RC 不重复执行真实 DeepSeek 或用户 OS Secret
+交互；两项验证等待未来客户端具备对应入口后另行激活。M9 DeepSeek 与 M10 OS Secret
+既有真实证据继续保留，但不冒充 M11 新证据；M11 的双平台硬门禁收敛为安装、离线
+E2E、迁移/恢复、安全 Fixture、固定负载、两小时 Soak、卸载和残留清理。
 
 2026-07-28 用户确认关闭 M4 功能需求，并将 `M4-ACC-006`、`M4-ACC-009` 缺少的
 `win-x64` 真机维度标记为 `Deferred`，统一进入
@@ -270,11 +277,11 @@ M11 仍须在最终发布候选上重跑完整双平台验收。
 | M10-ACC-004 | ThreadJournal Schema v1 的至少两个真实历史 Corpus 可兼容回放，投影重建正确；未知 Schema 稳定拒绝。 | CAP-017, CAP-020, CAP-021, CAP-039 | MigrationTest | DualPlatform | 历史 Journal Corpus、来源摘要、Checksum 与重建快照。 | Planned | — |
 | M10-ACC-005 | Archive/Delete/Fork/Rollback 在崩溃、升级和恢复组合下保持契约。 | CAP-024 | FaultInjection | DualPlatform | 组合故障矩阵与 Reconciler 结果。 | Planned | — |
 | M10-ACC-006 | Secret、路径、插件、Hook、MCP、工具、媒体和 Worktree 通过完整安全审计。 | CAP-010, CAP-018, CAP-027, CAP-034, CAP-041, CAP-059, CAP-071, CAP-074 | SecurityTest | DualPlatform | Threat Matrix、Canary、越界 Corpus 和修复证据。 | Planned | — |
-| M10-ACC-007 | CLI、AppServer、ACP、Gateway 从初始化到恢复完成端到端真实模型验收。 | CAP-019, CAP-025, CAP-043, CAP-047, CAP-067 | RealPlatformValidation | DualPlatform | Windows PC 与 M4 Mac mini 的 E2E 记录。 | Planned | — |
-| M10-ACC-008 | DeepSeek-only Provider、OpenCoWork 1.0 Plugin 与仓库 MCP/LSP Fixture 兼容矩阵覆盖支持版本、失败隔离和升级。 | CAP-026, CAP-050, CAP-052 | RealPlatformValidation | DualPlatform | 最小兼容矩阵报告与供应链摘要。 | Planned | — |
+| M10-ACC-007 | CLI、AppServer、ACP、Gateway 使用 Fake Provider 从初始化到恢复完成发布目录端到端验收。 | CAP-019, CAP-025, CAP-043, CAP-047, CAP-067 | RealPlatformValidation | DualPlatform | Windows PC 与 M4 Mac mini 的离线 E2E 记录。 | Planned | — |
+| M10-ACC-008 | DeepSeek-only 离线契约、OpenCoWork 1.0 Plugin 与仓库 MCP/LSP Fixture 兼容矩阵覆盖支持版本、失败隔离和升级。 | CAP-026, CAP-050, CAP-052 | ContractSnapshot | All | 最小离线兼容矩阵、M9 真实 Provider 证据反链与供应链摘要。 | Planned | — |
 | M10-ACC-009 | 现有固定负载、每平台两小时 Soak、并发和资源清理满足冻结基线 `2×` 上限且无 P0/P1。 | CAP-022, CAP-055, CAP-065, CAP-070, CAP-077 | PerformanceTest | DualPlatform | 固定负载、Soak、内存/句柄/进程与基线对比报告。 | Planned | — |
-| M10-ACC-010 | `win-x64` 在干净 Windows 机器完成未签名自包含 ZIP 的安装、升级、卸载和真实模型冒烟。 | CAP-011 | RealPlatformValidation | win-x64 | Unsigned 包摘要、安装日志、SmartScreen 说明、卸载残留与冒烟报告。 | Planned | — |
-| M10-ACC-011 | `osx-arm64` 在 M4 Mac mini 完成未签名自包含 tar.gz 的安装、升级、卸载和真实模型冒烟。 | CAP-011 | RealPlatformValidation | osx-arm64 | Unsigned 包摘要、安装日志、Gatekeeper 说明、卸载残留与冒烟报告。 | Planned | — |
+| M10-ACC-010 | `win-x64` 在干净 Windows 机器完成未签名自包含 ZIP 的安装、升级、离线 E2E、卸载和清理。 | CAP-011 | RealPlatformValidation | win-x64 | Unsigned 包摘要、安装日志、SmartScreen 说明、离线 E2E 与卸载残留报告。 | Planned | — |
+| M10-ACC-011 | `osx-arm64` 在 M4 Mac mini 完成未签名自包含 tar.gz 的安装、升级、离线 E2E、卸载和清理。 | CAP-011 | RealPlatformValidation | osx-arm64 | Unsigned 包摘要、安装日志、Gatekeeper 说明、离线 E2E 与卸载残留报告。 | Planned | — |
 | M10-ACC-012 | 用户、协议、插件文档、Release Notes、SBOM、校验和与诊断说明齐全。 | CAP-051, CAP-072, CAP-078 | ManualValidation | All | 发布包清单、文档链接、SBOM 与校验和验证。 | Planned | — |
 
 ## 14. 数量与关闭规则

@@ -12,6 +12,8 @@
 - `058b505174602653385c51cb35fb654dd0b31262` 已移除生产
   OpenAI-compatible/Qwen 路径并完成 DeepSeek Responses 离线实现；2026-08-02
   双平台 Flash 真实验证齐全，M9 支持声明已关闭。
+- 2026-08-02 用户确认 M11 最终 RC 不重复真实 DeepSeek 验收；下一次真实 Provider
+  验证等待客户端具备对应交互后显式激活。
 
 ## 官方协议基线
 
@@ -47,6 +49,12 @@ Responses API 实现或当前 1.0 目标已经完成：
 | DeepSeek 官方 | `osx-arm64` | `deepseek-v4-flash` | Responses API | Passed | `058b505174602653385c51cb35fb654dd0b31262`；macOS 26.5.2 / .NET Runtime 10.0.10；从 `osx-arm64` 发布目录执行 Text、Function、`web_search`、`custom/apply_patch`、Usage、Secret Canary 六场景，均为 `response.completed` 且 Usage/容差/Secret/临时残留门禁通过；证据时间 `2026-08-01T09:33:19.229679Z`。 |
 | DeepSeek 官方 | `win-x64` | `deepseek-v4-flash` | Responses API | Passed | `2d966400e61e8d17c8a513299e8a9b420591d865` 加 Source/Test Patch SHA-256 `516c263191620d8b9f41eb5bbce0436aac41ee04aef6be73af5c5514783e90cd`；Windows 11 Home `10.0.26200` x64 / .NET Runtime `10.0.10`；从发布目录以用户级真实 API Key 执行同等六场景，均为 `completed` 且 Usage/Secret/临时残留门禁通过；证据时间 `2026-08-02T01:59:52.7843277+00:00`。 |
 | DeepSeek 官方 | `osx-arm64`、`win-x64` | `deepseek-v4-pro` | Responses API | Deferred | DeepSeek 官方明确支持该模型的 Responses API，且用户激活双平台真实验证。 |
+
+## 客户端阶段后续验证
+
+| Provider | 平台 | 模型 | 协议 | 状态 | 激活条件 |
+| --- | --- | --- | --- | --- | --- |
+| DeepSeek 官方 | 客户端正式支持的平台 | `deepseek-v4-flash` | Responses API | Deferred | OpenCoWork 客户端具备 Provider/OS Secret 交互，且用户显式授权真实 Secret 验证。 |
 
 ## Removed 路径
 
@@ -93,5 +101,6 @@ Responses API 实现或当前 1.0 目标已经完成：
    Call/Output、服务端 `web_search`、`custom/apply_patch`、Reasoning、Usage、
    Tokenizer 对账和 Secret Canary。
 5. 通过后更新本台账、M9 验收目录和交付证据；失败或未运行不得对外宣称支持。
-6. M11 最终发布候选必须在两平台重新执行 `deepseek-v4-flash` Responses API
-   真实验收；早期 M3 Chat Completions 结果不能替代。
+6. M11 最终发布候选不重复真实 Provider 验收；客户端阶段激活后必须重新执行
+   `deepseek-v4-flash` Responses API 真实验收，且不能用早期 M3 Chat Completions
+   或 M9 结果冒充届时的新证据。

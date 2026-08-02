@@ -59,7 +59,7 @@ OpenCoWork .NET 10 核心运行时、CLI、AppServer、ACP、扩展生态、多�
 
 ## Non-Goals
 
-DotCraft .craft 兼容、DotCraft 二进制或私有实现兼容、Linux 与 Intel macOS 1.0 正式支持、桌面或 Web UI。
+DotCraft .craft 兼容、DotCraft 二进制或私有实现兼容、Linux 与 Intel macOS 1.0 正式支持、桌面或 Web UI，以及最终 RC 上的真实 DeepSeek/OS Secret 重验；后者待客户端具备对应交互后另行验证。
 
 ## Reference Signals
 
@@ -87,7 +87,7 @@ DotCraft .craft 兼容、DotCraft 二进制或私有实现兼容、Linux 与 Int
 | M8 - Automations and Scheduler | 交付可版本控制定义、可恢复运行和严格权限边界的无人值守调度。 | Gateway、Hub 和外部渠道交付。 | 去重调度、时区、并发、Worktree、定义快照、NeedsAttention 和崩溃恢复验收通过。 |
 | M9 - DeepSeek Responses Provider | 按 DeepSeek 官方 Responses API 指南，用专用最小实现替换通用 OpenAI-compatible Chat Completions 路径；接入服务端 `web_search` 和 `custom/apply_patch`，首发只支持 `deepseek-v4-flash`。 | 千问 Token Plan、其他 Provider、Chat Completions 兼容层、官方未支持/未记录或产品未激活的 Responses 能力，以及 `deepseek-v4-pro`。 | DeepSeek-only 配置、官方 Responses 子集、旧 `web.fetch`/模型侧 `file.write` 删减、无状态恢复边界和双平台真实发布冒烟通过验收。 |
 | M10 - Gateway and Operations | 交付外部渠道、可靠消息、Hub、Heartbeat、Tracing 和后台服务运行能力。 | 新增大型核心子系统和桌面/Web UI。 | 入站去重、Outbox、断连隔离、顺序、媒体安全和后台生命周期验收通过。 |
-| M11 - OpenCoWork 1.0 Closure | 关闭契约缺口，完成迁移、恢复、安全、性能、安装和双平台发布证据。 | 临门新增大型功能、Linux/Intel macOS 正式支持。 | M0 能力台账清零，`win-x64` 与 `osx-arm64` 发布候选通过完整验收。 |
+| M11 - OpenCoWork 1.0 Closure | 关闭契约缺口，完成迁移、恢复、安全、性能、安装和双平台发布证据。 | 临门新增大型功能、Linux/Intel macOS 正式支持，以及最终 RC 上的真实 DeepSeek/OS Secret 重验。 | M0 能力台账清零，`win-x64` 与 `osx-arm64` 发布候选通过冻结的安装、离线 E2E、固定负载、Soak 和清理门禁。 |
 
 ## Update Rules
 
