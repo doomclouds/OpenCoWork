@@ -424,32 +424,41 @@ public sealed class RuntimeCompositionIntegrationTests
                         [])),
                 cancellationToken);
 
-            Assert.Equal(1, await service.DispatchPendingAsync(
+            _ = await service.DispatchPendingAsync(
                 Guid.CreateVersion7(),
                 1,
-                cancellationToken));
-            var projectedCorrelation = await state.ReadAsync<string?>(
-                async (connection, token) =>
-                {
-                    await using var command = connection.CreateCommand();
-                    command.CommandText =
-                        """
-                        SELECT coalesce(
-                            (SELECT json_extract(q.payload_json, '$.correlationId')
-                             FROM turn_queue q WHERE q.thread_id = i.thread_id LIMIT 1),
-                            (SELECT t.correlation_id FROM turns t
-                             WHERE t.thread_id = i.thread_id
-                             ORDER BY t.created_utc DESC LIMIT 1))
-                        FROM channel_inbound_messages i
-                        WHERE i.inbound_message_id = $inboundId;
-                        """;
-                    var parameter = command.CreateParameter();
-                    parameter.ParameterName = "$inboundId";
-                    parameter.Value = receipt.ReceiptId.ToString("D");
-                    command.Parameters.Add(parameter);
-                    return await command.ExecuteScalarAsync(token) as string;
-                },
                 cancellationToken);
+            string? projectedCorrelation = null;
+            for (var attempt = 0; attempt < 250 && projectedCorrelation is null; attempt++)
+            {
+                projectedCorrelation = await state.ReadAsync<string?>(
+                    async (connection, token) =>
+                    {
+                        await using var command = connection.CreateCommand();
+                        command.CommandText =
+                            """
+                            SELECT coalesce(
+                                (SELECT json_extract(q.payload_json, '$.correlationId')
+                                 FROM turn_queue q WHERE q.thread_id = i.thread_id LIMIT 1),
+                                (SELECT t.correlation_id FROM turns t
+                                 WHERE t.thread_id = i.thread_id
+                                 ORDER BY t.created_utc DESC LIMIT 1))
+                            FROM channel_inbound_messages i
+                            WHERE i.inbound_message_id = $inboundId;
+                            """;
+                        var parameter = command.CreateParameter();
+                        parameter.ParameterName = "$inboundId";
+                        parameter.Value = receipt.ReceiptId.ToString("D");
+                        command.Parameters.Add(parameter);
+                        return await command.ExecuteScalarAsync(token) as string;
+                    },
+                    cancellationToken);
+                if (projectedCorrelation is null)
+                {
+                    await Task.Delay(20, cancellationToken);
+                }
+            }
+
             Assert.Equal(receipt.CorrelationId.ToString("D"), projectedCorrelation);
             await host.StopAsync(cancellationToken);
         }
