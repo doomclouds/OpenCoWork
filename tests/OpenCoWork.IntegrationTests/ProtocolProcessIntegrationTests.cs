@@ -82,6 +82,8 @@ public sealed class ProtocolProcessIntegrationTests
             start.ArgumentList.Add("app-server");
             start.ArgumentList.Add("--workspace");
             start.ArgumentList.Add(root);
+            start.Environment["OPENCOWORK_VALIDATION_USER_PROFILE"] =
+                Directory.CreateDirectory(Path.Combine(root, "user-profile")).FullName;
             using var process = Process.Start(start)
                 ?? throw new InvalidOperationException("Could not start app-server.");
 
@@ -245,6 +247,8 @@ public sealed class ProtocolProcessIntegrationTests
             start.ArgumentList.Add("acp");
             start.ArgumentList.Add("--workspace");
             start.ArgumentList.Add(root);
+            start.Environment["OPENCOWORK_VALIDATION_USER_PROFILE"] =
+                Directory.CreateDirectory(Path.Combine(root, "user-profile")).FullName;
             start.Environment["OPENCOWORK_TEST_API_KEY"] = "process-test-secret";
             using var process = Process.Start(start)
                 ?? throw new InvalidOperationException("Could not start ACP.");
