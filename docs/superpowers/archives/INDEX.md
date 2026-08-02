@@ -2,6 +2,7 @@
 
 ## 2026-08
 
+- [2026-08-01-open-cowork-m10-gateway-operations-archives.md](./2026-08/2026-08-01-open-cowork-m10-gateway-operations-archives.md): 交付 loopback Webhook Gateway、可靠 Inbound/Outbox、Hub、Operations 与 Wire 1.4 双平台运行能力。
 - [2026-08-01-open-cowork-m9-deepseek-responses-provider-archives.md](./2026-08/2026-08-01-open-cowork-m9-deepseek-responses-provider-archives.md): 交付 DeepSeek Responses API 专用实现及 `deepseek-v4-flash` 双平台真实六场景验收。
 
 ## 2026-07

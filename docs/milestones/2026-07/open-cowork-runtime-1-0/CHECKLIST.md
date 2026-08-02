@@ -7,9 +7,9 @@ Milestone standard: [README.md](README.md)
 ## Progress Summary
 
 - Status: In Progress
-- Progress: 10/12
-- Done: 10
-- In progress: 1
+- Progress: 11/12
+- Done: 11
+- In progress: 0
 - Not started: 1
 - Deferred: 0
 - Split: 0
@@ -76,12 +76,12 @@ Milestone standard: [README.md](README.md)
   - Related plan: docs/superpowers/plans/2026-08-01-open-cowork-m9-deepseek-responses-provider-implementation-plan.md
   - Related archive: docs/superpowers/archives/2026-08/2026-08-01-open-cowork-m9-deepseek-responses-provider-archives.md
   - Completion signal: DeepSeek-only Responses 实现已在 win-x64、osx-arm64 发布目录以真实 deepseek-v4-flash 完成 Text、Function、web_search、custom/apply_patch、Usage 与 Secret Canary 六场景；M9-ACC-011 至 M9-ACC-019 全部 Passed，M11 仍须重跑最终发布候选。
-- [ ] 11. M10 - Gateway and Operations
-  - Status: In Progress
+- [x] 11. M10 - Gateway and Operations
+  - Status: Done
   - Related spec: docs/superpowers/specs/2026-08-01-open-cowork-m10-gateway-operations-design.md
   - Related plan: docs/superpowers/plans/2026-08-01-open-cowork-m10-gateway-operations-implementation-plan.md
-  - Related archive: None yet.
-  - Completion signal: Outcomes 1-9 已完成；win-x64 发布目录 TestClient 8 场景、Gateway/Outbox/Operations/Runtime Composition Runner 13 项、Credential Manager、Wire 1.4、Secret Canary 与残留检查通过；osx-arm64 Runner 13 项通过，但 Protocol TestClient/Keychain 与完整发布矩阵仍待 Outcome 10，因此 M10 保持 In Progress。
+  - Related archive: docs/superpowers/archives/2026-08/2026-08-01-open-cowork-m10-gateway-operations-archives.md
+  - Completion signal: Gateway、Inbound/Outbox、Hub、Operations、Wire 1.4 与 State v9 已通过 win-x64、osx-arm64 发布目录 Protocol 8 场景、Runner 13 项、OS Secret、Secret Canary 和残留检查；M9-ACC-001 至 M9-ACC-010 全部 Passed，M11 仍须重跑最终发布候选。
 - [ ] 12. M11 - OpenCoWork 1.0 Closure
   - Status: Not Started
   - Related spec: docs/superpowers/specs/2026-07-25-open-cowork-runtime-1-0-roadmap.md

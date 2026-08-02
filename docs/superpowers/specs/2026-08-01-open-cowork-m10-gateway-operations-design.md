@@ -2,14 +2,16 @@
 
 ## 文档状态
 
-- 状态：实现已完成；Outcome 10 等待 `osx-arm64` Protocol TestClient/Keychain 验收
+- 状态：已完成并归档；双平台发布目录验收通过
 - 日期：2026-08-01
 - 所属里程碑：OpenCoWork Runtime 1.0 / M10
 - 对应计划：
   [M10 Gateway and Operations 实施计划](../plans/2026-08-01-open-cowork-m10-gateway-operations-implementation-plan.md)；
   本文与计划均不授权实现、外部监听、Secret 写入或真实渠道请求
-- 当前实现基线：State v8、OpenCoWork Wire 1.3、七个冻结生产程序集
-- 当前平台结论：`win-x64` Passed；`osx-arm64` Pending；交叉发布不能替代真机验收
+- 对应归档：
+  [M10 Gateway and Operations 交付归档](../archives/2026-08/2026-08-01-open-cowork-m10-gateway-operations-archives.md)
+- 当前实现基线：State v9、OpenCoWork Wire 1.4、七个冻结生产程序集
+- 当前平台结论：`win-x64`、`osx-arm64` 均为 Passed；M11 仍须重跑最终发布候选
 - 继续工作前必须先阅读：
   - [OpenCoWork Runtime 1.0 路线规格](2026-07-25-open-cowork-runtime-1-0-roadmap.md)
   - [M0 Contract Freeze](2026-07-25-open-cowork-m0-contract-freeze-design.md)

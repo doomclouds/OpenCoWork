@@ -5,7 +5,7 @@
 - Topic slug: `windows-cross-platform-test-assumptions`
 - Status: `Captured`
 - Scope: `Test`
-- Tags: `windows`, `path`, `junction`, `file-sharing`, `process`, `cleanup`
+- Tags: `windows`, `macos`, `path`, `junction`, `file-sharing`, `process`, `keychain`, `user-profile`, `cleanup`
 
 ## Symptom
 
@@ -15,6 +15,8 @@ Windows 全量验证同时出现三类表象：ACP approval 用例无界等待�
 SQLite Pool、Git 只读文件清理失败，以及进程树测试弹出可见 `cmd.exe`。
 M7-M10 关闭验证继续暴露媒体暂存文件共享方向、Workspace 发现越过用户目录边界，
 以及真实 Provider Secret Canary 扫描活动 SQLite 时的 Windows 共享冲突。
+M10 macOS Protocol TestClient 若通过临时 `HOME` 隔离用户 Profile，会弹出“找不到
+钥匙串”并提供危险的“还原为默认”操作，随后 `auth/secret/set` 因等待系统交互超时。
 
 ## Trigger / Context
 
@@ -24,6 +26,8 @@ M7-M10 关闭验证继续暴露媒体暂存文件共享方向、Workspace 发现
   `Start-Process` 子进程树测试。
 - M7-M10 在 Windows 发布目录执行 Gateway 媒体校验、CoWork Git Worktree 清理、
   Workspace Memory 与真实 DeepSeek Provider Runner。
+- M10 在 Apple Silicon macOS 发布目录执行 Protocol TestClient 的真实 Keychain
+  Set/Use/Clear，并尝试用临时 `HOME` 隔离调用者用户级状态。
 
 ## Root Cause
 
@@ -39,6 +43,10 @@ M10 媒体暂存写流允许其他读取者，却未允许读取者共享现有�
 用户级 `.opencowork` 后仍继续向用户目录之上搜索；测试清理再次漏掉 SQLite Pool 和
 Git 只读属性。Provider Runner 的 Secret Canary 又用独占式 `File.ReadAllBytes` 扫描
 仍由 SQLite 持有的 `state.db`，使六个真实远端场景均成功后被本地扫描误报失败。
+macOS 上 `.NET Environment.SpecialFolder.UserProfile` 仍解析登录用户目录，而 Security
+Framework 在临时 `HOME` 下无法定位该登录会话的默认 Keychain；同一进程因此形成
+“真实 User Profile + 不存在的默认钥匙串”组合。系统弹窗中的“还原为默认”不是测试
+授权，而是修改用户 Keychain 配置的恢复操作，不能作为自动化继续按钮。
 
 ## Fix
 
@@ -57,12 +65,19 @@ Git 只读属性。Provider Runner 的 Secret Canary 又用独占式 `File.ReadA
   共享；Workspace 发现到达用户目录即停止，不再检查更高层祖先。
 - CoWork Git 清理前清除文件只读属性；Workspace Memory 夹具删除目录前清空 SQLite
   Pool；Provider Secret Canary 使用 `FileShare.ReadWrite | FileShare.Delete` 逐块读取。
+- macOS OS Secret 真机验收不再通过改写 `HOME` 伪造临时用户。获得用户明确授权后，
+  使用登录用户 Profile 和随机 Workspace/Account 执行 Keychain Set/Use/Clear；运行前
+  记录 Registry 哈希，运行后精确删除本轮临时 Workspace 项并要求哈希恢复。若出现
+  “找不到钥匙串”，选择取消，绝不点击“还原为默认”；随后按精确 Account 确认没有
+  Keychain 残留。
 
 ## Why This Fix
 
 路径逃逸拒绝和原子替换语义继续保持严格。对测试专属 Pool、只读属性和扫描共享只修
 夹具；对媒体暂存共享方向和 Workspace 用户目录边界则修生产根因。这样不会放宽路径、
 Secret 或写入权限，也不会给每个调用者复制重试逻辑。
+macOS Keychain 验收使用系统真实边界才能证明产品行为；通过随机账户、精确清理和前后
+哈希保护用户数据，比改写 `HOME` 或修改默认 Keychain 配置更小、更可审计。
 
 ## Recognition Clues
 
@@ -81,6 +96,9 @@ Secret 或写入权限，也不会给每个调用者复制重试逻辑。
 - 真实 Provider 所有远端场景成功、最后统一变成 `ExecutionFailed` 时，先单独检查
   Secret Canary 是否正在独占读取活动 `state.db`，不要误判 API Key 或 Provider。
 - Workspace 发现返回真实用户目录时，检查祖先搜索是否在显式 User Profile 边界停止。
+- macOS Protocol TestClient 停在 `auth/secret/set` 且弹窗包含“找不到钥匙串”或
+  “还原为默认”时，先检查是否改写了 `HOME`；取消弹窗并确认精确 Account 不存在，
+  不要把它误当成普通 Keychain Access 授权。
 
 ## Applicability / Non-Applicability
 
@@ -90,6 +108,7 @@ Secret 或写入权限，也不会给每个调用者复制重试逻辑。
 - Windows 测试涉及 collectible ALC、SQLite Pool、Git 临时仓库或派生控制台进程。
 - Windows 验证涉及活动 SQLite 的 Secret 扫描、写入中的媒体暂存或用户目录祖先搜索。
 - Windows 真机失败而相同生产安全语义已被独立测试证明正确。
+- macOS 真机验证需要同时触达登录 Keychain 与用户级 Workspace Registry。
 
 ### Does Not Apply When
 
@@ -97,6 +116,8 @@ Secret 或写入权限，也不会给每个调用者复制重试逻辑。
 - 生产子进程继承了不应共享的 stdin，或用户级状态被错误识别为 Workspace；
   这些属于产品隔离错误，不能归咎于测试夹具。
 - 测试需要验证原生 Symlink ACL/UAC 本身；此时不能用 Junction 替代目标场景。
+- 已为验证创建独立 macOS 用户和专用 Keychain，并能证明 Search List、默认 Keychain
+  与清理边界完全隔离；此时无需复用登录用户 Profile。
 
 ## Related Artifacts
 
@@ -108,6 +129,7 @@ Secret 或写入权限，也不会给每个调用者复制重试逻辑。
 - Archive: [M7 Multi-Agent CoWork 交付归档](../../archives/2026-07/2026-07-30-open-cowork-m7-multi-agent-cowork-archives.md)
 - Archive: [M8 Automations and Scheduler 交付归档](../../archives/2026-07/2026-07-30-open-cowork-m8-automations-scheduler-archives.md)
 - Archive: [M9 DeepSeek Responses Provider 交付归档](../../archives/2026-08/2026-08-01-open-cowork-m9-deepseek-responses-provider-archives.md)
+- Archive: [M10 Gateway and Operations 交付归档](../../archives/2026-08/2026-08-01-open-cowork-m10-gateway-operations-archives.md)
 - Related Problems:
   - None.
 - Code or Test:
@@ -121,3 +143,5 @@ Secret 或写入权限，也不会给每个调用者复制重试逻辑。
   - [WorkspaceMemoryTests.cs](../../../../tests/OpenCoWork.Core.Tests/WorkspaceMemoryTests.cs)
   - [CoWorkWorkspaceIntegrationTests.cs](../../../../tests/OpenCoWork.IntegrationTests/CoWorkWorkspaceIntegrationTests.cs)
   - [ProviderReleaseValidationTests.cs](../../../../tests/OpenCoWork.IntegrationTests/ProviderReleaseValidationTests.cs)
+  - [OpenCoWork.Protocol.TestClient/Program.cs](../../../../tests/OpenCoWork.Protocol.TestClient/Program.cs)
+  - [ProviderSecretStore.cs](../../../../src/OpenCoWork.Core/Capabilities/ProviderSecretStore.cs)

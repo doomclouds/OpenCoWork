@@ -240,16 +240,16 @@ M11 仍须在最终发布候选上重跑完整双平台验收。
 
 | AcceptanceId | Requirement | CapabilityIds | EvidenceType | Platforms | ExpectedEvidence | Status | SupersededBy |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| M9-ACC-001 | 多 Channel 并发运行且凭据、故障、重连和速率限制互相隔离。 | CAP-067 | FaultInjection | All | Test/Webhook Channel 隔离矩阵。 | Planned | — |
-| M9-ACC-002 | 重复入站消息只创建一个 Turn，持久化前不交给 Session Core。 | CAP-068 | FaultInjection | All | 重放/并发重复 Message ID 测试。 | Planned | — |
-| M9-ACC-003 | 出站消息发送前进入 Outbox，发送前后崩溃均不静默丢失。 | CAP-069 | FaultInjection | All | Outbox 状态窗口和重试报告。 | Planned | — |
-| M9-ACC-004 | 单外部会话消息有序，跨会话可并行，Dead Letter 不阻塞其他分区。 | CAP-069, CAP-070 | PerformanceTest | All | 分区并发与毒消息测试。 | Planned | — |
-| M9-ACC-005 | 附件/媒体校验类型、大小、摘要和路径，不信任远端文件名。 | CAP-071 | SecurityTest | DualPlatform | 恶意文件名、Symlink、超限与篡改 Corpus。 | Planned | — |
-| M9-ACC-006 | Hub 从用户级注册发现 Workspace，不依赖当前工作目录。 | CAP-013, CAP-072 | RealPlatformValidation | DualPlatform | 两平台不同 CWD 启动与 Workspace 映射。 | Planned | — |
-| M9-ACC-007 | Channel Adapter 的启动、停止、断连和重连不遗留后台任务或进程。 | CAP-067 | FaultInjection | DualPlatform | 生命周期与资源泄漏检查。 | Planned | — |
-| M9-ACC-008 | Usage/Trace/Insight/Dashboard 查询可用，但不依赖桌面或 Web UI。 | CAP-042, CAP-048, CAP-072 | ContractSnapshot | All | Wire Catalog、CLI 查询和 ImprovementProposal 快照。 | Planned | — |
-| M9-ACC-009 | Heartbeat 和所有后台服务随 WorkspaceRuntime 完整注册与清理。 | CAP-016, CAP-077 | FaultInjection | DualPlatform | Stop Timeout、崩溃与残留资源报告。 | Planned | — |
-| M9-ACC-010 | 日志、Usage、Tracing 跨 Gateway 到 Session/Tool 可关联且不泄漏 Secret。 | CAP-073, CAP-074, CAP-075, CAP-076 | SecurityTest | All | 端到端 Correlation 与敏感信息扫描。 | Planned | — |
+| M9-ACC-001 | 多 Channel 并发运行且凭据、故障、重连和速率限制互相隔离。 | CAP-067 | FaultInjection | All | Test/Webhook Channel 隔离矩阵。 | Passed | — |
+| M9-ACC-002 | 重复入站消息只创建一个 Turn，持久化前不交给 Session Core。 | CAP-068 | FaultInjection | All | 重放/并发重复 Message ID 测试。 | Passed | — |
+| M9-ACC-003 | 出站消息发送前进入 Outbox，发送前后崩溃均不静默丢失。 | CAP-069 | FaultInjection | All | Outbox 状态窗口和重试报告。 | Passed | — |
+| M9-ACC-004 | 单外部会话消息有序，跨会话可并行，Dead Letter 不阻塞其他分区。 | CAP-069, CAP-070 | PerformanceTest | All | 分区并发与毒消息测试。 | Passed | — |
+| M9-ACC-005 | 附件/媒体校验类型、大小、摘要和路径，不信任远端文件名。 | CAP-071 | SecurityTest | DualPlatform | 恶意文件名、Symlink、超限与篡改 Corpus。 | Passed | — |
+| M9-ACC-006 | Hub 从用户级注册发现 Workspace，不依赖当前工作目录。 | CAP-013, CAP-072 | RealPlatformValidation | DualPlatform | 两平台不同 CWD 启动与 Workspace 映射。 | Passed | — |
+| M9-ACC-007 | Channel Adapter 的启动、停止、断连和重连不遗留后台任务或进程。 | CAP-067 | FaultInjection | DualPlatform | 生命周期与资源泄漏检查。 | Passed | — |
+| M9-ACC-008 | Usage/Trace/Insight/Dashboard 查询可用，但不依赖桌面或 Web UI。 | CAP-042, CAP-048, CAP-072 | ContractSnapshot | All | Wire Catalog、CLI 查询和 ImprovementProposal 快照。 | Passed | — |
+| M9-ACC-009 | Heartbeat 和所有后台服务随 WorkspaceRuntime 完整注册与清理。 | CAP-016, CAP-077 | FaultInjection | DualPlatform | Stop Timeout、崩溃与残留资源报告。 | Passed | — |
+| M9-ACC-010 | 日志、Usage、Tracing 跨 Gateway 到 Session/Tool 可关联且不泄漏 Secret。 | CAP-073, CAP-074, CAP-075, CAP-076 | SecurityTest | All | 端到端 Correlation 与敏感信息扫描。 | Passed | — |
 
 ## 13. M11 - OpenCoWork 1.0 Closure（12，沿用稳定 `M10-ACC-*`）
 

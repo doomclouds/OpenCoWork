@@ -1,9 +1,7 @@
 # OpenCoWork M10 Gateway and Operations 实施计划
 
-**Status:** In Progress；Gate 0 和 Outcome 1–9 已完成；Outcome 10 已完成双 RID 三套
-产物发布、`win-x64` 完整真机验证与 `osx-arm64` Release Runner 部分验证，macOS
-Protocol TestClient/Keychain 仍待执行。2026-08-01 用户已授权按本计划实施并提交；公网访问、真实
-Secret/第三方 Webhook、推送和非本机平台操作仍未授权。
+**Status:** Done；Gate 0、Outcome 1–10 与 `win-x64`、`osx-arm64` 发布目录验收全部
+通过，M10 已归档。公网访问、真实第三方 Webhook、推送和非本机平台操作仍未授权。
 
 **Goal:** 在现有七程序集、单 Workspace SQLite、唯一 Session Core 和
 `WorkspaceRuntime` 生命周期内，交付内建 Webhook Gateway、可靠 Inbound/Outbox、
@@ -33,9 +31,12 @@ Wire 1.0–1.3 完整回归、Wire 1.4 黑盒通过；`win-x64` 与 `osx-arm64` 
 
 ## 当前实现基线
 
+- 2026-08-02，Apple Silicon macOS 26.5.2 的发布目录 Protocol TestClient 8 场景、
+  Gateway/Outbox/Operations/Runtime Composition Runner 13 项、Keychain、Wire 1.4、
+  Secret Canary 与残留检查通过；
 - 2026-08-02，Windows 11 Home `10.0.26200` x64 的发布目录 TestClient 8 场景、
   Gateway/Outbox/Operations/Runtime Composition Runner 13 项、Credential Manager、
-  Secret Canary 与残留检查通过；M10 仍等待 macOS Protocol TestClient/Keychain；
+  Secret Canary 与残留检查通过；
 - 计划基线为 `dev` 的 `97aa1690a62a`；执行前必须重新确认分支、HEAD、工作区和台账，
   不覆盖用户未提交改动；
 - 生产程序集仍冻结为七个，M10 只原位扩展现有项目和测试程序集，不新增工程；
@@ -49,8 +50,8 @@ Wire 1.0–1.3 完整回归、Wire 1.4 黑盒通过；`win-x64` 与 `osx-arm64` 
   依赖顺序权威；Gateway 不增加第二个 Hosted Service 框架；
 - `ProviderSecretStore.cs` 已有 macOS Keychain、Windows Credential Manager、Secret
   Lease 与 Redactor 原语；M10 只下沉最小通用 OS Secret Store，Provider 行为保持；
-- M7、M8、M9 的 `win-x64` 证据仍以执行时的平台台账为准；它们不阻塞 M10 Outcome
-  1–9 的离线实施，但所有相关回归和 M10 双平台证据未齐前不得关闭 M10。
+- M7、M8、M9 与 M10 的双平台证据均以执行时的平台台账为准；M11 仍须在最终发布
+  候选上重跑完整双平台验收。
 
 ## 最小变更图
 
@@ -323,17 +324,20 @@ Gate 0 不形成独立 Commit，也不改变 Milestone 状态。
 
 ### Outcome 10：完成双 RID 发布、真机台账与交付归档
 
-当前部分证据（2026-08-01，基线 `9b714bcb7dc0c526a3f7bce1b47f4e6b12d0360f`）：
+完成证据：
 
-- App、Protocol TestClient 与 Integration Runner 已分别按 `osx-arm64`、`win-x64`
-  独立 restore/publish；三套 macOS Host 均为 Mach-O arm64，三套 Windows Host 均为
-  PE32+ x64，Windows 结果只登记为 Cross-publish Passed；
-- `osx-arm64` Runner 从发布目录执行 Gateway/Outbox/Operations CLI/Runtime
-  Composition 共 13 项，`13 passed / 0 failed / 0 skipped`，固定负载与临时状态清理
-  通过，用户级 Workspace Registry SHA-256 前后一致；
-- 当前 Protocol TestClient 会执行真实 Keychain Set/Clear，并使用调用者用户级
-  Profile。该动作未获本轮授权，因此未执行，`osx-arm64` 仍为 Pending；Windows 真机
-  也未执行。没有创建交付归档，没有把 M10 或任一平台标为 Passed。
+- 2026-08-01，基线 `9b714bcb7dc0c526a3f7bce1b47f4e6b12d0360f` 已完成双 RID
+  三套产物发布与 `osx-arm64` Runner 13 项部分验证；
+- 2026-08-02，Windows 在 `2d966400e61e8d17c8a513299e8a9b420591d865` 加
+  Source/Test Patch SHA-256
+  `516c263191620d8b9f41eb5bbce0436aac41ee04aef6be73af5c5514783e90cd` 上通过
+  Protocol TestClient 8 场景、Runner 13 项、Credential Manager、Secret Canary 与
+  残留检查；
+- 2026-08-02，macOS 在干净提交
+  `050b85c1c42ca2e3bd2abd5eb0943232895081d7` 上通过 `638` 项离线回归、Release
+  build `0` warning / `0` error、三套 Mach-O arm64 发布、Protocol TestClient 8
+  场景、Runner 13 项、Keychain Set/Clear、Secret Canary 与残留检查；调用者
+  Workspace Registry 清理后恢复验证前 SHA-256。
 
 - Red:
   - 发布 Runner/TestClient 必须在目标发布目录缺能力时失败，并显式区分
@@ -356,8 +360,7 @@ Gate 0 不形成独立 Commit，也不改变 Milestone 状态。
   - `dotnet format OpenCoWork.slnx --verify-no-changes --no-restore`
   - 分别从 `osx-arm64`、`win-x64` 发布目录执行 M10 Protocol TestClient/Release
     Runner，并按平台台账记录真实命令、修订和结果。
-- Acceptance contribution: 双平台齐全时关闭 `M9-ACC-001..010`；否则保持对应项
-  Planned/Pending。
+- Acceptance contribution: `M9-ACC-001..010` 已全部关闭为 `Passed`。
 - Commit: `docs(m10): close gateway operations delivery`
 
 ## 覆盖矩阵
